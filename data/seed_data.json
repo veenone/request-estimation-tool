@@ -1,0 +1,193 @@
+{
+  "features": [
+    {
+      "name": "SIM Toolkit",
+      "category": "Telecom",
+      "complexity_weight": 1.0,
+      "has_existing_tests": true,
+      "description": "SIM Application Toolkit (STK) - proactive commands, menu selection, event handling"
+    },
+    {
+      "name": "OTA Update",
+      "category": "Telecom",
+      "complexity_weight": 1.5,
+      "has_existing_tests": true,
+      "description": "Over-The-Air update mechanism for SIM card content and applets"
+    },
+    {
+      "name": "GlobalPlatform",
+      "category": "Security",
+      "complexity_weight": 1.5,
+      "has_existing_tests": true,
+      "description": "GlobalPlatform card management - secure channel, key management, applet lifecycle"
+    },
+    {
+      "name": "UICC Functionality",
+      "category": "Telecom",
+      "complexity_weight": 1.0,
+      "has_existing_tests": true,
+      "description": "UICC platform functionality - file system, PIN management, logical channels"
+    },
+    {
+      "name": "eSIM Profile",
+      "category": "Telecom",
+      "complexity_weight": 2.0,
+      "has_existing_tests": false,
+      "description": "eSIM profile download, installation, management, and switching"
+    },
+    {
+      "name": "NFC Contactless",
+      "category": "Telecom",
+      "complexity_weight": 1.5,
+      "has_existing_tests": true,
+      "description": "NFC contactless interface - APDU routing, HCE, secure element access"
+    },
+    {
+      "name": "Java Card Runtime",
+      "category": "Security",
+      "complexity_weight": 1.5,
+      "has_existing_tests": true,
+      "description": "Java Card runtime environment - applet installation, execution, crypto APIs"
+    },
+    {
+      "name": "USIM Application",
+      "category": "Telecom",
+      "complexity_weight": 1.0,
+      "has_existing_tests": true,
+      "description": "USIM application - authentication, key agreement, EF management"
+    },
+    {
+      "name": "PKI Certificate",
+      "category": "Security",
+      "complexity_weight": 2.0,
+      "has_existing_tests": false,
+      "description": "PKI certificate management - generation, storage, verification on card"
+    },
+    {
+      "name": "Secure Messaging",
+      "category": "Security",
+      "complexity_weight": 1.5,
+      "has_existing_tests": true,
+      "description": "Secure messaging protocols - SCP02, SCP03, MAC and encryption"
+    }
+  ],
+  "task_templates": [
+    {
+      "feature_name": null,
+      "name": "Environment setup",
+      "task_type": "SETUP",
+      "base_effort_hours": 8,
+      "scales_with_dut": true,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Set up test environment, tools, and connections for each DUT"
+    },
+    {
+      "feature_name": null,
+      "name": "Test plan review",
+      "task_type": "SETUP",
+      "base_effort_hours": 4,
+      "scales_with_dut": false,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Review and validate the test plan before execution"
+    },
+    {
+      "feature_name": null,
+      "name": "Execute test suite",
+      "task_type": "EXECUTION",
+      "base_effort_hours": 16,
+      "scales_with_dut": true,
+      "scales_with_profile": true,
+      "is_parallelizable": true,
+      "description": "Execute the full test suite for each DUT and profile combination"
+    },
+    {
+      "feature_name": null,
+      "name": "Regression testing",
+      "task_type": "EXECUTION",
+      "base_effort_hours": 12,
+      "scales_with_dut": true,
+      "scales_with_profile": true,
+      "is_parallelizable": true,
+      "description": "Execute regression test suite to verify no side effects"
+    },
+    {
+      "feature_name": null,
+      "name": "PR fix validation",
+      "task_type": "EXECUTION",
+      "base_effort_hours": 4,
+      "scales_with_dut": true,
+      "scales_with_profile": false,
+      "is_parallelizable": true,
+      "description": "Validate problem report fixes on each DUT"
+    },
+    {
+      "feature_name": null,
+      "name": "Result analysis",
+      "task_type": "ANALYSIS",
+      "base_effort_hours": 6,
+      "scales_with_dut": false,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Analyze test results, identify trends, and document findings"
+    },
+    {
+      "feature_name": null,
+      "name": "Test report writing",
+      "task_type": "REPORTING",
+      "base_effort_hours": 8,
+      "scales_with_dut": false,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Write formal test report with results summary and recommendations"
+    },
+    {
+      "feature_name": null,
+      "name": "New feature study",
+      "task_type": "STUDY",
+      "base_effort_hours": 16,
+      "scales_with_dut": false,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Study new feature specifications and design test approach"
+    },
+    {
+      "feature_name": null,
+      "name": "Test creation",
+      "task_type": "STUDY",
+      "base_effort_hours": 24,
+      "scales_with_dut": false,
+      "scales_with_profile": false,
+      "is_parallelizable": false,
+      "description": "Create new test scripts and test data for a feature"
+    }
+  ],
+  "dut_types": [
+    {"name": "Standard SIM", "category": "SIM", "complexity_multiplier": 1.0},
+    {"name": "USIM Card", "category": "SIM", "complexity_multiplier": 1.0},
+    {"name": "eSIM Module", "category": "eSIM", "complexity_multiplier": 1.5},
+    {"name": "UICC Platform", "category": "UICC", "complexity_multiplier": 1.2},
+    {"name": "Multi-app Card", "category": "SIM", "complexity_multiplier": 1.3}
+  ],
+  "test_profiles": [
+    {"name": "Standard Profile", "description": "Default test configuration", "effort_multiplier": 1.0},
+    {"name": "Extended Profile", "description": "Extended test suite with edge cases", "effort_multiplier": 1.3},
+    {"name": "Security Profile", "description": "Security-focused testing configuration", "effort_multiplier": 1.5},
+    {"name": "Performance Profile", "description": "Performance and stress testing", "effort_multiplier": 1.2}
+  ],
+  "configuration": {
+    "leader_effort_ratio": {"value": "0.5", "description": "Test leader gets this fraction of total tester effort"},
+    "pr_fix_base_hours": {"value": "4.0", "description": "Average hours per PR fix for testing"},
+    "new_feature_study_hours": {"value": "16.0", "description": "Hours to study and create tests for a new feature"},
+    "working_hours_per_day": {"value": "7.0", "description": "Productive hours per working day"},
+    "buffer_percentage": {"value": "10", "description": "Additional percentage buffer for unknowns"},
+    "estimation_number_prefix": {"value": "EST", "description": "Prefix for auto-generated estimation numbers"},
+    "request_number_prefix": {"value": "REQ", "description": "Prefix for auto-generated request numbers"}
+  },
+  "pr_complexity_hours": {
+    "simple": 2,
+    "medium": 4,
+    "complex": 8
+  }
+}

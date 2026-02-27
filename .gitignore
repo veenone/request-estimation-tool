@@ -1,0 +1,29 @@
+# Claude / AI
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.python-version
+*.egg-info/
+
+# Database
+data/estimation.db
+data/estimation.db-shm
+data/estimation.db-wal
+data/attachments/
+
+# .NET
+frontend_desktop/EstimationTool/bin/
+frontend_desktop/EstimationTool/obj/
+
+# Docs / generated
+CLAUDE.md
+IMPLEMENTATION_SUMMARY.txt
+IMPLEMENTATAION_SUMMARY.txt
+QUICK_START_REQUEST_INBOX.md
+REQUEST_INBOX_DOCUMENTATION.md
+REQUEST_INBOX_INDEX.md
+SPEC.md
