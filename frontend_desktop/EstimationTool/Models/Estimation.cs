@@ -6,6 +6,8 @@ public class Estimation
 {
     [JsonPropertyName("id")] public int Id { get; set; }
     [JsonPropertyName("request_id")] public int? RequestId { get; set; }
+    [JsonPropertyName("request_source")] public string? RequestSource { get; set; }
+    [JsonPropertyName("external_id")] public string? ExternalId { get; set; }
     [JsonPropertyName("estimation_number")] public string? EstimationNumber { get; set; }
     [JsonPropertyName("project_name")] public string ProjectName { get; set; } = "";
     [JsonPropertyName("project_type")] public string ProjectType { get; set; } = "";

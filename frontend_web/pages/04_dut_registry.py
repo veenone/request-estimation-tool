@@ -18,13 +18,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import DutType
 
-st.set_page_config(
-    page_title="DUT Registry — Estimation Tool",
-    page_icon="📱",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("📱 DUT Registry")
 st.markdown("Manage Device Under Test (DUT) types and configurations")
 

@@ -7,9 +7,9 @@ namespace EstimationTool.Forms.Panels;
 /// <summary>
 /// Manages external integration configurations for REDMINE, JIRA, and EMAIL.
 /// Each system gets its own settings section with Save, Test Connection, and
-/// Sync Now actions. All UI is built programmatically — no designer file.
+/// Sync Now actions. All UI control creation lives in IntegrationsPanel.Designer.cs.
 /// </summary>
-public sealed class IntegrationsPanel : UserControl
+public sealed partial class IntegrationsPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // Private IPC response types
@@ -70,217 +70,134 @@ public sealed class IntegrationsPanel : UserControl
     {
         _ipc = ipc;
 
-        BackColor = ThemeHelper.Background;
-        Dock = DockStyle.Fill;
-        Padding = new Padding(0);
-        AutoScroll = true;
+        // InitializeComponent creates minimal VS-safe controls (header, spacers).
+        InitializeComponent();
 
-        BuildLayout();
+        // Build the 3 system cards AFTER InitializeComponent — this code lives
+        // here (not in InitializeComponent) so VS Designer can't strip it out.
+        BuildAllSystemCards();
+
+        // Wire action buttons using the populated _systemControls list.
+        foreach (var sc in _systemControls)
+        {
+            var captured = sc;
+
+            var (save, test, sync) = FindButtonsForSystem(sc.SystemName);
+            if (save is not null) save.Click += async (_, _) => await SaveIntegrationAsync(captured);
+            if (test is not null) test.Click += async (_, _) => await TestConnectionAsync(captured);
+            if (sync is not null) sync.Click += async (_, _) => await SyncNowAsync(captured);
+        }
 
         HandleCreated += async (_, _) => await LoadDataAsync();
     }
 
     // -------------------------------------------------------------------------
-    // Layout construction
+    // Build all integration cards — called from constructor, NOT from
+    // InitializeComponent, so VS Designer can never strip this code.
     // -------------------------------------------------------------------------
 
-    private void BuildLayout()
+    private void BuildAllSystemCards()
     {
-        // Outer stack — everything docks Top inside an autoscroll UserControl
-        var header = new Label
-        {
-            Text = "Integrations",
-            Dock = DockStyle.Top,
-            Height = 52,
-            BackColor = ThemeHelper.Background,
-            ForeColor = ThemeHelper.Text,
-            Font = new Font("Segoe UI Semibold", 16f, FontStyle.Bold),
-            TextAlign = ContentAlignment.BottomLeft,
-            Padding = new Padding(0, 0, 0, 8),
-        };
-        Controls.Add(header);
+        // Apply styling that VS Designer would strip
+        AutoScroll = true;
+        BackColor = ThemeHelper.Background;
+        Padding = new Padding(16);
 
-        // Build a section panel for each known integration system.
-        // We add them in reverse so the first system ends up visually on top
-        // after DockStyle.Top stacking.
-        for (int i = KnownSystems.Length - 1; i >= 0; i--)
-        {
-            string system = KnownSystems[i];
-            var section = BuildSystemSection(system, out var controls);
-            _systemControls.Add(controls);
-            Controls.Add(section);
+        // Header label
+        lblHeader.Text = "Integrations";
+        lblHeader.Dock = DockStyle.Top;
+        lblHeader.Height = 44;
+        lblHeader.BackColor = Color.Transparent;
+        lblHeader.ForeColor = ThemeHelper.Text;
+        lblHeader.Font = new Font("Segoe UI Semibold", 18f, FontStyle.Bold);
+        lblHeader.TextAlign = ContentAlignment.BottomLeft;
+        lblHeader.Padding = new Padding(0, 0, 0, 8);
 
-            // Spacer between sections
-            Controls.Add(new Panel
+        // Spacers
+        pnlSpacerAfterRedmine.Dock = DockStyle.Top;
+        pnlSpacerAfterRedmine.Height = 16;
+        pnlSpacerAfterRedmine.BackColor = Color.Transparent;
+
+        pnlSpacerAfterJira.Dock = DockStyle.Top;
+        pnlSpacerAfterJira.Height = 16;
+        pnlSpacerAfterJira.BackColor = Color.Transparent;
+
+        pnlBottomPadding.Dock = DockStyle.Top;
+        pnlBottomPadding.Height = 24;
+        pnlBottomPadding.BackColor = Color.Transparent;
+
+        // Build the three system cards
+        BuildSystemSection("REDMINE",
+            out pnlCardRedmine, out lblTitleRedmine, out pnlDividerRedmine,
+            out tblRedmine, out chkEnabledRedmine, out txtBaseUrlRedmine,
+            out txtApiKeyRedmine, out txtUsernameRedmine, out txtConfigRedmine,
+            out btnRowRedmine, out btnSaveRedmine, out btnTestRedmine, out btnSyncRedmine,
+            out lblResultRedmine, out lblLastSyncRedmine);
+
+        BuildSystemSection("JIRA",
+            out pnlCardJira, out lblTitleJira, out pnlDividerJira,
+            out tblJira, out chkEnabledJira, out txtBaseUrlJira,
+            out txtApiKeyJira, out txtUsernameJira, out txtConfigJira,
+            out btnRowJira, out btnSaveJira, out btnTestJira, out btnSyncJira,
+            out lblResultJira, out lblLastSyncJira);
+
+        BuildSystemSection("EMAIL",
+            out pnlCardEmail, out lblTitleEmail, out pnlDividerEmail,
+            out tblEmail, out chkEnabledEmail, out txtBaseUrlEmail,
+            out txtApiKeyEmail, out txtUsernameEmail, out txtConfigEmail,
+            out btnRowEmail, out btnSaveEmail, out btnTestEmail, out btnSyncEmail,
+            out lblResultEmail, out lblLastSyncEmail);
+
+        // Populate _systemControls for event wiring and data loading
+        _systemControls.AddRange(new[]
+        {
+            new SystemControls
             {
-                Dock = DockStyle.Top,
-                Height = 12,
-                BackColor = ThemeHelper.Background,
-            });
-        }
+                SystemName = "REDMINE", ChkEnabled = chkEnabledRedmine,
+                TxtBaseUrl = txtBaseUrlRedmine, TxtApiKey = txtApiKeyRedmine,
+                TxtUsername = txtUsernameRedmine, TxtConfig = txtConfigRedmine,
+                LblResult = lblResultRedmine, LblLastSync = lblLastSyncRedmine,
+            },
+            new SystemControls
+            {
+                SystemName = "JIRA", ChkEnabled = chkEnabledJira,
+                TxtBaseUrl = txtBaseUrlJira, TxtApiKey = txtApiKeyJira,
+                TxtUsername = txtUsernameJira, TxtConfig = txtConfigJira,
+                LblResult = lblResultJira, LblLastSync = lblLastSyncJira,
+            },
+            new SystemControls
+            {
+                SystemName = "EMAIL", ChkEnabled = chkEnabledEmail,
+                TxtBaseUrl = txtBaseUrlEmail, TxtApiKey = txtApiKeyEmail,
+                TxtUsername = txtUsernameEmail, TxtConfig = txtConfigEmail,
+                LblResult = lblResultEmail, LblLastSync = lblLastSyncEmail,
+            },
+        });
 
-        // Bottom padding
-        Controls.Add(new Panel { Dock = DockStyle.Top, Height = 16, BackColor = ThemeHelper.Background });
+        // Remove the VS-generated controls order and re-add in correct
+        // reverse DockStyle.Top stacking order (last added = topmost).
+        Controls.Clear();
+        Controls.Add(pnlBottomPadding);
+        Controls.Add(pnlCardEmail);
+        Controls.Add(pnlSpacerAfterJira);
+        Controls.Add(pnlCardJira);
+        Controls.Add(pnlSpacerAfterRedmine);
+        Controls.Add(pnlCardRedmine);
+        Controls.Add(lblHeader);
     }
 
-    private Panel BuildSystemSection(string systemName, out SystemControls controls)
-    {
-        // Outer card panel
-        var card = new Panel
+    /// <summary>
+    /// Returns the (Save, Test, Sync) buttons for the given system name by
+    /// matching the Designer field names that follow a consistent naming pattern.
+    /// </summary>
+    private (Button? save, Button? test, Button? sync) FindButtonsForSystem(string systemName) =>
+        systemName.ToUpperInvariant() switch
         {
-            Dock = DockStyle.Top,
-            BackColor = ThemeHelper.Surface,
-            Padding = new Padding(16, 12, 16, 14),
-            AutoSize = false,
-            Height = 330,
+            "REDMINE" => (btnSaveRedmine, btnTestRedmine, btnSyncRedmine),
+            "JIRA"    => (btnSaveJira,    btnTestJira,    btnSyncJira),
+            "EMAIL"   => (btnSaveEmail,   btnTestEmail,   btnSyncEmail),
+            _         => (null, null, null),
         };
-        card.Paint += PaintCardBorder;
-
-        // System name header
-        var titleLabel = new Label
-        {
-            Text = systemName,
-            Dock = DockStyle.Top,
-            Height = 28,
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.Text,
-            Font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold),
-            TextAlign = ContentAlignment.BottomLeft,
-        };
-        card.Controls.Add(titleLabel);
-
-        // Divider line below system name
-        var divider = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 1,
-            BackColor = ThemeHelper.Border,
-            Margin = new Padding(0, 4, 0, 8),
-        };
-        card.Controls.Add(divider);
-
-        // ---- Field rows using a 2-column TableLayoutPanel ----
-        var fieldGrid = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            BackColor = Color.Transparent,
-            ColumnCount = 4,   // label | field | label | field
-            RowCount = 3,
-            Padding = new Padding(0, 6, 0, 6),
-        };
-        fieldGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100f));
-        fieldGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-        fieldGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100f));
-        fieldGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-        for (int r = 0; r < 3; r++)
-            fieldGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34f));
-
-        // Row 0: Enabled | Base URL
-        var chkEnabled = new CheckBox
-        {
-            Text = "Enabled",
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.Text,
-            Font = new Font("Segoe UI", 9f),
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 4, 0, 0),
-        };
-        fieldGrid.Controls.Add(chkEnabled, 0, 0);
-        fieldGrid.SetColumnSpan(chkEnabled, 1);
-
-        var txtBaseUrl = MakeTextBox();
-        fieldGrid.Controls.Add(MakeCaptionPanel("Base URL", txtBaseUrl), 1, 0);
-        fieldGrid.SetColumnSpan(fieldGrid.GetControlFromPosition(1, 0)!, 3); // Base URL spans cols 1–3
-
-        // Row 1: API Key | Username
-        var txtApiKey = MakeTextBox(passwordChar: true);
-        var txtUsername = MakeTextBox();
-        fieldGrid.Controls.Add(MakeCaptionPanel("API Key", txtApiKey), 0, 1);
-        fieldGrid.SetColumnSpan(fieldGrid.GetControlFromPosition(0, 1)!, 2);
-        fieldGrid.Controls.Add(MakeCaptionPanel("Username", txtUsername), 2, 1);
-        fieldGrid.SetColumnSpan(fieldGrid.GetControlFromPosition(2, 1)!, 2);
-
-        // Row 2: Additional Config (JSON) — spans all columns
-        var txtConfig = MakeTextBox(multiline: true);
-        txtConfig.Height = 64;
-        fieldGrid.Controls.Add(MakeCaptionPanel("Additional Config (JSON)", txtConfig), 0, 2);
-        fieldGrid.SetColumnSpan(fieldGrid.GetControlFromPosition(0, 2)!, 4);
-
-        card.Controls.Add(fieldGrid);
-
-        // ---- Action buttons row ----
-        var btnRow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-            BackColor = Color.Transparent,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Padding = new Padding(0, 4, 0, 0),
-        };
-
-        var btnSave = MakeActionButton("Save");
-        var btnTest = MakeActionButton("Test Connection");
-        var btnSync = MakeActionButton("Sync Now");
-        ThemeHelper.StyleButton(btnSave, isPrimary: true);
-        ThemeHelper.StyleButton(btnTest, isPrimary: false);
-        ThemeHelper.StyleButton(btnSync, isPrimary: false);
-
-        btnRow.Controls.Add(btnSave);
-        btnRow.Controls.Add(btnTest);
-        btnRow.Controls.Add(btnSync);
-        card.Controls.Add(btnRow);
-
-        // ---- Result label (shown after Test/Sync) ----
-        var lblResult = new Label
-        {
-            Dock = DockStyle.Top,
-            Height = 22,
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 8.5f),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "",
-            AutoEllipsis = true,
-        };
-        card.Controls.Add(lblResult);
-
-        // ---- Last sync timestamp ----
-        var lblLastSync = new Label
-        {
-            Dock = DockStyle.Top,
-            Height = 20,
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 8f, FontStyle.Italic),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "Last sync: never",
-        };
-        card.Controls.Add(lblLastSync);
-
-        // Bundle controls for later population and event wiring
-        controls = new SystemControls
-        {
-            SystemName = systemName,
-            ChkEnabled  = chkEnabled,
-            TxtBaseUrl  = txtBaseUrl,
-            TxtApiKey   = txtApiKey,
-            TxtUsername = txtUsername,
-            TxtConfig   = txtConfig,
-            LblResult   = lblResult,
-            LblLastSync = lblLastSync,
-        };
-
-        // Wire events with captured references
-        var capturedControls = controls;
-        btnSave.Click += async (_, _) => await SaveIntegrationAsync(capturedControls);
-        btnTest.Click += async (_, _) => await TestConnectionAsync(capturedControls);
-        btnSync.Click += async (_, _) => await SyncNowAsync(capturedControls);
-
-        return card;
-    }
 
     // -------------------------------------------------------------------------
     // Data loading
@@ -353,12 +270,12 @@ public sealed class IntegrationsPanel : UserControl
 
             await _ipc.SendCommandAsync<object>("update_integration", new
             {
-                system_name           = sc.SystemName,
-                base_url              = sc.TxtBaseUrl.Text.Trim(),
-                api_key               = apiKey,
-                username              = sc.TxtUsername.Text.Trim(),
+                system_name            = sc.SystemName,
+                base_url               = sc.TxtBaseUrl.Text.Trim(),
+                api_key                = apiKey,
+                username               = sc.TxtUsername.Text.Trim(),
                 additional_config_json = sc.TxtConfig.Text.Trim(),
-                enabled               = sc.ChkEnabled.Checked,
+                enabled                = sc.ChkEnabled.Checked,
             });
 
             SetResult(sc.LblResult, success: true, "Settings saved.");
@@ -411,7 +328,8 @@ public sealed class IntegrationsPanel : UserControl
             if (result.Errors.Count > 0)
                 summary += $" | Errors: {string.Join("; ", result.Errors)}";
 
-            bool success = result.Status?.ToUpperInvariant() == "OK" || result.ItemsFailed == 0;
+            bool success = result.Status?.ToUpperInvariant() is "OK" or "SUCCESS" or "PARTIAL"
+                           && result.ItemsFailed == 0;
             SetResult(sc.LblResult, success, summary);
 
             // Refresh last sync label with current local time as a best approximation
@@ -441,83 +359,17 @@ public sealed class IntegrationsPanel : UserControl
     {
         var lbl = new Label
         {
-            Text = $"Failed to load integrations: {message}",
+            Text      = $"Failed to load integrations: {message}",
             ForeColor = ThemeHelper.FeasibilityRed,
             BackColor = Color.Transparent,
-            Dock = DockStyle.Top,
-            AutoSize = false,
-            Height = 32,
+            Dock      = DockStyle.Top,
+            AutoSize  = false,
+            Height    = 32,
             TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(4, 0, 0, 0),
-            Font = new Font("Segoe UI", 9.5f),
+            Padding   = new Padding(4, 0, 0, 0),
+            Font      = new Font("Segoe UI", 9.5f),
         };
         Controls.Add(lbl);
         lbl.BringToFront();
-    }
-
-    // -------------------------------------------------------------------------
-    // Control factory helpers
-    // -------------------------------------------------------------------------
-
-    private static TextBox MakeTextBox(bool passwordChar = false, bool multiline = false)
-    {
-        var txt = new TextBox
-        {
-            Dock = DockStyle.Fill,
-            Multiline = multiline,
-            ScrollBars = multiline ? ScrollBars.Vertical : ScrollBars.None,
-        };
-        if (passwordChar) txt.PasswordChar = '*';
-        ThemeHelper.StyleTextBox(txt);
-        return txt;
-    }
-
-    /// <summary>
-    /// Wraps a caption label and input control into a vertical pair panel.
-    /// </summary>
-    private static Panel MakeCaptionPanel(string caption, Control input)
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            Padding = new Padding(0, 0, 8, 0),
-        };
-
-        var lbl = new Label
-        {
-            Text = caption,
-            Dock = DockStyle.Top,
-            Height = 16,
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 8f),
-            TextAlign = ContentAlignment.BottomLeft,
-            AutoSize = false,
-        };
-
-        input.Dock = DockStyle.Fill;
-        panel.Controls.Add(input);
-        panel.Controls.Add(lbl);
-        return panel;
-    }
-
-    private static Button MakeActionButton(string text)
-    {
-        return new Button
-        {
-            Text = text,
-            Height = 30,
-            AutoSize = false,
-            Width = text.Length > 10 ? 150 : 90,
-            Margin = new Padding(0, 0, 8, 0),
-        };
-    }
-
-    private static void PaintCardBorder(object? sender, PaintEventArgs e)
-    {
-        if (sender is not Panel p) return;
-        using var pen = new Pen(ThemeHelper.Border, 1f);
-        e.Graphics.DrawRectangle(pen, 0, 0, p.Width - 1, p.Height - 1);
     }
 }

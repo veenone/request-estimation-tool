@@ -32,10 +32,13 @@ from ..engine.feasibility import assess_risks
 from .app import get_db
 from .schemas import (
     CalibrationResultOut,
+    CalculateInput,
     CalculationResultOut,
     ConfigurationOut,
     ConfigurationUpdate,
     DashboardStatsOut,
+    RecentEstimationOut,
+    RecentRequestOut,
     DutTypeCreate,
     DutTypeOut,
     DutTypeUpdate,
@@ -306,10 +309,6 @@ def list_requests(status: str | None = None, db: Session = Depends(get_db)):
 @router.post("/requests", response_model=RequestOut, status_code=201)
 def create_request(data: RequestCreate, db: Session = Depends(get_db)):
     req_data = data.model_dump()
-    if not req_data.get("request_number"):
-        req_data["request_number"] = _generate_number(
-            db, "request_number_prefix", Request, "request_number"
-        )
     req = Request(**req_data)
     db.add(req)
     db.commit()
@@ -358,23 +357,27 @@ def update_configuration(key: str, data: ConfigurationUpdate, db: Session = Depe
 # ── Estimations ──────────────────────────────────────────
 
 @router.post("/estimations/calculate", response_model=CalculationResultOut)
-def calculate_estimation_preview(data: EstimationCreate, db: Session = Depends(get_db)):
+def calculate_estimation_preview(data: CalculateInput, db: Session = Depends(get_db)):
     """Run calculation from wizard inputs without persisting to DB."""
     leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
     study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
     hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
 
-    features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
+    feature_ids = data.resolved_feature_ids
+    new_feature_ids = data.resolved_new_feature_ids
+    delivery = data.expected_delivery or data.delivery_date
+
+    features = db.query(Feature).filter(Feature.id.in_(feature_ids)).all()
     templates = db.query(TaskTemplate).filter(
-        (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
+        (TaskTemplate.feature_id.in_(feature_ids)) | (TaskTemplate.feature_id.is_(None))
     ).all()
 
     task_inputs: list[TaskInput] = []
     for tmpl in templates:
         feature = next((f for f in features if f.id == tmpl.feature_id), None)
         cw = feature.complexity_weight if feature else 1.0
-        is_study = tmpl.feature_id is not None and tmpl.feature_id in data.new_feature_ids
+        is_study = tmpl.feature_id is not None and tmpl.feature_id in new_feature_ids
         task_inputs.append(TaskInput(
             name=tmpl.name,
             task_type=tmpl.task_type,
@@ -388,7 +391,7 @@ def calculate_estimation_preview(data: EstimationCreate, db: Session = Depends(g
 
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
-    new_feature_count = len(data.new_feature_ids)
+    new_feature_count = len(new_feature_ids)
 
     calc_input = EstimationInput(
         project_type=data.project_type,
@@ -413,10 +416,10 @@ def calculate_estimation_preview(data: EstimationCreate, db: Session = Depends(g
 
     ref_ids = data.reference_project_ids or []
     risks = assess_risks(
-        total_features=len(data.feature_ids),
+        total_features=len(feature_ids),
         new_feature_count=new_feature_count,
         reference_project_count=len(ref_ids),
-        delivery_date=data.expected_delivery,
+        delivery_date=delivery,
         dut_profile_combinations=len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count,
     )
 
@@ -988,7 +991,66 @@ def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, d
 
     db.commit()
     db.refresh(estimation)
+
+    # Auto-export to external system when estimation is finalized or approved
+    if target in ("FINAL", "APPROVED") and estimation.request_id:
+        _try_export_estimation(estimation, db)
+
     return estimation
+
+
+def _try_export_estimation(estimation: "Estimation", db: Session) -> None:
+    """Attempt to export estimation results back to the originating external system."""
+    req = db.get(Request, estimation.request_id)
+    if not req or not req.external_id or req.request_source == "MANUAL":
+        return
+
+    try:
+        from ..integrations.service import sync_export
+
+        estimation_data = {
+            "external_id": req.external_id,
+            "grand_total_hours": estimation.grand_total_hours,
+            "feasibility_status": estimation.feasibility_status,
+            "estimation_number": estimation.estimation_number or f"EST-{estimation.id}",
+        }
+        sync_export(req.request_source, estimation_data, db)
+    except Exception:
+        # Export failure should not block the status transition
+        pass
+
+
+@router.post("/estimations/{estimation_id}/export")
+def export_estimation_to_external(estimation_id: int, db: Session = Depends(get_db)):
+    """Manually export estimation results to the linked external system (Redmine/Jira)."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if not estimation.request_id:
+        raise HTTPException(400, "Estimation is not linked to a request")
+
+    req = db.get(Request, estimation.request_id)
+    if not req or not req.external_id:
+        raise HTTPException(400, "Linked request has no external ID")
+    if req.request_source == "MANUAL":
+        raise HTTPException(400, "Request source is MANUAL — no external system to export to")
+
+    from ..integrations.service import sync_export
+
+    estimation_data = {
+        "external_id": req.external_id,
+        "grand_total_hours": estimation.grand_total_hours,
+        "feasibility_status": estimation.feasibility_status,
+        "estimation_number": estimation.estimation_number or f"EST-{estimation.id}",
+    }
+    result = sync_export(req.request_source, estimation_data, db)
+
+    return {
+        "status": result.status.value,
+        "system": result.system,
+        "items_updated": result.items_updated,
+        "errors": result.errors,
+    }
 
 
 # ── Request detail with linked estimations ───────────────
@@ -1115,6 +1177,39 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
 
     avg_hours = db.query(sqlfunc.avg(Estimation.grand_total_hours)).scalar() or 0
 
+    # Recent estimations (last 10)
+    recent_est = db.query(Estimation).order_by(
+        Estimation.created_at.desc()
+    ).limit(10).all()
+    recent_estimations = [
+        RecentEstimationOut(
+            id=e.id,
+            estimation_number=e.estimation_number,
+            project_name=e.project_name,
+            grand_total_hours=round(e.grand_total_hours, 1),
+            feasibility_status=e.feasibility_status,
+            status=e.status,
+            created_at=e.created_at.strftime("%Y-%m-%d %H:%M") if e.created_at else None,
+        )
+        for e in recent_est
+    ]
+
+    # Recent requests (last 10)
+    recent_req = db.query(Request).order_by(
+        Request.created_at.desc()
+    ).limit(10).all()
+    recent_requests = [
+        RecentRequestOut(
+            id=r.id,
+            request_number=r.request_number,
+            title=r.title,
+            priority=r.priority,
+            status=r.status,
+            created_at=r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else None,
+        )
+        for r in recent_req
+    ]
+
     return DashboardStatsOut(
         total_requests=total_requests,
         requests_new=requests_new,
@@ -1125,4 +1220,6 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         estimations_final=estimations_final,
         estimations_approved=estimations_approved,
         avg_grand_total_hours=round(float(avg_hours), 1),
+        recent_estimations=recent_estimations,
+        recent_requests=recent_requests,
     )

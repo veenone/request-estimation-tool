@@ -8,7 +8,7 @@ namespace EstimationTool.Forms.Panels;
 /// Panel for managing the feature catalog. Supports creating, editing, and
 /// deleting features via the Python IPC backend.
 /// </summary>
-public class FeatureCatalogPanel : UserControl
+public partial class FeatureCatalogPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -26,12 +26,6 @@ public class FeatureCatalogPanel : UserControl
 
     private readonly BackendApiService _ipc;
 
-    private readonly DataGridView _grid;
-    private readonly Button _btnAdd;
-    private readonly Button _btnEdit;
-    private readonly Button _btnDelete;
-    private readonly Label _headerLabel;
-
     private List<Feature> _features = new();
 
     // -------------------------------------------------------------------------
@@ -42,72 +36,11 @@ public class FeatureCatalogPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
+        Dock    = DockStyle.Fill;
         Padding = new Padding(0);
 
-        // --- Header ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 48,
-        };
+        InitializeComponent();
 
-        _headerLabel = new Label
-        {
-            Text = "Feature Catalog",
-            AutoSize = true,
-            Location = new Point(0, 8),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnAdd = new Button { Text = "Add Feature", Width = 110, Height = 32, Location = new Point(0, 4) };
-        _btnEdit = new Button { Text = "Edit", Width = 80, Height = 32, Location = new Point(116, 4) };
-        _btnDelete = new Button { Text = "Delete", Width = 80, Height = 32, Location = new Point(202, 4) };
-
-        ThemeHelper.StyleButton(_btnAdd, isPrimary: true);
-        ThemeHelper.StyleButton(_btnEdit, isPrimary: false);
-        ThemeHelper.StyleButton(_btnDelete, isPrimary: false);
-
-        toolbar.Controls.Add(_btnAdd);
-        toolbar.Controls.Add(_btnEdit);
-        toolbar.Controls.Add(_btnDelete);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id",               HeaderText = "ID",                FillWeight = 8  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name",             HeaderText = "Name",              FillWeight = 30 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Category",         HeaderText = "Category",          FillWeight = 20 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ComplexityWeight", HeaderText = "Complexity Weight", FillWeight = 18 });
-        _grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "HasTests",        HeaderText = "Has Tests",         FillWeight = 14 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Description",      HeaderText = "Description",       FillWeight = 30 });
-
-        // -------------------------------------------------------------------------
-        // Layout
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Events
-        // -------------------------------------------------------------------------
         _btnAdd.Click    += BtnAdd_Click;
         _btnEdit.Click   += BtnEdit_Click;
         _btnDelete.Click += BtnDelete_Click;

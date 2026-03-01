@@ -46,14 +46,6 @@ from reports.excel_report import ExcelReportData, generate_excel_report
 from reports.word_report import generate_word_report
 from sqlalchemy.orm import Session
 
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="New Estimation — Wizard",
-    page_icon="📝",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 # ── Session-state initialisation ──────────────────────────────────────────────
 WIZARD_DEFAULTS: dict = {
     # Step 1
@@ -390,6 +382,12 @@ def _save_to_database() -> int:
         )
         session.add(estimation)
         session.flush()
+
+        # Auto-update linked request status
+        if request_id:
+            req = session.get(Request, request_id)
+            if req and req.status == "NEW":
+                req.status = "IN_ESTIMATION"
 
         for task_result in result.tasks:
             session.add(

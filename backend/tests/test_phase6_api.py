@@ -50,9 +50,14 @@ def _create_estimation(client) -> dict:
     return resp.json()
 
 
+_request_counter = 0
+
 def _create_request(client) -> dict:
     """Helper to create a request."""
+    global _request_counter
+    _request_counter += 1
     resp = client.post("/api/requests", json={
+        "request_number": f"REQ_26/{_request_counter:04d}",
         "title": "Test Request",
         "requester_name": "John Doe",
         "requester_email": "john@example.com",

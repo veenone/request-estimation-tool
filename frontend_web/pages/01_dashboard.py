@@ -20,13 +20,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import Estimation, Request
 
-st.set_page_config(
-    page_title="Dashboard — Estimation Tool",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("📊 Dashboard")
 st.markdown("View all estimations and requests at a glance")
 
@@ -40,21 +33,28 @@ def get_estimations_data():
         estimations = session.query(Estimation).order_by(
             desc(Estimation.created_at)
         ).all()
-        return [
-            {
+        results = []
+        for e in estimations:
+            # Eagerly resolve request while session is open
+            req_num = "—"
+            if e.request_id:
+                req = session.get(Request, e.request_id)
+                if req:
+                    req_num = req.request_number
+            results.append({
                 "ID": e.id,
                 "Estimation #": e.estimation_number or f"EST-{e.id}",
                 "Project Name": e.project_name,
                 "Project Type": e.project_type,
+                "Request #": req_num,
                 "Total Hours": round(e.grand_total_hours, 1),
                 "Total Days": round(e.grand_total_days, 1),
                 "Feasibility": e.feasibility_status,
                 "Status": e.status,
                 "Created": e.created_at.strftime("%Y-%m-%d") if e.created_at else "",
                 "Created By": e.created_by or "N/A",
-            }
-            for e in estimations
-        ]
+            })
+        return results
 
 
 @st.cache_data(ttl=60)
@@ -64,8 +64,14 @@ def get_requests_data():
         requests = session.query(Request).order_by(
             desc(Request.created_at)
         ).all()
-        return [
-            {
+        results = []
+        for r in requests:
+            # Find latest linked estimation
+            latest_est = session.query(Estimation).filter(
+                Estimation.request_id == r.id
+            ).order_by(desc(Estimation.created_at)).first()
+            est_num = latest_est.estimation_number or f"EST-{latest_est.id}" if latest_est else "—"
+            results.append({
                 "ID": r.id,
                 "Request #": r.request_number,
                 "Title": r.title,
@@ -73,11 +79,11 @@ def get_requests_data():
                 "Business Unit": r.business_unit or "N/A",
                 "Status": r.status,
                 "Priority": r.priority,
+                "Estimation #": est_num,
                 "Received": r.received_date.strftime("%Y-%m-%d") if r.received_date else "",
                 "Created": r.created_at.strftime("%Y-%m-%d") if r.created_at else "",
-            }
-            for r in requests
-        ]
+            })
+        return results
 
 
 @st.cache_data(ttl=60)
@@ -249,6 +255,7 @@ def create_estimations_tab():
                 "Estimation #": st.column_config.TextColumn(width="small"),
                 "Project Name": st.column_config.TextColumn(width="medium"),
                 "Project Type": st.column_config.TextColumn(width="small"),
+                "Request #": st.column_config.TextColumn(width="small"),
                 "Total Hours": st.column_config.NumberColumn(width="small"),
                 "Total Days": st.column_config.NumberColumn(width="small"),
                 "Feasibility": st.column_config.TextColumn(width="small"),
@@ -265,7 +272,7 @@ def create_estimations_tab():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("📋 View Estimation Details"):
+            if st.button("📋 View Estimation Details", key="est_view_btn"):
                 selected_id = st.selectbox(
                     "Select estimation",
                     [f"{e['Estimation #']} - {e['Project Name']}" for e in filtered_data],
@@ -279,17 +286,18 @@ def create_estimations_tab():
                 st.success(f"Would navigate to estimation detail view for ID {est_id}")
 
         with col2:
-            if st.button("📊 Export to CSV"):
+            if st.button("📊 Export to CSV", key="est_export_btn"):
                 csv = df.to_csv(index=False)
                 st.download_button(
                     label="Download CSV",
                     data=csv,
                     file_name=f"estimations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
+                    key="est_download_csv",
                 )
 
         with col3:
-            if st.button("🔄 Refresh Data"):
+            if st.button("🔄 Refresh Data", key="est_refresh_btn"):
                 st.cache_data.clear()
                 st.rerun()
     else:
@@ -404,6 +412,7 @@ def create_requests_tab():
                 "Business Unit": st.column_config.TextColumn(width="small"),
                 "Status": st.column_config.TextColumn(width="small"),
                 "Priority": st.column_config.TextColumn(width="small"),
+                "Estimation #": st.column_config.TextColumn(width="small"),
                 "Received": st.column_config.TextColumn(width="small"),
                 "Created": st.column_config.TextColumn(width="small"),
             },
@@ -416,7 +425,7 @@ def create_requests_tab():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("📋 View Request Details"):
+            if st.button("📋 View Request Details", key="req_view_btn"):
                 selected_id = st.selectbox(
                     "Select request",
                     [f"{r['Request #']} - {r['Title']}" for r in filtered_data],
@@ -430,17 +439,18 @@ def create_requests_tab():
                 st.success(f"Would navigate to request detail view for ID {req_id}")
 
         with col2:
-            if st.button("📊 Export to CSV"):
+            if st.button("📊 Export to CSV", key="req_export_btn"):
                 csv = df.to_csv(index=False)
                 st.download_button(
                     label="Download CSV",
                     data=csv,
                     file_name=f"requests_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
+                    key="req_download_csv",
                 )
 
         with col3:
-            if st.button("🔄 Refresh Data"):
+            if st.button("🔄 Refresh Data", key="req_refresh_btn"):
                 st.cache_data.clear()
                 st.rerun()
     else:

@@ -18,13 +18,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import TestProfile
 
-st.set_page_config(
-    page_title="Test Profiles — Estimation Tool",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("⚙️ Test Profiles")
 st.markdown("Manage test profile configurations and effort multipliers")
 

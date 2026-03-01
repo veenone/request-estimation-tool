@@ -20,13 +20,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import HistoricalProject
 
-st.set_page_config(
-    page_title="Project History — Estimation Tool",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("📊 Project History")
 st.markdown("Track completed projects and analyze estimation accuracy")
 

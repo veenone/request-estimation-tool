@@ -20,13 +20,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import Feature, TaskTemplate
 
-st.set_page_config(
-    page_title="Feature Catalog — Estimation Tool",
-    page_icon="🗂️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("🗂️ Feature Catalog")
 st.markdown("Manage test features and task templates")
 

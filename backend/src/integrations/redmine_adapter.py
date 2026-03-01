@@ -30,8 +30,26 @@ class RedmineAdapter(BaseAdapter):
         super().__init__(config)
         self.project_id = self.additional_config.get("project_id", "")
         self.tracker_id = self.additional_config.get("tracker_id")
-        self.custom_fields = self.additional_config.get("custom_fields", {})
-        # custom_fields example: {"effort_hours": 1, "feasibility": 2, "estimation_number": 3}
+        # Support both nested custom_fields dict and flat *_field_id keys from UI
+        custom_fields = self.additional_config.get("custom_fields", {})
+        if not custom_fields:
+            # Map flat UI keys to the expected format
+            for ui_key, cf_key in [
+                ("effort_hours_field_id", "effort_hours"),
+                ("feasibility_field_id", "feasibility"),
+                ("estimation_number_field_id", "estimation_number"),
+            ]:
+                val = self.additional_config.get(ui_key)
+                if val:
+                    # "estimated_hours" or "0" => use built-in field
+                    if str(val).strip().lower() == "estimated_hours" or str(val).strip() == "0":
+                        custom_fields[cf_key] = "estimated_hours"
+                    else:
+                        try:
+                            custom_fields[cf_key] = int(val)
+                        except (ValueError, TypeError):
+                            pass
+        self.custom_fields = custom_fields
         self.timeout = int(self.additional_config.get("timeout", 30))
 
     def _headers(self) -> dict[str, str]:
@@ -131,6 +149,7 @@ class RedmineAdapter(BaseAdapter):
                 items_created=len(imported),
                 items_failed=len(errors),
                 errors=errors,
+                imported_items=imported,
             )
         except Exception as e:
             return SyncResult(
@@ -158,13 +177,19 @@ class RedmineAdapter(BaseAdapter):
             update_data: dict[str, Any] = {"issue": {"notes": ""}}
             custom_field_values = []
 
-            # Map estimation fields to Redmine custom fields
+            # Map estimation fields to Redmine fields
             cf = self.custom_fields
+            effort_hours_val = estimation_data.get("grand_total_hours", 0)
             if "effort_hours" in cf:
-                custom_field_values.append({
-                    "id": cf["effort_hours"],
-                    "value": str(estimation_data.get("grand_total_hours", 0)),
-                })
+                effort_cf = cf["effort_hours"]
+                if effort_cf == "estimated_hours" or effort_cf == 0:
+                    # Use Redmine's built-in estimated_hours field
+                    update_data["issue"]["estimated_hours"] = float(effort_hours_val or 0)
+                else:
+                    custom_field_values.append({
+                        "id": effort_cf,
+                        "value": str(effort_hours_val or 0),
+                    })
             if "feasibility" in cf:
                 custom_field_values.append({
                     "id": cf["feasibility"],

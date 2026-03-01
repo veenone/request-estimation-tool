@@ -3,77 +3,51 @@ using EstimationTool.Services;
 
 namespace EstimationTool.Forms;
 
-public class MainForm : Form
+public partial class MainForm : Form
 {
     private readonly BackendApiService _ipc;
-    private readonly Panel _sidebar;
-    private readonly Panel _contentArea;
-    private readonly Label _statusLabel;
-    private readonly Panel _statusBar;
     private Button? _activeButton;
     private UserControl? _currentPanel;
 
     private readonly record struct NavItem(string Name, string Label, string Icon);
 
-    private static readonly NavItem[] NavItems =
+    /// <summary>
+    /// Sidebar navigation grouped by scope. A null NavItem marks the start of
+    /// a new section whose header text is stored in the Label field.
+    /// </summary>
+    private static readonly (string? SectionHeader, NavItem[] Items)[] NavSections =
     [
-        new("Dashboard", "Dashboard", "\u2302"),
-        new("Requests", "Request Inbox", "\u2709"),
-        new("NewEstimation", "New Estimation", "\u2795"),
-        new("Features", "Feature Catalog", "\u2605"),
-        new("DutRegistry", "DUT Registry", "\u2699"),
-        new("Profiles", "Test Profiles", "\u2263"),
-        new("History", "History", "\u231A"),
-        new("Team", "Team", "\u263A"),
-        new("Integrations", "Integrations", "\u21C4"),
-        new("Settings", "Settings", "\u2630"),
+        ("OVERVIEW", [
+            new("Dashboard",      "Dashboard",     "\u2302"),
+            new("Requests",       "Request Inbox",  "\u2709"),
+        ]),
+        ("ESTIMATION", [
+            new("NewEstimation",     "New Estimation",    "\u2795"),
+            new("EstimationDetail",  "Estimation Detail", "\u2630"),
+        ]),
+        ("DATA MANAGEMENT", [
+            new("Features",       "Feature Catalog", "\u2605"),
+            new("DutRegistry",    "DUT Registry",    "\u2699"),
+            new("Profiles",       "Test Profiles",   "\u2263"),
+            new("History",        "Historical Projects", "\u231A"),
+            new("Team",           "Team Members",    "\u263A"),
+        ]),
+        ("ADMINISTRATION", [
+            new("Settings",       "Settings",       "\u2630"),
+            new("Integrations",   "Integrations",   "\u21C4"),
+        ]),
     ];
 
     public MainForm(BackendApiService ipcService)
     {
         _ipc = ipcService;
 
-        Text = "Test Effort Estimation Tool";
-        Size = new Size(1400, 900);
-        MinimumSize = new Size(1100, 700);
-        StartPosition = FormStartPosition.CenterScreen;
-        BackColor = ThemeHelper.Background;
-        ForeColor = ThemeHelper.Text;
-        Font = new Font("Segoe UI", 9.5f);
+        InitializeComponent();
 
-        // Status bar
-        _statusBar = new Panel
+        // Wire up reconnect button
+        _reconnectBtn.Click += async (s, ev) =>
         {
-            Dock = DockStyle.Bottom,
-            Height = 28,
-            BackColor = ThemeHelper.Sidebar,
-            Padding = new Padding(8, 4, 8, 4),
-        };
-        _statusLabel = new Label
-        {
-            Dock = DockStyle.Left,
-            AutoSize = true,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 8.5f),
-            Text = "Connecting...",
-        };
-        var reconnectBtn = new Button
-        {
-            Text = "Reconnect",
-            Dock = DockStyle.Right,
-            Width = 80,
-            Height = 22,
-            Visible = false,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = ThemeHelper.Text,
-            BackColor = ThemeHelper.Accent,
-            Font = new Font("Segoe UI", 7.5f),
-            Tag = "reconnect",
-        };
-        reconnectBtn.FlatAppearance.BorderSize = 0;
-        reconnectBtn.Click += async (s, ev) =>
-        {
-            reconnectBtn.Visible = false;
+            _reconnectBtn.Visible = false;
             try
             {
                 await _ipc.EnsureConnectedAsync();
@@ -81,73 +55,51 @@ public class MainForm : Form
             catch (Exception ex)
             {
                 _statusLabel.Text = $"\u25CF Reconnect failed: {ex.Message}";
-                reconnectBtn.Visible = true;
+                _reconnectBtn.Visible = true;
             }
         };
 
-        _statusBar.Controls.Add(_statusLabel);
-        _statusBar.Controls.Add(reconnectBtn);
-        Controls.Add(_statusBar);
-
-        // Sidebar
-        _sidebar = new Panel
+        // Build grouped sidebar: sections added in reverse order for DockStyle.Top stacking
+        for (int s = NavSections.Length - 1; s >= 0; s--)
         {
-            Dock = DockStyle.Left,
-            Width = 220,
-            BackColor = ThemeHelper.Sidebar,
-            Padding = new Padding(0, 8, 0, 0),
-        };
+            var (header, items) = NavSections[s];
 
-        // App title in sidebar
-        var titleLabel = new Label
-        {
-            Text = "Estimation Tool",
-            Dock = DockStyle.Top,
-            Height = 50,
-            ForeColor = ThemeHelper.Text,
-            Font = new Font("Segoe UI Semibold", 13f),
-            TextAlign = ContentAlignment.MiddleCenter,
-            Padding = new Padding(0, 8, 0, 8),
-        };
-        _sidebar.Controls.Add(titleLabel);
-
-        var navPanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            AutoScroll = true,
-            Padding = new Padding(8, 4, 8, 4),
-        };
-
-        // Add nav buttons in reverse order (top dock stacking)
-        for (int i = NavItems.Length - 1; i >= 0; i--)
-        {
-            var item = NavItems[i];
-            var btn = new Button
+            // Nav buttons within section (reverse order for top-dock stacking)
+            for (int i = items.Length - 1; i >= 0; i--)
             {
-                Text = $"  {item.Icon}  {item.Label}",
-                Dock = DockStyle.Top,
-                Height = 42,
-                Tag = item.Name,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(12, 0, 0, 0),
-                Margin = new Padding(0, 2, 0, 2),
-            };
-            ThemeHelper.StyleSidebarButton(btn, false);
-            btn.Click += NavButton_Click;
-            navPanel.Controls.Add(btn);
+                var item = items[i];
+                var btn = new Button
+                {
+                    Text = $"  {item.Icon}  {item.Label}",
+                    Dock = DockStyle.Top,
+                    Height = 38,
+                    Tag = item.Name,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Padding = new Padding(16, 0, 0, 0),
+                    Margin = new Padding(0, 1, 0, 1),
+                };
+                ThemeHelper.StyleSidebarButton(btn, false);
+                btn.Click += NavButton_Click;
+                _navPanel.Controls.Add(btn);
+            }
+
+            // Section header label (added last = appears on top due to dock stacking)
+            if (header is not null)
+            {
+                var lbl = new Label
+                {
+                    Text = header,
+                    Dock = DockStyle.Top,
+                    Height = 28,
+                    ForeColor = ThemeHelper.TextSecondary,
+                    BackColor = Color.Transparent,
+                    Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+                    TextAlign = ContentAlignment.BottomLeft,
+                    Padding = new Padding(12, s == 0 ? 0 : 8, 0, 2),
+                };
+                _navPanel.Controls.Add(lbl);
+            }
         }
-
-        _sidebar.Controls.Add(navPanel);
-        Controls.Add(_sidebar);
-
-        // Content area
-        _contentArea = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(16),
-        };
-        Controls.Add(_contentArea);
 
         // Wire up IPC connection state
         _ipc.ConnectionStateChanged += (s, state) =>
@@ -197,38 +149,27 @@ public class MainForm : Form
 
     private void UpdateConnectionStatus(ConnectionState state)
     {
-        // Find reconnect button
-        Button? reconnectBtn = null;
-        foreach (Control c in _statusBar.Controls)
-        {
-            if (c is Button b && b.Tag as string == "reconnect")
-            {
-                reconnectBtn = b;
-                break;
-            }
-        }
-
         switch (state)
         {
             case ConnectionState.Connected:
                 _statusLabel.Text = "\u25CF Connected to backend";
                 _statusLabel.ForeColor = ThemeHelper.FeasibilityGreen;
-                if (reconnectBtn != null) reconnectBtn.Visible = false;
+                _reconnectBtn.Visible = false;
                 break;
             case ConnectionState.Connecting:
                 _statusLabel.Text = "\u25CB Connecting...";
                 _statusLabel.ForeColor = ThemeHelper.FeasibilityAmber;
-                if (reconnectBtn != null) reconnectBtn.Visible = false;
+                _reconnectBtn.Visible = false;
                 break;
             case ConnectionState.Error:
                 _statusLabel.Text = "\u25CF Connection error — backend is not running";
                 _statusLabel.ForeColor = ThemeHelper.FeasibilityRed;
-                if (reconnectBtn != null) reconnectBtn.Visible = true;
+                _reconnectBtn.Visible = true;
                 break;
             default:
                 _statusLabel.Text = "\u25CB Disconnected";
                 _statusLabel.ForeColor = ThemeHelper.TextSecondary;
-                if (reconnectBtn != null) reconnectBtn.Visible = true;
+                _reconnectBtn.Visible = true;
                 break;
         }
     }
@@ -293,11 +234,5 @@ public class MainForm : Form
             "EstimationDetail" => new EstimationDetailPanel(_ipc, this, context as int? ?? 0),
             _ => null,
         };
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        _ipc.Dispose();
-        base.OnFormClosing(e);
     }
 }

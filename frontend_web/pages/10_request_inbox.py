@@ -20,14 +20,7 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 from database.migrations import get_engine
-from database.models import Request
-
-st.set_page_config(
-    page_title="Request Inbox — Estimation Tool",
-    page_icon="📥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+from database.models import Estimation, Request
 
 st.title("📥 Request Inbox")
 st.markdown("Manage incoming test requests and track their estimation workflow")
@@ -90,34 +83,25 @@ def get_request_summary():
         }
 
 
-def generate_request_number(year: int | None = None) -> str:
-    """Generate next request number in REQ-YYYY-NNN format."""
-    if year is None:
-        year = datetime.now().year
-
+@st.cache_data(ttl=60)
+def get_linked_estimations():
+    """Get estimations linked to requests, keyed by request_id."""
     with Session(engine) as session:
-        # Get the highest request number for the current year
-        requests = session.query(Request).all()
-        year_requests = [
-            r for r in requests
-            if r.request_number.startswith(f"REQ-{year}-")
-        ]
+        estimations = session.query(Estimation).filter(
+            Estimation.request_id.isnot(None)
+        ).order_by(desc(Estimation.created_at)).all()
+        result = {}
+        for e in estimations:
+            entry = {
+                "id": e.id,
+                "estimation_number": e.estimation_number or f"EST-{e.id}",
+                "status": e.status,
+                "feasibility_status": e.feasibility_status,
+                "grand_total_hours": round(e.grand_total_hours, 1),
+            }
+            result.setdefault(e.request_id, []).append(entry)
+        return result
 
-        if not year_requests:
-            next_num = 1
-        else:
-            # Extract numbers from request_number format REQ-YYYY-NNN
-            numbers = []
-            for r in year_requests:
-                try:
-                    num = int(r.request_number.split("-")[-1])
-                    numbers.append(num)
-                except (ValueError, IndexError):
-                    pass
-
-            next_num = max(numbers) + 1 if numbers else 1
-
-        return f"REQ-{year}-{next_num:03d}"
 
 
 def get_status_color(status: str) -> str:
@@ -144,8 +128,13 @@ def get_priority_color(priority: str) -> str:
     return colors.get(priority, "gray")
 
 
-def format_request_for_display(req: dict) -> dict:
+def format_request_for_display(req: dict, linked_estimations: dict | None = None) -> dict:
     """Format request data for table display."""
+    est_nums = "—"
+    if linked_estimations and req["id"] in linked_estimations:
+        est_nums = ", ".join(
+            e["estimation_number"] for e in linked_estimations[req["id"]]
+        )
     return {
         "Request #": req["request_number"],
         "Title": req["title"],
@@ -153,6 +142,7 @@ def format_request_for_display(req: dict) -> dict:
         "Business Unit": req["business_unit"] or "N/A",
         "Status": req["status"],
         "Priority": req["priority"],
+        "Estimation #": est_nums,
         "Source": req["request_source"],
         "Received": req["received_date"].strftime("%Y-%m-%d") if req["received_date"] else "",
     }
@@ -183,10 +173,8 @@ def save_request(request_data: dict) -> bool:
                 request.updated_at = datetime.now()
             else:
                 # Create new request
-                request_number = request_data.get("request_number") or generate_request_number()
-
                 request = Request(
-                    request_number=request_number,
+                    request_number=request_data["request_number"],
                     request_source=request_data.get("request_source", "MANUAL"),
                     external_id=request_data.get("external_id"),
                     title=request_data["title"],
@@ -333,10 +321,43 @@ def show_request_details(request_id: int):
             label_visibility="collapsed",
         )
 
+        # Linked Estimations section
+        st.markdown("---")
+        st.markdown("### Linked Estimations")
+
+        linked_est = get_linked_estimations()
+        req_estimations = linked_est.get(request.id, [])
+
+        if req_estimations:
+            for est in req_estimations:
+                feas_icon = {"FEASIBLE": "🟢", "AT_RISK": "🟡", "NOT_FEASIBLE": "🔴"}.get(
+                    est["feasibility_status"], "⚪"
+                )
+                st.markdown(
+                    f"- **{est['estimation_number']}** — "
+                    f"Status: {est['status']} | "
+                    f"Total: {est['grand_total_hours']}h | "
+                    f"Feasibility: {feas_icon} {est['feasibility_status']}"
+                )
+        else:
+            st.info("No estimations linked to this request yet.")
+
+        if request.status in ("NEW", "IN_ESTIMATION"):
+            if st.button("Create Estimation for this Request", key="create_est_from_req"):
+                st.session_state["s1_request_id"] = request.id
+                st.switch_page("New Estimation")
+
     with tab2:
         st.markdown("### Edit Request Details")
 
         with st.form("edit_request_form"):
+            st.text_input(
+                "Request Number",
+                value=request.request_number,
+                disabled=True,
+                help="Request number is set at creation and cannot be changed",
+            )
+
             col1, col2 = st.columns(2)
 
             with col1:
@@ -433,17 +454,24 @@ def show_create_request_form():
     st.subheader("Create New Request")
 
     with st.form("create_request_form"):
+        year_suffix = str(datetime.now().year)[-2:]
+        request_number = st.text_input(
+            "Request Number *",
+            placeholder=f"e.g., REQ_{year_suffix}/0001",
+            help="Externally defined request number in REQ_YY/XXXX format",
+        )
+
         col1, col2 = st.columns(2)
 
         with col1:
             title = st.text_input(
-                "Request Title",
+                "Request Title *",
                 placeholder="Enter request title...",
                 help="Brief title of the test request",
             )
 
             requester_name = st.text_input(
-                "Requester Name",
+                "Requester Name *",
                 placeholder="Enter requester name...",
                 help="Name of the person submitting the request",
             )
@@ -488,7 +516,7 @@ def show_create_request_form():
             help="Detailed description of what needs to be tested",
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
             received_date = st.date_input(
@@ -504,21 +532,6 @@ def show_create_request_form():
                 help="When the testing should be completed",
             )
 
-        with col3:
-            generate_number = st.checkbox(
-                "Auto-generate Request Number",
-                value=True,
-                help="Generate REQ-YYYY-NNN format automatically",
-            )
-
-            if not generate_number:
-                request_number = st.text_input(
-                    "Request Number",
-                    placeholder="Enter custom request number...",
-                )
-            else:
-                request_number = None
-
         notes = st.text_area(
             "Notes (optional)",
             placeholder="Add any additional notes...",
@@ -529,8 +542,8 @@ def show_create_request_form():
         submitted = st.form_submit_button("Create Request", type="primary")
 
         if submitted:
-            if not title or not requester_name:
-                st.error("Title and Requester Name are required")
+            if not title or not requester_name or not request_number:
+                st.error("Request Number, Title, and Requester Name are required")
             else:
                 request_data = {
                     "title": title,
@@ -643,7 +656,8 @@ def show_requests_table():
 
     if filtered_data:
         # Format data for display
-        display_data = [format_request_for_display(r) for r in filtered_data]
+        linked_est = get_linked_estimations()
+        display_data = [format_request_for_display(r, linked_est) for r in filtered_data]
         df = pd.DataFrame(display_data)
 
         # Display table
@@ -658,6 +672,7 @@ def show_requests_table():
                 "Business Unit": st.column_config.TextColumn(width="small"),
                 "Status": st.column_config.TextColumn(width="small"),
                 "Priority": st.column_config.TextColumn(width="small"),
+                "Estimation #": st.column_config.TextColumn(width="small"),
                 "Source": st.column_config.TextColumn(width="small"),
                 "Received": st.column_config.TextColumn(width="small"),
             },
@@ -816,8 +831,7 @@ with tab4:
 
     **Create Request Tab:**
     - Create new test requests manually
-    - Auto-generate request numbers in REQ-YYYY-NNN format
-    - Or provide custom request numbers
+    - Enter externally defined request numbers (REQ_YY/XXXX format)
     - Optionally link to external systems (JIRA, Redmine, Email)
     - Set priority and requested delivery date
 

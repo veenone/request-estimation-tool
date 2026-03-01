@@ -26,14 +26,6 @@ from reports.excel_report import ExcelReportData, generate_excel_report
 from reports.pdf_report import generate_pdf_report
 from reports.word_report import generate_word_report
 
-# ── Page configuration ─────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Estimation Detail",
-    page_icon="📋",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("Estimation Detail")
 st.markdown("View and manage your saved estimations")
 
@@ -103,6 +95,8 @@ def load_estimation_detail(estimation_id: int):
                 "business_unit": estimation.request.business_unit or "",
                 "priority": estimation.request.priority,
                 "status": estimation.request.status,
+                "request_source": estimation.request.request_source,
+                "external_id": estimation.request.external_id,
                 "requested_delivery_date": estimation.request.requested_delivery_date,
                 "received_date": estimation.request.received_date,
             }
@@ -252,7 +246,7 @@ if "last_selected_id" not in st.session_state:
     st.session_state.last_selected_id = selected_estimation_id
 elif st.session_state.last_selected_id != selected_estimation_id:
     st.session_state.last_selected_id = selected_estimation_id
-    load_estimation_detail.clear()
+    st.cache_data.clear()
 
 # ── Overview Section ──────────────────────────────────────────────────────
 
@@ -360,6 +354,11 @@ if est["request"]:
             req_delivery = req['requested_delivery_date'].strftime("%Y-%m-%d")
             st.write(f"**Requested Delivery:** {req_delivery}")
 
+    if st.button("View Request in Inbox", key="goto_request_inbox"):
+        st.session_state["show_details"] = True
+        st.session_state["selected_request_id"] = req["id"]
+        st.switch_page("Request Inbox")
+
     if req["description"]:
         with st.expander("Request Description"):
             st.write(req["description"])
@@ -446,7 +445,7 @@ with col1:
     if est["status"] == "DRAFT":
         if st.button("Mark as Final", use_container_width=True):
             update_estimation_status(est["id"], "FINAL")
-            load_estimation_detail.clear()
+            st.cache_data.clear()
             st.success("Estimation marked as FINAL")
             st.rerun()
 
@@ -473,9 +472,43 @@ if st.session_state.get("show_approval_dialog"):
         if submitted and approved_by:
             update_estimation_approval(est["id"], approved_by)
             st.session_state.show_approval_dialog = False
-            load_estimation_detail.clear()
+            st.cache_data.clear()
             st.success(f"Estimation approved by {approved_by}")
             st.rerun()
+
+# ── Export to External System ──────────────────────────────────────────────
+
+req_data = est.get("request")
+if (
+    req_data
+    and req_data.get("external_id")
+    and req_data.get("request_source") not in (None, "MANUAL")
+    and est["status"] in ("FINAL", "APPROVED")
+):
+    source = req_data["request_source"]
+    if st.button(
+        f"Export to {source.title()}",
+        use_container_width=True,
+        help=f"Push estimation results back to {source.title()} issue #{req_data['external_id']}",
+    ):
+        with st.spinner(f"Exporting to {source.title()}..."):
+            from integrations.service import sync_export
+
+            with Session(engine) as session:
+                estimation_data = {
+                    "external_id": req_data["external_id"],
+                    "grand_total_hours": est["grand_total_hours"],
+                    "feasibility_status": est["feasibility_status"],
+                    "estimation_number": est["estimation_number"] or f"EST-{est['id']}",
+                }
+                result = sync_export(source, estimation_data, session)
+
+            if result.status.value == "SUCCESS":
+                st.success(
+                    f"Exported to {source.title()} issue #{req_data['external_id']}"
+                )
+            else:
+                st.error(f"Export failed: {', '.join(result.errors)}")
 
 # ── Report Generation ──────────────────────────────────────────────────────
 

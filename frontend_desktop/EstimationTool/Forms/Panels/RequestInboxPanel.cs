@@ -6,9 +6,10 @@ namespace EstimationTool.Forms.Panels;
 
 /// <summary>
 /// Request Inbox panel — lists all incoming test requests with filtering, inline
-/// CRUD, and navigation to the estimation wizard. All UI built programmatically.
+/// CRUD, and navigation to the estimation wizard. All UI components are declared
+/// in <see cref="RequestInboxPanel.Designer.cs"/> via InitializeComponent().
 /// </summary>
-public sealed class RequestInboxPanel : UserControl
+public sealed partial class RequestInboxPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // Private IPC response wrapper
@@ -27,15 +28,6 @@ public sealed class RequestInboxPanel : UserControl
     private readonly BackendApiService _ipc;
     private readonly MainForm _mainForm;
 
-    private DataGridView _dgv = null!;
-    private ComboBox _cmbStatusFilter = null!;
-    private Button _btnCreateEstimation = null!;
-    private Button _btnEdit = null!;
-    private Button _btnViewDetails = null!;
-    private Button _btnAddRequest = null!;
-    private Button _btnRefresh = null!;
-    private Label _lblStatus = null!;
-
     private List<Request> _rows = new();
 
     // -------------------------------------------------------------------------
@@ -47,54 +39,46 @@ public sealed class RequestInboxPanel : UserControl
         _ipc = ipc;
         _mainForm = mainForm;
 
-        BackColor = ThemeHelper.Background;
-        Dock = DockStyle.Fill;
-        Padding = new Padding(0);
+        InitializeComponent();
+        ApplyStyles();
 
-        BuildLayout();
+        // Wire event handlers after InitializeComponent() has created all controls
+        _cmbStatusFilter.SelectedIndexChanged += async (_, _) => await LoadDataAsync();
+        _btnAddRequest.Click += BtnAddRequest_Click;
+        _btnRefresh.Click += async (_, _) => await LoadDataAsync();
+        _dgv.SelectionChanged += Dgv_SelectionChanged;
+        _dgv.CellFormatting += Dgv_CellFormatting;
+        _dgv.CellDoubleClick += Dgv_CellDoubleClick;
+        _btnCreateEstimation.Click += BtnCreateEstimation_Click;
+        _btnEdit.Click += BtnEdit_Click;
+        _btnViewDetails.Click += BtnViewDetails_Click;
+
         UpdateButtonStates();
 
         HandleCreated += async (_, _) => await LoadDataAsync();
     }
 
     // -------------------------------------------------------------------------
-    // Layout
+    // Styling — applied after InitializeComponent() so it survives VS Designer
+    // regeneration. VS Designer only touches InitializeComponent(); everything
+    // here is safe from auto-regeneration.
     // -------------------------------------------------------------------------
 
-    private void BuildLayout()
+    private void ApplyStyles()
     {
-        var stack = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            ColumnCount = 1,
-            RowCount = 5,
-            Padding = new Padding(0),
-        };
-        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));   // Header
-        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));   // Toolbar
-        stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));  // Grid
-        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));   // Bottom action bar
-        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));   // Status bar
-        Controls.Add(stack);
+        // -- Form-level --
+        BackColor = ThemeHelper.Background;
+        Dock = DockStyle.Fill;
 
-        stack.Controls.Add(BuildHeader(), 0, 0);
-        stack.Controls.Add(BuildToolbar(), 0, 1);
-        stack.Controls.Add(BuildGrid(), 0, 2);
-        stack.Controls.Add(BuildActionBar(), 0, 3);
-        stack.Controls.Add(BuildStatusBar(), 0, 4);
-    }
+        // -- Stack layout --
+        stack.Dock = DockStyle.Fill;
+        stack.BackColor = Color.Transparent;
 
-    private static Panel BuildHeader()
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(0, 0, 0, 8),
-        };
-        panel.Controls.Add(new Label
+        // -- Header panel --
+        headerPanel.Dock = DockStyle.Fill;
+        headerPanel.BackColor = Color.Transparent;
+
+        var lblTitle = new Label
         {
             Text = "Request Inbox",
             Dock = DockStyle.Fill,
@@ -102,180 +86,104 @@ public sealed class RequestInboxPanel : UserControl
             ForeColor = ThemeHelper.Text,
             Font = new Font("Segoe UI Semibold", 16f, FontStyle.Bold),
             TextAlign = ContentAlignment.BottomLeft,
-        });
-        return panel;
-    }
-
-    private Panel BuildToolbar()
-    {
-        var bar = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(0, 4, 0, 4),
+            Padding = new Padding(8, 0, 0, 4),
         };
+        headerPanel.Controls.Add(lblTitle);
 
-        // Filter label
-        var lblFilter = new Label
-        {
-            Text = "Status:",
-            AutoSize = true,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 9f),
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-        lblFilter.Location = new Point(0, 10);
-        bar.Controls.Add(lblFilter);
+        // -- Toolbar panel --
+        toolbarPanel.Dock = DockStyle.Fill;
+        toolbarPanel.BackColor = Color.Transparent;
+        toolbarPanel.Padding = new Padding(8, 8, 8, 4);
 
-        // Status filter combo
-        _cmbStatusFilter = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 160,
-        };
-        _cmbStatusFilter.Items.AddRange(new object[]
-        {
-            "All", "NEW", "IN_ESTIMATION", "ESTIMATED", "COMPLETED"
-        });
+        lblFilter.Text = "Status:";
+        lblFilter.ForeColor = ThemeHelper.TextSecondary;
+        lblFilter.Font = new Font("Segoe UI", 9.5f);
+        lblFilter.AutoSize = true;
+        lblFilter.Location = new Point(8, 12);
+
+        _cmbStatusFilter.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbStatusFilter.SelectedIndex = 0;
+        _cmbStatusFilter.Location = new Point(lblFilter.Right + 8, 8);
+        _cmbStatusFilter.Width = 150;
         ThemeHelper.StyleComboBox(_cmbStatusFilter);
-        _cmbStatusFilter.Location = new Point(lblFilter.Left + 48, 6);
-        _cmbStatusFilter.SelectedIndexChanged += async (_, _) => await LoadDataAsync();
-        bar.Controls.Add(_cmbStatusFilter);
 
-        // Add Request button
-        _btnAddRequest = new Button
-        {
-            Text = "+ Add Request",
-            Width = 120,
-            Height = 30,
-        };
-        ThemeHelper.StyleButton(_btnAddRequest, isPrimary: true);
+        _btnAddRequest.Text = "+ Add Request";
+        _btnAddRequest.Width = 120;
+        _btnAddRequest.Height = 36;
         _btnAddRequest.Location = new Point(_cmbStatusFilter.Right + 16, 6);
-        _btnAddRequest.Click += BtnAddRequest_Click;
-        bar.Controls.Add(_btnAddRequest);
+        ThemeHelper.StyleButton(_btnAddRequest, isPrimary: true);
 
-        // Refresh button
-        _btnRefresh = new Button
-        {
-            Text = "Refresh",
-            Width = 90,
-            Height = 30,
-        };
-        ThemeHelper.StyleButton(_btnRefresh, isPrimary: false);
+        _btnRefresh.Text = "Refresh";
+        _btnRefresh.Width = 90;
+        _btnRefresh.Height = 36;
         _btnRefresh.Location = new Point(_btnAddRequest.Right + 8, 6);
-        _btnRefresh.Click += async (_, _) => await LoadDataAsync();
-        bar.Controls.Add(_btnRefresh);
+        ThemeHelper.StyleButton(_btnRefresh, isPrimary: false);
 
-        return bar;
-    }
+        // -- Grid container --
+        gridContainer.Dock = DockStyle.Fill;
+        gridContainer.BackColor = Color.Transparent;
+        gridContainer.Padding = new Padding(8, 0, 8, 0);
 
-    private Panel BuildGrid()
-    {
-        var container = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Surface,
-            Padding = new Padding(1),
-        };
-
-        _dgv = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-            MultiSelect = false,
-        };
-
+        _dgv.Dock = DockStyle.Fill;
+        _dgv.ReadOnly = true;
+        _dgv.AllowUserToAddRows = false;
+        _dgv.AllowUserToDeleteRows = false;
+        _dgv.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _dgv.MultiSelect = false;
+        _dgv.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         ThemeHelper.StyleDataGridView(_dgv);
 
-        _dgv.Columns.AddRange(
-            new DataGridViewTextBoxColumn { Name = "ColNum",      HeaderText = "Number",        FillWeight = 12 },
-            new DataGridViewTextBoxColumn { Name = "ColTitle",    HeaderText = "Title",          FillWeight = 22 },
-            new DataGridViewTextBoxColumn { Name = "ColRequester",HeaderText = "Requester",      FillWeight = 14 },
-            new DataGridViewTextBoxColumn { Name = "ColPriority", HeaderText = "Priority",       FillWeight = 10 },
-            new DataGridViewTextBoxColumn { Name = "ColStatus",   HeaderText = "Status",         FillWeight = 12 },
-            new DataGridViewTextBoxColumn { Name = "ColBU",       HeaderText = "Business Unit",  FillWeight = 12 },
-            new DataGridViewTextBoxColumn { Name = "ColReceived", HeaderText = "Received",       FillWeight = 10 },
-            new DataGridViewTextBoxColumn { Name = "ColDelivery", HeaderText = "Delivery",       FillWeight = 10 }
-        );
+        // Configure grid columns
+        dataGridViewTextBoxColumn1.HeaderText = "Request #";
+        dataGridViewTextBoxColumn1.FillWeight = 80;
+        dataGridViewTextBoxColumn2.HeaderText = "Title";
+        dataGridViewTextBoxColumn2.FillWeight = 180;
+        dataGridViewTextBoxColumn3.HeaderText = "Requester";
+        dataGridViewTextBoxColumn3.FillWeight = 100;
+        dataGridViewTextBoxColumn4.HeaderText = "Priority";
+        dataGridViewTextBoxColumn4.FillWeight = 70;
+        dataGridViewTextBoxColumn5.HeaderText = "Status";
+        dataGridViewTextBoxColumn5.FillWeight = 80;
+        dataGridViewTextBoxColumn6.HeaderText = "Business Unit";
+        dataGridViewTextBoxColumn6.FillWeight = 100;
+        dataGridViewTextBoxColumn7.HeaderText = "Received";
+        dataGridViewTextBoxColumn7.FillWeight = 80;
+        dataGridViewTextBoxColumn8.HeaderText = "Delivery Date";
+        dataGridViewTextBoxColumn8.FillWeight = 80;
 
-        _dgv.SelectionChanged += Dgv_SelectionChanged;
-        _dgv.CellFormatting += Dgv_CellFormatting;
-        _dgv.CellDoubleClick += Dgv_CellDoubleClick;
+        // -- Action bar --
+        actionBarPanel.Dock = DockStyle.Fill;
+        actionBarPanel.BackColor = Color.Transparent;
+        actionBarPanel.Padding = new Padding(8, 8, 8, 4);
 
-        container.Controls.Add(_dgv);
-        return container;
-    }
-
-    private Panel BuildActionBar()
-    {
-        var bar = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(0, 8, 0, 4),
-        };
-
-        _btnCreateEstimation = new Button
-        {
-            Text = "Create Estimation",
-            Width = 160,
-            Height = 30,
-            Enabled = false,
-        };
+        _btnCreateEstimation.Text = "Create Estimation";
+        _btnCreateEstimation.Width = 140;
+        _btnCreateEstimation.Height = 36;
+        _btnCreateEstimation.Location = new Point(8, 8);
         ThemeHelper.StyleButton(_btnCreateEstimation, isPrimary: true);
-        _btnCreateEstimation.Location = new Point(0, 6);
-        _btnCreateEstimation.Click += BtnCreateEstimation_Click;
-        bar.Controls.Add(_btnCreateEstimation);
 
-        _btnEdit = new Button
-        {
-            Text = "Edit",
-            Width = 90,
-            Height = 30,
-            Enabled = false,
-        };
+        _btnEdit.Text = "Edit";
+        _btnEdit.Width = 80;
+        _btnEdit.Height = 36;
+        _btnEdit.Location = new Point(_btnCreateEstimation.Right + 8, 8);
         ThemeHelper.StyleButton(_btnEdit, isPrimary: false);
-        _btnEdit.Location = new Point(_btnCreateEstimation.Right + 8, 6);
-        _btnEdit.Click += BtnEdit_Click;
-        bar.Controls.Add(_btnEdit);
 
-        _btnViewDetails = new Button
-        {
-            Text = "View Details",
-            Width = 110,
-            Height = 30,
-            Enabled = false,
-        };
+        _btnViewDetails.Text = "View Details";
+        _btnViewDetails.Width = 110;
+        _btnViewDetails.Height = 36;
+        _btnViewDetails.Location = new Point(_btnEdit.Right + 8, 8);
         ThemeHelper.StyleButton(_btnViewDetails, isPrimary: false);
-        _btnViewDetails.Location = new Point(_btnEdit.Right + 8, 6);
-        _btnViewDetails.Click += BtnViewDetails_Click;
-        bar.Controls.Add(_btnViewDetails);
 
-        return bar;
-    }
+        // -- Status bar --
+        statusBarPanel.Dock = DockStyle.Fill;
+        statusBarPanel.BackColor = ThemeHelper.Surface;
+        statusBarPanel.Padding = new Padding(8, 0, 8, 0);
 
-    private Panel BuildStatusBar()
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-        };
-
-        _lblStatus = new Label
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.TextSecondary,
-            Font = new Font("Segoe UI", 8.5f),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "Loading...",
-        };
-        panel.Controls.Add(_lblStatus);
-        return panel;
+        _lblStatus.Dock = DockStyle.Fill;
+        _lblStatus.Text = "Ready";
+        _lblStatus.ForeColor = ThemeHelper.TextSecondary;
+        _lblStatus.Font = new Font("Segoe UI", 8.5f);
+        _lblStatus.TextAlign = ContentAlignment.MiddleLeft;
     }
 
     // -------------------------------------------------------------------------
@@ -527,6 +435,7 @@ internal sealed class RequestDialog : Form
 
     private readonly Request? _existing;
 
+    private TextBox _txtRequestNumber = null!;
     private TextBox _txtTitle = null!;
     private TextBox _txtDescription = null!;
     private TextBox _txtRequesterName = null!;
@@ -548,8 +457,8 @@ internal sealed class RequestDialog : Form
         _existing = existing;
 
         Text = title;
-        Size = new Size(520, 560);
-        MinimumSize = new Size(480, 520);
+        Size = new Size(520, 600);
+        MinimumSize = new Size(480, 560);
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -605,6 +514,7 @@ internal sealed class RequestDialog : Form
 
         return new
         {
+            request_number = _txtRequestNumber.Text.Trim(),
             title = _txtTitle.Text.Trim(),
             description = string.IsNullOrWhiteSpace(_txtDescription.Text) ? null : _txtDescription.Text.Trim(),
             requester_name = _txtRequesterName.Text.Trim(),
@@ -612,6 +522,7 @@ internal sealed class RequestDialog : Form
             business_unit = string.IsNullOrWhiteSpace(_txtBusinessUnit.Text) ? null : _txtBusinessUnit.Text.Trim(),
             priority = _cmbPriority.SelectedItem?.ToString() ?? "MEDIUM",
             requested_delivery_date = deliveryDate,
+            received_date = DateTime.Today.ToString("yyyy-MM-dd"),
             notes = string.IsNullOrWhiteSpace(_txtNotes.Text) ? null : _txtNotes.Text.Trim(),
         };
     }
@@ -633,6 +544,12 @@ internal sealed class RequestDialog : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
         int row = 0;
+
+        // Request Number (required for new, read-only for edit)
+        _txtRequestNumber = CreateTextBox();
+        string yy = DateTime.Now.Year.ToString()[^2..];
+        _txtRequestNumber.PlaceholderText = $"e.g. REQ_{yy}/0001";
+        AddFormRow(layout, row++, "Request # *", _txtRequestNumber);
 
         // Title (required)
         AddFormRow(layout, row++, "Title *", _txtTitle = CreateTextBox());
@@ -767,6 +684,10 @@ internal sealed class RequestDialog : Form
     {
         if (_existing is null) return;
 
+        _txtRequestNumber.Text = _existing.RequestNumber;
+        _txtRequestNumber.ReadOnly = true;
+        _txtRequestNumber.BackColor = ThemeHelper.Surface;
+
         _txtTitle.Text = _existing.Title;
         _txtDescription.Text = _existing.Description ?? "";
         _txtRequesterName.Text = _existing.RequesterName;
@@ -794,6 +715,14 @@ internal sealed class RequestDialog : Form
 
     private void BtnSave_Click(object? sender, EventArgs e)
     {
+        if (_existing is null && string.IsNullOrWhiteSpace(_txtRequestNumber.Text))
+        {
+            MessageBox.Show(this, "Request Number is required (e.g. REQ_26/0001).", "Validation",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _txtRequestNumber.Focus();
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(_txtTitle.Text))
         {
             MessageBox.Show(this, "Title is required.", "Validation",

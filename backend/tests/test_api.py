@@ -107,6 +107,7 @@ class TestProfileEndpoints:
 class TestRequestEndpoints:
     def test_create_request(self, client):
         resp = client.post("/api/requests", json={
+            "request_number": "REQ_26/0001",
             "title": "Test Request",
             "requester_name": "John Doe",
             "received_date": "2026-02-26",
@@ -114,10 +115,11 @@ class TestRequestEndpoints:
         assert resp.status_code == 201
         data = resp.json()
         assert data["status"] == "NEW"
-        assert data["request_number"].startswith("REQ")
+        assert data["request_number"] == "REQ_26/0001"
 
     def test_list_requests(self, client):
         client.post("/api/requests", json={
+            "request_number": "REQ_26/0002",
             "title": "Test",
             "requester_name": "Jane",
             "received_date": "2026-02-26",

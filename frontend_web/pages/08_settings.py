@@ -18,13 +18,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import Configuration
 
-st.set_page_config(
-    page_title="Settings — Estimation Tool",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("⚙️ Settings")
 st.markdown("Configure global system parameters")
 
@@ -71,11 +64,6 @@ DEFAULT_CONFIG = {
         "description": "Prefix for estimation numbers (e.g., 'EST')",
         "type": "string",
         "default": "EST",
-    },
-    "request_number_prefix": {
-        "description": "Prefix for request numbers (e.g., 'REQ')",
-        "type": "string",
-        "default": "REQ",
     },
 }
 
@@ -265,14 +253,6 @@ with st.form("settings_form"):
             help=config_items["estimation_number_prefix"]["description"],
         )
         updates["estimation_number_prefix"] = est_prefix
-
-    with col_b:
-        req_prefix = st.text_input(
-            "Request Number Prefix",
-            value=config_items["request_number_prefix"]["value"],
-            help=config_items["request_number_prefix"]["description"],
-        )
-        updates["request_number_prefix"] = req_prefix
 
     st.divider()
 

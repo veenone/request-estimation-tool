@@ -4,7 +4,7 @@ using EstimationTool.Services;
 
 namespace EstimationTool.Forms.Panels;
 
-public class WizardPanel : UserControl
+public partial class WizardPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // Nested WizardState
@@ -57,17 +57,10 @@ public class WizardPanel : UserControl
 
     private int _currentStep;
 
-    private readonly Panel _progressPanel;
     private readonly Panel[] _stepDots = new Panel[7];
     private readonly Label[] _stepLabels = new Label[7];
 
-    private readonly Panel _contentPanel;
     private UserControl? _currentStepControl;
-
-    private readonly Panel _buttonBar;
-    private readonly Button _btnCancel;
-    private readonly Button _btnBack;
-    private readonly Button _btnNext;
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -79,63 +72,19 @@ public class WizardPanel : UserControl
         _mainForm = mainForm;
         _state = new WizardState { RequestId = requestId };
 
-        Dock = DockStyle.Fill;
-        BackColor = ThemeHelper.Background;
-        Padding = new Padding(0);
+        InitializeComponent();
 
-        // --- Progress bar ---------------------------------------------------
-        _progressPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 72,
-            BackColor = ThemeHelper.Sidebar,
-            Padding = new Padding(16, 0, 16, 0),
-        };
-        Controls.Add(_progressPanel);
+        // Build progress bar now that panels are initialized
+        BuildProgressBar();
 
-        // --- Button bar (bottom) --------------------------------------------
-        _buttonBar = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 56,
-            BackColor = ThemeHelper.Sidebar,
-            Padding = new Padding(16, 8, 16, 8),
-        };
-
-        _btnCancel = new Button { Text = "Cancel", Width = 90, Height = 36, Anchor = AnchorStyles.Left | AnchorStyles.Top };
-        _btnBack   = new Button { Text = "< Back",  Width = 90, Height = 36, Anchor = AnchorStyles.Right | AnchorStyles.Top };
-        _btnNext   = new Button { Text = "Next >",  Width = 110, Height = 36, Anchor = AnchorStyles.Right | AnchorStyles.Top };
-
-        ThemeHelper.StyleButton(_btnCancel, false);
-        ThemeHelper.StyleButton(_btnBack,   false);
-        ThemeHelper.StyleButton(_btnNext,   true);
-
-        _btnCancel.Location = new Point(0, 10);
-        _btnNext.Location   = new Point(_buttonBar.Width - 126, 10);
-        _btnBack.Location   = new Point(_buttonBar.Width - 222, 10);
-
-        _buttonBar.Controls.AddRange(new Control[] { _btnCancel, _btnBack, _btnNext });
+        // Wire button bar resize to reposition right-anchored buttons
         _buttonBar.Resize += (_, _) =>
         {
             _btnNext.Left = _buttonBar.Width - 126;
             _btnBack.Left = _buttonBar.Width - 222;
         };
-        Controls.Add(_buttonBar);
 
-        // Build progress bar now that buttons are initialized
-        BuildProgressBar();
-
-        // --- Content area ---------------------------------------------------
-        _contentPanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(24, 16, 24, 16),
-            AutoScroll = true,
-        };
-        Controls.Add(_contentPanel);
-
-        // Wire events
+        // Wire button events
         _btnCancel.Click += BtnCancel_Click;
         _btnBack.Click   += BtnBack_Click;
         _btnNext.Click   += BtnNext_Click;
@@ -183,7 +132,7 @@ public class WizardPanel : UserControl
             // Circle dot
             var dot = new Panel
             {
-                Width = 28, Height = 28,
+                Width = 28, Height = 32,
                 BackColor = ThemeHelper.Border,
                 Anchor = AnchorStyles.None,
             };
@@ -220,7 +169,7 @@ public class WizardPanel : UserControl
                 TextAlign = ContentAlignment.TopCenter,
                 AutoSize = false,
                 Width = 80,
-                Height = 18,
+                Height = 22,
                 Top = dot.Bottom + 2,
                 Left = 0,
             };

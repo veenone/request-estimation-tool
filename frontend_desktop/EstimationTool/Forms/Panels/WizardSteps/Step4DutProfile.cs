@@ -5,7 +5,7 @@ using EstimationTool.Forms.Panels;
 
 namespace EstimationTool.Forms.Panels.WizardSteps;
 
-public class Step4DutProfile : UserControl
+public partial class Step4DutProfile : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrappers
@@ -28,15 +28,8 @@ public class Step4DutProfile : UserControl
     private readonly BackendApiService _ipc;
     private readonly WizardPanel.WizardState _state;
 
-    private List<DutType> _duts = new();
+    private List<DutType>     _duts     = new();
     private List<TestProfile> _profiles = new();
-
-    private CheckedListBox _clbDuts     = null!;
-    private CheckedListBox _clbProfiles = null!;
-    private DataGridView   _dgvMatrix   = null!;
-
-    private Label _lblLoading = null!;
-    private Label _lblSummary = null!;
 
     // Track checkbox suppress re-entrancy
     private bool _suppressMatrixRebuild;
@@ -50,149 +43,11 @@ public class Step4DutProfile : UserControl
         _ipc   = ipc;
         _state = state;
 
-        Dock      = DockStyle.Fill;
-        BackColor = ThemeHelper.Background;
+        InitializeComponent();
 
-        BuildUI();
-        Load += async (_, _) => await LoadDataAsync();
-    }
-
-    // -------------------------------------------------------------------------
-    // UI construction
-    // -------------------------------------------------------------------------
-
-    private void BuildUI()
-    {
-        var outerLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            RowCount = 4,
-            ColumnCount = 1,
-            BackColor = ThemeHelper.Background,
-        };
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // header
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 200)); // selections
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // matrix
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));  // summary/loading
-        outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Controls.Add(outerLayout);
-
-        // Header
-        var lblHeader = new Label
-        {
-            Text = "Step 4: DUT x Profile Matrix",
-            Font = new Font("Segoe UI", 14f, FontStyle.Bold),
-            ForeColor = ThemeHelper.Text,
-            BackColor = Color.Transparent,
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-        outerLayout.Controls.Add(lblHeader, 0, 0);
-
-        // Selections row: DUTs left, Profiles right
-        var selectionPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            BackColor = ThemeHelper.Background,
-        };
-        selectionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        selectionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        selectionPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        // DUT panel
-        var dutPanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(0, 0, 8, 0),
-        };
-        var lblDuts = new Label
-        {
-            Text = "DUT Types (select all that apply) *",
-            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-            ForeColor = ThemeHelper.Text,
-            BackColor = Color.Transparent,
-            Dock = DockStyle.Top,
-            Height = 22,
-        };
-        _clbDuts = new CheckedListBox
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Surface,
-            ForeColor = ThemeHelper.Text,
-            BorderStyle = BorderStyle.FixedSingle,
-            CheckOnClick = true,
-            Font = new Font("Segoe UI", 9f),
-        };
-        dutPanel.Controls.Add(_clbDuts);
-        dutPanel.Controls.Add(lblDuts);
-        selectionPanel.Controls.Add(dutPanel, 0, 0);
-
-        // Profile panel
-        var profilePanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-            Padding = new Padding(8, 0, 0, 0),
-        };
-        var lblProfiles = new Label
-        {
-            Text = "Test Profiles (select all that apply) *",
-            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-            ForeColor = ThemeHelper.Text,
-            BackColor = Color.Transparent,
-            Dock = DockStyle.Top,
-            Height = 22,
-        };
-        _clbProfiles = new CheckedListBox
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Surface,
-            ForeColor = ThemeHelper.Text,
-            BorderStyle = BorderStyle.FixedSingle,
-            CheckOnClick = true,
-            Font = new Font("Segoe UI", 9f),
-        };
-        profilePanel.Controls.Add(_clbProfiles);
-        profilePanel.Controls.Add(lblProfiles);
-        selectionPanel.Controls.Add(profilePanel, 1, 0);
-
-        outerLayout.Controls.Add(selectionPanel, 0, 1);
-
-        // Matrix panel
-        var matrixContainer = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Background,
-        };
-
-        var lblMatrix = new Label
-        {
-            Text = "Test Matrix — uncheck combinations you do NOT need to test:",
-            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-            ForeColor = ThemeHelper.Text,
-            BackColor = Color.Transparent,
-            Dock = DockStyle.Top,
-            Height = 22,
-        };
-
-        _dgvMatrix = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_dgvMatrix);
-        _dgvMatrix.ReadOnly = false;
-        _dgvMatrix.EditMode = DataGridViewEditMode.EditOnKeystrokeOrF2;
-        _dgvMatrix.RowHeadersVisible = true;
-        _dgvMatrix.RowHeadersWidth = 140;
-        _dgvMatrix.RowHeadersDefaultCellStyle.BackColor = ThemeHelper.Sidebar;
-        _dgvMatrix.RowHeadersDefaultCellStyle.ForeColor = ThemeHelper.TextSecondary;
-        _dgvMatrix.RowHeadersDefaultCellStyle.Font = new Font("Segoe UI", 8.5f);
-        _dgvMatrix.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+        // Wire events
+        _clbDuts.ItemCheck     += ClbItemCheck;
+        _clbProfiles.ItemCheck += ClbItemCheck;
 
         _dgvMatrix.CellValueChanged += DgvMatrix_CellValueChanged;
         _dgvMatrix.CurrentCellDirtyStateChanged += (_, _) =>
@@ -201,47 +56,7 @@ public class Step4DutProfile : UserControl
                 _dgvMatrix.CommitEdit(DataGridViewDataErrorContexts.Commit);
         };
 
-        matrixContainer.Controls.Add(_dgvMatrix);
-        matrixContainer.Controls.Add(lblMatrix);
-
-        outerLayout.Controls.Add(matrixContainer, 0, 2);
-
-        // Summary/loading row
-        var bottomPanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ThemeHelper.Sidebar,
-        };
-
-        _lblSummary = new Label
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = ThemeHelper.Accent,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(8, 0, 0, 0),
-        };
-
-        _lblLoading = new Label
-        {
-            Text = "Loading DUT types and profiles...",
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = ThemeHelper.TextSecondary,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(8, 0, 0, 0),
-        };
-
-        bottomPanel.Controls.Add(_lblSummary);
-        bottomPanel.Controls.Add(_lblLoading);
-
-        outerLayout.Controls.Add(bottomPanel, 0, 3);
-
-        // Wire up selection-change events
-        _clbDuts.ItemCheck    += ClbItemCheck;
-        _clbProfiles.ItemCheck += ClbItemCheck;
+        Load += async (_, _) => await LoadDataAsync();
     }
 
     // -------------------------------------------------------------------------
@@ -327,14 +142,14 @@ public class Step4DutProfile : UserControl
         {
             var col = new DataGridViewCheckBoxColumn
             {
-                HeaderText = profile.Name,
-                Name = $"Profile_{profile.Id}",
-                Tag = profile,
-                Width = Math.Max(70, profile.Name.Length * 7 + 20),
+                HeaderText   = profile.Name,
+                Name         = $"Profile_{profile.Id}",
+                Tag          = profile,
+                Width        = Math.Max(70, profile.Name.Length * 7 + 20),
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
-                Resizable = DataGridViewTriState.False,
-                ToolTipText = $"Multiplier: {profile.EffortMultiplier:F1}x" +
-                              (profile.Description != null ? $"\n{profile.Description}" : ""),
+                Resizable    = DataGridViewTriState.False,
+                ToolTipText  = $"Multiplier: {profile.EffortMultiplier:F1}x" +
+                               (profile.Description != null ? $"\n{profile.Description}" : ""),
             };
             _dgvMatrix.Columns.Add(col);
         }
@@ -391,7 +206,7 @@ public class Step4DutProfile : UserControl
     {
         if (dutCount == 0 || profileCount == 0)
         {
-            _lblSummary.Text = "Select at least one DUT and one profile to build the matrix.";
+            _lblSummary.Text      = "Select at least one DUT and one profile to build the matrix.";
             _lblSummary.ForeColor = ThemeHelper.TextSecondary;
         }
         else

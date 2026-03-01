@@ -9,7 +9,7 @@ namespace EstimationTool.Forms.Panels;
 /// Read-only list with an Add button — historical records are not edited or
 /// deleted because they are used for calibrating future estimates.
 /// </summary>
-public class HistoryPanel : UserControl
+public partial class HistoryPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -27,11 +27,6 @@ public class HistoryPanel : UserControl
 
     private readonly BackendApiService _ipc;
 
-    private readonly DataGridView _grid;
-    private readonly Button _btnAdd;
-    private readonly Label _headerLabel;
-    private readonly Label _subtitleLabel;
-
     private List<HistoricalProject> _projects = new();
 
     // -------------------------------------------------------------------------
@@ -42,83 +37,9 @@ public class HistoryPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
-        Padding = new Padding(0);
+        InitializeComponent();
 
-        // --- Header ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 64,
-        };
-
-        _headerLabel = new Label
-        {
-            Text = "Historical Projects",
-            AutoSize = true,
-            Location = new Point(0, 4),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-
-        _subtitleLabel = new Label
-        {
-            Text = "Reference projects used for calibrating estimation accuracy.",
-            AutoSize = true,
-            Location = new Point(0, 32),
-        };
-        ThemeHelper.StyleLabel(_subtitleLabel, isHeader: false);
-
-        headerPanel.Controls.Add(_subtitleLabel);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnAdd = new Button
-        {
-            Text     = "Add Historical Project",
-            Width    = 170,
-            Height   = 32,
-            Location = new Point(0, 4),
-        };
-        ThemeHelper.StyleButton(_btnAdd, isPrimary: true);
-        toolbar.Controls.Add(_btnAdd);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id",              HeaderText = "ID",               FillWeight = 6  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ProjectName",     HeaderText = "Project Name",     FillWeight = 24 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ProjectType",     HeaderText = "Type",             FillWeight = 11 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "EstimatedHours",  HeaderText = "Estimated Hours",  FillWeight = 13 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ActualHours",     HeaderText = "Actual Hours",     FillWeight = 11 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DutCount",        HeaderText = "DUT Count",        FillWeight = 9  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ProfileCount",    HeaderText = "Profile Count",    FillWeight = 10 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PrCount",         HeaderText = "PR Count",         FillWeight = 8  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "CompletionDate",  HeaderText = "Completion Date",  FillWeight = 14 });
-
-        // -------------------------------------------------------------------------
-        // Layout
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Events
-        // -------------------------------------------------------------------------
+        // Wire events
         _btnAdd.Click += BtnAdd_Click;
 
         ThemeHelper.ApplyTheme(this);

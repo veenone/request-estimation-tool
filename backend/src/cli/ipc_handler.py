@@ -346,9 +346,7 @@ def handle_get_requests(session: Session, payload: dict) -> dict:
 
 
 def handle_create_request(session: Session, payload: dict) -> dict:
-    req_number = payload.get("request_number")
-    if not req_number:
-        req_number = _generate_number(session, "request_number_prefix", Request)
+    req_number = payload["request_number"]
     req = Request(
         request_number=req_number,
         request_source=payload.get("request_source", "MANUAL"),
@@ -426,9 +424,14 @@ def handle_get_estimation(session: Session, payload: dict) -> dict:
     est = session.get(Estimation, payload["id"])
     if not est:
         raise ValueError(f"Estimation {payload['id']} not found")
+    # Include linked request info for export button
+    req = session.get(Request, est.request_id) if est.request_id else None
+
     return {
         "id": est.id,
         "request_id": est.request_id,
+        "request_source": req.request_source if req else None,
+        "external_id": req.external_id if req else None,
         "estimation_number": est.estimation_number,
         "project_name": est.project_name,
         "project_type": est.project_type,
@@ -614,7 +617,65 @@ def handle_update_estimation_status(session: Session, payload: dict) -> dict:
         est.approved_at = None
 
     session.commit()
+
+    # Auto-export to external system when estimation is finalized or approved
+    if target in ("FINAL", "APPROVED") and est.request_id:
+        _try_export_estimation(est, session)
+
     return {"id": est.id, "status": est.status}
+
+
+def _try_export_estimation(estimation: Estimation, session: Session) -> None:
+    """Attempt to export estimation results back to the originating external system."""
+    req = session.get(Request, estimation.request_id)
+    if not req or not req.external_id or req.request_source == "MANUAL":
+        return
+
+    try:
+        from integrations.service import sync_export
+
+        estimation_data = {
+            "external_id": req.external_id,
+            "grand_total_hours": estimation.grand_total_hours,
+            "feasibility_status": estimation.feasibility_status,
+            "estimation_number": estimation.estimation_number or f"EST-{estimation.id}",
+        }
+        sync_export(req.request_source, estimation_data, session)
+    except Exception:
+        # Export failure should not block the status transition
+        pass
+
+
+def handle_export_estimation(session: Session, payload: dict) -> dict:
+    """Manually export estimation results to the linked external system."""
+    est = session.get(Estimation, payload["id"])
+    if not est:
+        raise ValueError(f"Estimation {payload['id']} not found")
+    if not est.request_id:
+        raise ValueError("Estimation is not linked to a request")
+
+    req = session.get(Request, est.request_id)
+    if not req or not req.external_id:
+        raise ValueError("Linked request has no external ID")
+    if req.request_source == "MANUAL":
+        raise ValueError("Request source is MANUAL — no external system to export to")
+
+    from integrations.service import sync_export
+
+    estimation_data = {
+        "external_id": req.external_id,
+        "grand_total_hours": est.grand_total_hours,
+        "feasibility_status": est.feasibility_status,
+        "estimation_number": est.estimation_number or f"EST-{est.id}",
+    }
+    result = sync_export(req.request_source, estimation_data, session)
+
+    return {
+        "status": result.status.value,
+        "system": result.system,
+        "items_updated": result.items_updated,
+        "errors": result.errors,
+    }
 
 
 # ── Configuration ────────────────────────────────────────
@@ -997,6 +1058,7 @@ COMMANDS: dict[str, callable] = {
     "get_estimation": handle_get_estimation,
     "save_estimation": handle_save_estimation,
     "update_estimation_status": handle_update_estimation_status,
+    "export_estimation": handle_export_estimation,
     "calculate_estimation": handle_calculate_estimation,
     # Dashboard
     "get_dashboard_stats": handle_get_dashboard_stats,

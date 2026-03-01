@@ -18,6 +18,8 @@ data/attachments/
 # .NET
 frontend_desktop/EstimationTool/bin/
 frontend_desktop/EstimationTool/obj/
+frontend_desktop/.vs/
+*.csproj.user
 
 # Docs / generated
 CLAUDE.md

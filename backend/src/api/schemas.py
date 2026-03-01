@@ -159,7 +159,7 @@ class TeamMemberOut(TeamMemberBase):
 # ── Requests ─────────────────────────────────────────────
 
 class RequestBase(BaseModel):
-    request_number: Optional[str] = None
+    request_number: str
     request_source: str = "MANUAL"
     external_id: Optional[str] = None
     title: str
@@ -233,6 +233,32 @@ class EstimationTaskOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+class CalculateInput(BaseModel):
+    """Schema for calculation-only preview (no DB persistence)."""
+    project_type: str
+    features: list[int] = Field(default_factory=list, alias="feature_ids")
+    new_features: list[int] = Field(default_factory=list, alias="new_feature_ids")
+    reference_project_ids: list[int] = []
+    dut_ids: list[int] = []
+    profile_ids: list[int] = []
+    dut_profile_matrix: list[list[int]] = []
+    pr_fixes: PRFixInput = Field(default_factory=PRFixInput)
+    team_size: int = 1
+    has_leader: bool = False
+    expected_delivery: Optional[date] = None
+    working_days: int = 20
+    delivery_date: Optional[date] = None
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def resolved_feature_ids(self) -> list[int]:
+        return self.features
+
+    @property
+    def resolved_new_feature_ids(self) -> list[int]:
+        return self.new_features
+
 class EstimationCreate(BaseModel):
     request_id: Optional[int] = None
     project_name: str
@@ -295,6 +321,23 @@ class RequestDetailOut(RequestOut):
     model_config = {"from_attributes": True}
 
 
+class RecentEstimationOut(BaseModel):
+    id: int
+    estimation_number: Optional[str] = None
+    project_name: str
+    grand_total_hours: float = 0
+    feasibility_status: str = ""
+    status: str = ""
+    created_at: Optional[str] = None
+
+class RecentRequestOut(BaseModel):
+    id: int
+    request_number: str = ""
+    title: str = ""
+    priority: str = ""
+    status: str = ""
+    created_at: Optional[str] = None
+
 class DashboardStatsOut(BaseModel):
     total_requests: int = 0
     requests_new: int = 0
@@ -306,6 +349,8 @@ class DashboardStatsOut(BaseModel):
     estimations_approved: int = 0
     avg_grand_total_hours: float = 0
     avg_utilization_pct: float = 0
+    recent_estimations: list[RecentEstimationOut] = []
+    recent_requests: list[RecentRequestOut] = []
 
 
 class CalibrationResultOut(BaseModel):

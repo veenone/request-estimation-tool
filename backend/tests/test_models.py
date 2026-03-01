@@ -110,7 +110,7 @@ class TestRequestModel:
     def test_create_request(self, session: Session):
         from datetime import date
         req = Request(
-            request_number="REQ-2026-001",
+            request_number="REQ_26/0001",
             title="Test Request",
             requester_name="John Doe",
             received_date=date.today(),

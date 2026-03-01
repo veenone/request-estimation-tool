@@ -39,10 +39,10 @@ public static class ThemeHelper
     // Typography helpers
     // -------------------------------------------------------------------------
 
-    private static readonly Font DefaultFont  = new("Segoe UI", 9f, FontStyle.Regular);
-    private static readonly Font HeaderFont   = new("Segoe UI", 11f, FontStyle.Bold);
+    private static readonly Font DefaultFont  = new("Segoe UI", 9.5f, FontStyle.Regular);
+    private static readonly Font HeaderFont   = new("Segoe UI", 14f, FontStyle.Bold);
     private static readonly Font MetricFont   = new("Segoe UI", 18f, FontStyle.Bold);
-    private static readonly Font SubtitleFont = new("Segoe UI", 8.5f, FontStyle.Regular);
+    private static readonly Font SubtitleFont = new("Segoe UI", 9f, FontStyle.Regular);
 
     // -------------------------------------------------------------------------
     // ApplyTheme — recursive
@@ -199,7 +199,7 @@ public static class ThemeHelper
         btn.ForeColor = isActive ? Text : TextSecondary;
         btn.TextAlign = ContentAlignment.MiddleLeft;
         btn.Dock = DockStyle.Top;
-        btn.Height = 40;
+        btn.Height = 44;
         btn.Padding = new Padding(16, 0, 8, 0);
 
         btn.BackColor = isActive ? Accent : Sidebar;
@@ -250,7 +250,10 @@ public static class ThemeHelper
         dgv.ColumnHeadersDefaultCellStyle.SelectionForeColor = TextSecondary;
         dgv.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
         dgv.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-        dgv.ColumnHeadersHeight = 36;
+        dgv.ColumnHeadersHeight = 40;
+
+        // Explicit row height to prevent text truncation
+        dgv.RowTemplate.Height = 36;
     }
 
     // -------------------------------------------------------------------------
@@ -379,7 +382,7 @@ public static class ThemeHelper
         {
             BackColor = Surface,
             Padding = new Padding(14, 10, 14, 10),
-            MinimumSize = new Size(140, 80)
+            MinimumSize = new Size(160, 90)
         };
 
         var titleLabel = new Label
@@ -390,7 +393,7 @@ public static class ThemeHelper
             ForeColor = TextSecondary,
             Font = SubtitleFont,
             AutoSize = false,
-            Height = 20,
+            Height = 24,
             TextAlign = ContentAlignment.BottomLeft
         };
 

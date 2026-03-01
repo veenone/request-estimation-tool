@@ -21,12 +21,7 @@ from database.migrations import get_engine
 from database.models import IntegrationConfig
 from integrations.service import get_integration_status, sync_import, test_integration
 
-st.set_page_config(
-    page_title="Integrations — Estimation Tool",
-    page_icon="link",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+
 
 st.title("Integrations")
 st.markdown("Configure connections to external systems for importing requests and exporting estimations")
@@ -39,14 +34,29 @@ if "integration_status" not in st.session_state:
     st.session_state.integration_status = {}
 
 
-def get_integration_config(system_name: str) -> IntegrationConfig | None:
-    """Fetch integration config from database."""
+def get_integration_config(system_name: str) -> IntegrationConfig:
+    """Fetch integration config from database, returning a default if none exists."""
     with Session(engine) as session:
-        return (
+        config = (
             session.query(IntegrationConfig)
             .filter(IntegrationConfig.system_name == system_name)
             .first()
         )
+        if config is not None:
+            # Expunge so it can be used outside the session
+            session.expunge(config)
+            return config
+
+    # Return a detached default so callers never get None
+    return IntegrationConfig(
+        system_name=system_name,
+        enabled=False,
+        base_url=None,
+        api_key=None,
+        username=None,
+        additional_config_json=None,
+        last_sync_at=None,
+    )
 
 
 def save_integration_config(
@@ -161,9 +171,9 @@ def render_redmine_tab():
         effort_field = st.text_input(
             "Effort Hours Field ID",
             value=additional_config.get("effort_hours_field_id", ""),
-            placeholder="Custom field ID",
+            placeholder="Custom field ID or 'estimated_hours'",
             key="redmine_effort_field",
-            help="Custom field ID for effort hours",
+            help="Custom field ID for effort hours, or enter 'estimated_hours' to use Redmine's built-in Estimated Hours field",
         )
 
     with col2:
@@ -216,9 +226,17 @@ def render_redmine_tab():
                 with Session(engine) as session:
                     result = sync_import("REDMINE", session)
                 if result.status.value == "SUCCESS":
+                    st.cache_data.clear()
                     st.success(
                         f"Sync complete: {result.items_created} created, "
                         f"{result.items_updated} updated"
+                    )
+                elif result.status.value == "PARTIAL":
+                    st.cache_data.clear()
+                    st.warning(
+                        f"Sync partial: {result.items_created} created, "
+                        f"{result.items_updated} updated, "
+                        f"{result.items_failed} failed"
                     )
                 else:
                     st.error(f"Sync failed: {', '.join(result.errors)}")
@@ -312,23 +330,43 @@ def render_jira_tab():
 
     st.divider()
 
-    col1, col2, col3 = st.columns(3)
+    st.write("**Deployment Settings**")
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         is_cloud = st.checkbox(
             "Jira Cloud",
             value=additional_config.get("is_cloud", False),
             key="jira_is_cloud",
-            help="Check if using Jira Cloud instead of Server",
+            help="Check if using Jira Cloud. Uncheck for Server or Data Center.",
         )
 
     with col2:
+        auth_mode = st.selectbox(
+            "Auth Mode",
+            options=["auto", "basic", "pat"],
+            index=["auto", "basic", "pat"].index(
+                additional_config.get("auth_mode", "auto")
+            ) if additional_config.get("auth_mode", "auto") in ("auto", "basic", "pat") else 0,
+            key="jira_auth_mode",
+            help="'pat' = Personal Access Token (DC/Server), 'basic' = username+password, 'auto' = detect from fields",
+        )
+
+    with col3:
         issue_type = st.text_input(
             "Issue Type",
             value=additional_config.get("issue_type", ""),
             placeholder="e.g., Story",
             key="jira_issue_type",
             help="Issue type for feature requests",
+        )
+
+    with col4:
+        ssl_verify = st.checkbox(
+            "Verify SSL",
+            value=additional_config.get("ssl_verify", True),
+            key="jira_ssl_verify",
+            help="Uncheck for DC instances with self-signed certificates",
         )
 
     st.divider()
@@ -340,9 +378,9 @@ def render_jira_tab():
         effort_field = st.text_input(
             "Effort Hours Custom Field",
             value=additional_config.get("effort_hours_field", ""),
-            placeholder="customfield_10000",
+            placeholder="customfield_10000 or 'originalEstimate'",
             key="jira_effort_field",
-            help="Custom field name or ID for effort hours",
+            help="Custom field ID for effort hours, or enter 'originalEstimate' to use Jira's built-in time tracking field",
         )
 
     with col2:
@@ -415,9 +453,17 @@ def render_jira_tab():
                 with Session(engine) as session:
                     result = sync_import("JIRA", session)
                 if result.status.value == "SUCCESS":
+                    st.cache_data.clear()
                     st.success(
                         f"Sync complete: {result.items_created} created, "
                         f"{result.items_updated} updated"
+                    )
+                elif result.status.value == "PARTIAL":
+                    st.cache_data.clear()
+                    st.warning(
+                        f"Sync partial: {result.items_created} created, "
+                        f"{result.items_updated} updated, "
+                        f"{result.items_failed} failed"
                     )
                 else:
                     st.error(f"Sync failed: {', '.join(result.errors)}")
@@ -431,6 +477,8 @@ def render_jira_tab():
             "project_key": project_key,
             "issue_type": issue_type,
             "is_cloud": is_cloud,
+            "auth_mode": auth_mode,
+            "ssl_verify": ssl_verify,
             "effort_hours_field": effort_field,
             "feasibility_field": feasibility_field,
             "estimation_number_field": estimation_field,
@@ -661,25 +709,31 @@ with st.expander("Redmine Setup Instructions"):
 
 with st.expander("Jira Setup Instructions"):
     st.markdown("""
-    **1. Create API Token (Cloud) or Get Password (Server):**
-    - For Cloud: Go to Account settings > Security > API tokens > Create token
-    - For Server: Use your Jira password
+    **1. Authentication:**
+    - **Cloud**: Go to *Account settings > Security > API tokens > Create token*. Enter your email as Username and the token as API Key. Check "Jira Cloud".
+    - **Data Center / Server (Basic Auth)**: Enter your Jira username and password. Uncheck "Jira Cloud". Set Auth Mode to "basic".
+    - **Data Center / Server (PAT)**: Go to *Profile > Personal Access Tokens > Create token*. Leave Username empty, paste the token as API Key. Set Auth Mode to "pat".
 
-    **2. Find Custom Field IDs:**
+    **2. SSL Certificates (Data Center):**
+    - If your DC instance uses a self-signed certificate, uncheck "Verify SSL"
+
+    **3. Find Custom Field IDs:**
     - Go to Jira Settings > Issues > Custom fields
     - The field ID appears as "customfield_XXXXX"
     - Note the IDs for fields you want to map
+    - Or enter `originalEstimate` for the built-in time tracking field
 
-    **3. Configure JQL Filter:**
+    **4. Configure JQL Filter:**
     - Use a JQL query to filter issues for import
     - Example: `type = "Story" AND status = "To Do"`
 
-    **4. X-Ray Integration:**
+    **5. X-Ray Integration:**
     - Optional: Enable X-Ray for test result tracking
     - Requires X-Ray for Jira plugin installed
 
-    **5. Test the Connection:**
+    **6. Test the Connection:**
     - Click "Test Connection" to verify configuration
+    - It will show the deployment type (Cloud / Server / Data Center) and version
     - Click "Manual Sync" to import requests
     """)
 

@@ -5,7 +5,7 @@ using EstimationTool.Forms.Panels;
 
 namespace EstimationTool.Forms.Panels.WizardSteps;
 
-public class Step1ProjectType : UserControl
+public partial class Step1ProjectType : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -23,9 +23,9 @@ public class Step1ProjectType : UserControl
     private readonly BackendApiService _ipc;
     private readonly WizardPanel.WizardState _state;
 
-    private ComboBox _cmbRequest = null!;
+    private ComboBox _cmbRequest    = null!;
     private TextBox  _txtProjectName = null!;
-    private TextBox  _txtCreatedBy = null!;
+    private TextBox  _txtCreatedBy   = null!;
 
     private RadioButton _rbNew       = null!;
     private RadioButton _rbEvolution = null!;
@@ -44,205 +44,168 @@ public class Step1ProjectType : UserControl
         _ipc   = ipc;
         _state = state;
 
-        Dock      = DockStyle.Fill;
-        BackColor = ThemeHelper.Background;
-        AutoScroll = true;
-
-        BuildUI();
+        InitializeComponent();
+        WireRemainingControls();
         PopulateFromState();
 
         Load += async (_, _) => await LoadRequestsAsync();
     }
 
     // -------------------------------------------------------------------------
-    // UI construction
+    // Post-InitializeComponent wiring
+    // Allocates the conditional/input controls, inserts them into _pnlScroll,
+    // and repositions the downstream labels/fields to maintain the original
+    // y-layout from BuildUI().
     // -------------------------------------------------------------------------
 
-    private void BuildUI()
+    private void WireRemainingControls()
     {
-        var scroll = new Panel
-        {
-            Dock = DockStyle.Fill,
-            AutoScroll = true,
-            BackColor = ThemeHelper.Background,
-        };
-        Controls.Add(scroll);
+        // The Designer reserved placeholder y-offsets matching the original
+        // BuildUI() layout. We need to:
+        //   1. Create the input/conditional controls
+        //   2. Insert them into _pnlScroll at the correct positions
+        //   3. Wire card-click events on the type cards
+        //   4. Set AutoScrollMinSize
 
-        int y = 0;
+        // The Designer lays out static labels up to y = 108 (after _lblReqSection).
+        // From there, the conditional block occupies either:
+        //   - RequestId set:   static _lblRequestInfo at y=108, combo hidden  (height = 28)
+        //   - No RequestId:    _lblReqField at y=108 (+20), combo at y=128 (+56), _lblRequestInfo at y=158 (+8 gap)
+        //
+        // After the conditional block the Designer's _lblDetailsSection is positioned
+        // in InitializeComponent at a reserved placeholder. Because we can't set
+        // coordinates in InitializeComponent based on runtime state, we relocate
+        // the downstream controls here.
 
-        // Header
-        var lblHeader = new Label
-        {
-            Text = "Step 1: Project Information",
-            Font = new Font("Segoe UI", 14f, FontStyle.Bold),
-            ForeColor = ThemeHelper.Text,
-            BackColor = Color.Transparent,
-            AutoSize = true,
-            Location = new Point(0, y),
-        };
-        scroll.Controls.Add(lblHeader);
-        y += 40;
+        const int baseAfterHeader   = 56;  // y after divider
+        const int reqSectionHeight  = 24;  // _lblReqSection
+        const int reqSectionY       = baseAfterHeader; // 56
 
-        var divider = new Panel
-        {
-            BackColor = ThemeHelper.Border,
-            Height = 1,
-            Left = 0, Top = y, Width = 600,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-        };
-        scroll.Controls.Add(divider);
-        y += 16;
-
-        // ---- Request linkage -----------------------------------------------
-        var lblReqSection = MakeSectionLabel("Linked Request (Optional)", y);
-        scroll.Controls.Add(lblReqSection);
-        y += 24;
+        // ---- Build _cmbRequest and _lblRequestInfo --------------------------
 
         if (_state.RequestId.HasValue)
         {
-            // Show static info — we will populate once requests load
+            // Static info label — shown, combo hidden
             _lblRequestInfo = new Label
             {
-                Text = $"Linked to request ID #{_state.RequestId}",
+                Text      = $"Linked to request ID #{_state.RequestId}",
                 ForeColor = ThemeHelper.FeasibilityGreen,
                 BackColor = Color.Transparent,
-                Font = new Font("Segoe UI", 9f),
-                AutoSize = true,
-                Location = new Point(0, y),
+                Font      = new Font("Segoe UI", 9f),
+                AutoSize  = true,
+                Location  = new Point(0, reqSectionY + reqSectionHeight),
             };
-            scroll.Controls.Add(_lblRequestInfo);
-            y += 28;
+            _pnlScroll.Controls.Add(_lblRequestInfo);
 
-            // Hidden combo still created for layout consistency (invisible)
+            // Hidden combo for layout consistency
             _cmbRequest = new ComboBox { Visible = false };
+            _pnlScroll.Controls.Add(_cmbRequest);
+
+            // Hide the "Select Request" field label created by the Designer
+            _lblReqField.Visible = false;
+
+            // Reposition downstream sections to follow static label (28 px) + 8 gap
+            RelocateSectionsAfterRequest(reqSectionY + reqSectionHeight + 28 + 8);
         }
         else
         {
-            var lblReq = MakeFieldLabel("Select Request", y);
-            scroll.Controls.Add(lblReq);
-            y += 20;
+            // Show "Select Request" field label
+            _lblReqField.Location = new Point(0, reqSectionY + reqSectionHeight);
+            _lblReqField.Visible  = true;
+
+            int comboY = reqSectionY + reqSectionHeight + 20;
 
             _cmbRequest = new ComboBox
             {
-                Location = new Point(0, y),
-                Width = 420,
+                Location     = new Point(0, comboY),
+                Width        = 420,
                 DropDownStyle = ComboBoxStyle.DropDownList,
             };
             ThemeHelper.StyleComboBox(_cmbRequest);
-            scroll.Controls.Add(_cmbRequest);
 
             _lblRequestInfo = new Label
             {
                 ForeColor = ThemeHelper.TextSecondary,
                 BackColor = Color.Transparent,
-                Font = new Font("Segoe UI", 8.5f),
-                AutoSize = true,
-                Location = new Point(0, y + 30),
+                Font      = new Font("Segoe UI", 8.5f),
+                AutoSize  = true,
+                Location  = new Point(0, comboY + 30),
             };
-            scroll.Controls.Add(_lblRequestInfo);
+
+            _pnlScroll.Controls.Add(_cmbRequest);
+            _pnlScroll.Controls.Add(_lblRequestInfo);
 
             _cmbRequest.SelectedIndexChanged += CmbRequest_SelectedIndexChanged;
-            y += 56;
+
+            // Reposition downstream sections: comboY + 56 (combo row) + 8 gap
+            RelocateSectionsAfterRequest(comboY + 56 + 8);
         }
 
-        y += 8;
-
-        // ---- Project name --------------------------------------------------
-        var lblNameSection = MakeSectionLabel("Project Details", y);
-        scroll.Controls.Add(lblNameSection);
-        y += 24;
-
-        var lblName = MakeFieldLabel("Project Name *", y);
-        scroll.Controls.Add(lblName);
-        y += 20;
+        // ---- Build _txtProjectName and _txtCreatedBy ------------------------
+        // These are positioned relative to _lblDetailsSection and _lblNameField,
+        // whose Locations are set by RelocateSectionsAfterRequest().
+        // We position them just below their respective field labels (+20 each).
 
         _txtProjectName = new TextBox
         {
-            Location = new Point(0, y),
-            Width = 420,
+            Location = new Point(0, _lblNameField.Top + 20),
+            Width    = 420,
         };
         ThemeHelper.StyleTextBox(_txtProjectName);
-        scroll.Controls.Add(_txtProjectName);
-        y += 36;
-
-        // ---- Created by ----------------------------------------------------
-        var lblCreatedBy = MakeFieldLabel("Created By", y);
-        scroll.Controls.Add(lblCreatedBy);
-        y += 20;
+        _pnlScroll.Controls.Add(_txtProjectName);
 
         _txtCreatedBy = new TextBox
         {
-            Location = new Point(0, y),
-            Width = 280,
+            Location = new Point(0, _lblCreatedByField.Top + 20),
+            Width    = 280,
         };
         ThemeHelper.StyleTextBox(_txtCreatedBy);
-        scroll.Controls.Add(_txtCreatedBy);
-        y += 44;
+        _pnlScroll.Controls.Add(_txtCreatedBy);
 
-        // ---- Project type --------------------------------------------------
-        var lblTypeSection = MakeSectionLabel("Project Type *", y);
-        scroll.Controls.Add(lblTypeSection);
+        // ---- Wire card-click events on the type cards -----------------------
+        _cardNew.Click       += (_, _) => _rbNew.Checked       = true;
+        _lblNewDesc.Click    += (_, _) => _rbNew.Checked       = true;
+
+        _cardEvolution.Click     += (_, _) => _rbEvolution.Checked = true;
+        _lblEvolutionDesc.Click  += (_, _) => _rbEvolution.Checked = true;
+
+        _cardSupport.Click   += (_, _) => _rbSupport.Checked   = true;
+        _lblSupportDesc.Click += (_, _) => _rbSupport.Checked  = true;
+
+        // ---- AutoScrollMinSize ----------------------------------------------
+        // Last card bottom = _cardSupport.Bottom + 16
+        _pnlScroll.AutoScrollMinSize = new Size(0, _cardSupport.Bottom + 16);
+    }
+
+    /// <summary>
+    /// Repositions all controls that follow the request-linkage block so
+    /// the layout is consistent regardless of which branch was taken.
+    /// </summary>
+    private void RelocateSectionsAfterRequest(int startY)
+    {
+        // ---- Project Details section ----------------------------------------
+        int y = startY;
+
+        _lblDetailsSection.Location = new Point(0, y);
         y += 24;
 
-        var typeOptions = new[]
-        {
-            ("NEW",       "New Project",   "Brand new feature set — all tasks start from scratch."),
-            ("EVOLUTION", "Evolution",     "Enhancing an existing product — some existing tests apply."),
-            ("SUPPORT",   "Support",       "Maintenance, bug fixes, and regression testing on a known product."),
-        };
+        _lblNameField.Location = new Point(0, y);
+        y += 20;
+        // _txtProjectName placed at y (set in WireRemainingControls after this returns)
+        y += 36;
 
-        foreach (var (value, label, description) in typeOptions)
-        {
-            var card = new Panel
-            {
-                Location = new Point(0, y),
-                Width = 540,
-                Height = 64,
-                BackColor = ThemeHelper.Surface,
-                Cursor = Cursors.Hand,
-            };
-            ThemeHelper.StylePanel(card);
-            scroll.Controls.Add(card);
+        _lblCreatedByField.Location = new Point(0, y);
+        y += 20;
+        // _txtCreatedBy placed at y
+        y += 44;
 
-            var rb = new RadioButton
-            {
-                Text = label,
-                Tag  = value,
-                Font = new Font("Segoe UI", 10f, FontStyle.Regular),
-                ForeColor = ThemeHelper.Text,
-                BackColor = Color.Transparent,
-                Location = new Point(12, 10),
-                AutoSize = true,
-            };
+        // ---- Project Type section -------------------------------------------
+        _lblTypeSection.Location = new Point(0, y);
+        y += 24;
 
-            var descLabel = new Label
-            {
-                Text = description,
-                ForeColor = ThemeHelper.TextSecondary,
-                BackColor = Color.Transparent,
-                Font = new Font("Segoe UI", 8.5f),
-                Location = new Point(32, 32),
-                AutoSize = true,
-            };
-
-            card.Controls.Add(rb);
-            card.Controls.Add(descLabel);
-
-            // Clicking the card selects the radio button
-            card.Click += (_, _) => rb.Checked = true;
-            descLabel.Click += (_, _) => rb.Checked = true;
-
-            switch (value)
-            {
-                case "NEW":       _rbNew       = rb; break;
-                case "EVOLUTION": _rbEvolution = rb; break;
-                case "SUPPORT":   _rbSupport   = rb; break;
-            }
-
-            y += 74;
-        }
-
-        scroll.AutoScrollMinSize = new Size(0, y + 16);
+        _cardNew.Location       = new Point(0, y); y += 74;
+        _cardEvolution.Location = new Point(0, y); y += 74;
+        _cardSupport.Location   = new Point(0, y);
     }
 
     // -------------------------------------------------------------------------
@@ -387,30 +350,6 @@ public class Step1ProjectType : UserControl
         if (!_state.RequestId.HasValue && _cmbRequest.SelectedItem is RequestComboItem item)
             state.RequestId = item.Request.Id;
     }
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private static Label MakeSectionLabel(string text, int y) => new()
-    {
-        Text = text,
-        Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-        ForeColor = ThemeHelper.Text,
-        BackColor = Color.Transparent,
-        AutoSize = true,
-        Location = new Point(0, y),
-    };
-
-    private static Label MakeFieldLabel(string text, int y) => new()
-    {
-        Text = text,
-        Font = new Font("Segoe UI", 8.5f),
-        ForeColor = ThemeHelper.TextSecondary,
-        BackColor = Color.Transparent,
-        AutoSize = true,
-        Location = new Point(0, y),
-    };
 
     // -------------------------------------------------------------------------
     // Combo item wrapper

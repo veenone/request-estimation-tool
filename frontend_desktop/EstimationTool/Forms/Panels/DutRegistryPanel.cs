@@ -8,7 +8,7 @@ namespace EstimationTool.Forms.Panels;
 /// Panel for managing the Device Under Test (DUT) registry.
 /// Supports creating, editing, and deleting DUT types via the Python IPC backend.
 /// </summary>
-public class DutRegistryPanel : UserControl
+public partial class DutRegistryPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -26,12 +26,6 @@ public class DutRegistryPanel : UserControl
 
     private readonly BackendApiService _ipc;
 
-    private readonly DataGridView _grid;
-    private readonly Button _btnAdd;
-    private readonly Button _btnEdit;
-    private readonly Button _btnDelete;
-    private readonly Label _headerLabel;
-
     private List<DutType> _dutTypes = new();
 
     // -------------------------------------------------------------------------
@@ -42,70 +36,11 @@ public class DutRegistryPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
+        Dock    = DockStyle.Fill;
         Padding = new Padding(0);
 
-        // --- Header ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 48,
-        };
+        InitializeComponent();
 
-        _headerLabel = new Label
-        {
-            Text = "DUT Registry",
-            AutoSize = true,
-            Location = new Point(0, 8),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnAdd    = new Button { Text = "Add DUT",  Width = 90,  Height = 32, Location = new Point(0,   4) };
-        _btnEdit   = new Button { Text = "Edit",     Width = 80,  Height = 32, Location = new Point(96,  4) };
-        _btnDelete = new Button { Text = "Delete",   Width = 80,  Height = 32, Location = new Point(182, 4) };
-
-        ThemeHelper.StyleButton(_btnAdd,    isPrimary: true);
-        ThemeHelper.StyleButton(_btnEdit,   isPrimary: false);
-        ThemeHelper.StyleButton(_btnDelete, isPrimary: false);
-
-        toolbar.Controls.Add(_btnAdd);
-        toolbar.Controls.Add(_btnEdit);
-        toolbar.Controls.Add(_btnDelete);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id",                    HeaderText = "ID",                    FillWeight = 10 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name",                  HeaderText = "Name",                  FillWeight = 35 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Category",              HeaderText = "Category",              FillWeight = 35 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ComplexityMultiplier",  HeaderText = "Complexity Multiplier", FillWeight = 20 });
-
-        // -------------------------------------------------------------------------
-        // Layout
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Events
-        // -------------------------------------------------------------------------
         _btnAdd.Click    += BtnAdd_Click;
         _btnEdit.Click   += BtnEdit_Click;
         _btnDelete.Click += BtnDelete_Click;
@@ -277,8 +212,8 @@ public class DutRegistryPanel : UserControl
 sealed class DutDialog : Form
 {
     // Outputs
-    public string DutName             => _txtName.Text.Trim();
-    public string Category            => _txtCategory.Text.Trim();
+    public string DutName              => _txtName.Text.Trim();
+    public string Category             => _txtCategory.Text.Trim();
     public double ComplexityMultiplier => (double)_nudMultiplier.Value;
 
     private readonly TextBox       _txtName;

@@ -19,13 +19,6 @@ if backend_path not in sys.path:
 from database.migrations import get_engine
 from database.models import TeamMember
 
-st.set_page_config(
-    page_title="Team Management — Estimation Tool",
-    page_icon="👥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.title("👥 Team Management")
 st.markdown("Manage team members and track capacity")
 

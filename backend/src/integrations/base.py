@@ -38,6 +38,7 @@ class SyncResult:
     items_failed: int = 0
     errors: list[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
+    imported_items: list["ExternalRequest"] = field(default_factory=list)
 
 
 @dataclass

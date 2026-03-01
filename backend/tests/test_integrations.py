@@ -203,12 +203,12 @@ class TestJiraAdapter:
         result = adapter.test_connection()
         assert result.success is False
 
-    @patch("src.integrations.jira_adapter.http_requests.get")
-    def test_test_connection_success(self, mock_get):
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_connection_success(self, mock_request):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"displayName": "John", "accountId": "abc"}
-        mock_get.return_value = mock_resp
+        mock_request.return_value = mock_resp
 
         adapter = JiraAdapter(_jira_config())
         result = adapter.test_connection()
@@ -223,8 +223,8 @@ class TestJiraAdapter:
         assert result.status == SyncStatus.FAILED
         assert "JQL" in result.errors[0]
 
-    @patch("src.integrations.jira_adapter.http_requests.get")
-    def test_import_success(self, mock_get):
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_import_success(self, mock_request):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
@@ -244,7 +244,7 @@ class TestJiraAdapter:
                 }
             ]
         }
-        mock_get.return_value = mock_resp
+        mock_request.return_value = mock_resp
 
         adapter = JiraAdapter(_jira_config())
         result = adapter.import_requests()
@@ -256,11 +256,13 @@ class TestJiraAdapter:
         result = adapter.export_estimation({})
         assert result.status == SyncStatus.SKIPPED
 
-    @patch("src.integrations.jira_adapter.http_requests.post")
-    @patch("src.integrations.jira_adapter.http_requests.put")
-    def test_export_with_field_mappings(self, mock_put, mock_post):
-        mock_put.return_value = MagicMock(status_code=204)
-        mock_post.return_value = MagicMock(status_code=201)
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_export_with_field_mappings(self, mock_request):
+        # PUT for field update returns 204, POST for comment returns 201
+        mock_request.side_effect = [
+            MagicMock(status_code=204),
+            MagicMock(status_code=201),
+        ]
 
         config = _jira_config()
         config["additional_config"]["field_mappings"] = {
@@ -279,6 +281,73 @@ class TestJiraAdapter:
         adapter = JiraAdapter(_jira_config())
         result = adapter.create_xray_test_plan({})
         assert result.status == SyncStatus.SKIPPED
+
+    def test_dc_pat_auth(self):
+        """Data Center with Personal Access Token uses Bearer auth."""
+        config = _jira_config(username="")
+        config["additional_config"]["is_cloud"] = False
+        config["additional_config"]["auth_mode"] = "pat"
+        adapter = JiraAdapter(config)
+        headers = adapter._headers()
+        assert headers["Authorization"] == "Bearer test-token"
+
+    def test_dc_basic_auth(self):
+        """Data Center with username+password uses Basic auth."""
+        config = _jira_config()
+        config["additional_config"]["is_cloud"] = False
+        config["additional_config"]["auth_mode"] = "basic"
+        adapter = JiraAdapter(config)
+        headers = adapter._headers()
+        assert "Basic" in headers["Authorization"]
+
+    def test_ssl_verify_default(self):
+        adapter = JiraAdapter(_jira_config())
+        assert adapter.ssl_verify is True
+
+    def test_ssl_verify_disabled(self):
+        config = _jira_config()
+        config["additional_config"]["ssl_verify"] = False
+        adapter = JiraAdapter(config)
+        assert adapter.ssl_verify is False
+
+    def test_flat_field_mappings(self):
+        """Flat UI keys (effort_hours_field) should map to field_mappings dict."""
+        config = _jira_config()
+        config["additional_config"]["effort_hours_field"] = "customfield_10001"
+        config["additional_config"]["feasibility_field"] = "customfield_10002"
+        adapter = JiraAdapter(config)
+        assert adapter.field_mappings["effort_hours"] == "customfield_10001"
+        assert adapter.field_mappings["feasibility"] == "customfield_10002"
+
+    def test_original_estimate_mapping(self):
+        """'originalEstimate' keyword maps to Jira built-in time tracking."""
+        config = _jira_config()
+        config["additional_config"]["effort_hours_field"] = "originalEstimate"
+        adapter = JiraAdapter(config)
+        assert adapter.field_mappings["effort_hours"] == "originalEstimate"
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_export_original_estimate(self, mock_request):
+        """Export with originalEstimate uses timetracking field."""
+        mock_request.side_effect = [
+            MagicMock(status_code=204),  # PUT fields
+            MagicMock(status_code=201),  # POST comment
+        ]
+        config = _jira_config()
+        config["additional_config"]["effort_hours_field"] = "originalEstimate"
+        adapter = JiraAdapter(config)
+        result = adapter.export_estimation({
+            "external_id": "TEST-1",
+            "grand_total_hours": 511.5,
+            "feasibility_status": "AT_RISK",
+            "estimation_number": "EST-001",
+        })
+        assert result.status == SyncStatus.SUCCESS
+        # Verify the PUT call used timetracking
+        put_call = mock_request.call_args_list[0]
+        body = put_call.kwargs.get("json") or put_call[1].get("json", {})
+        assert "timetracking" in body.get("fields", {})
+        assert body["fields"]["timetracking"]["originalEstimate"] == "512h"
 
 
 # ── EmailAdapter tests ──────────────────────────────────

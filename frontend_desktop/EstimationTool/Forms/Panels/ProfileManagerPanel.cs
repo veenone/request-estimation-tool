@@ -8,7 +8,7 @@ namespace EstimationTool.Forms.Panels;
 /// Panel for managing test profiles. Supports creating, editing, and
 /// deleting profiles via the Python IPC backend.
 /// </summary>
-public class ProfileManagerPanel : UserControl
+public partial class ProfileManagerPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -26,12 +26,6 @@ public class ProfileManagerPanel : UserControl
 
     private readonly BackendApiService _ipc;
 
-    private readonly DataGridView _grid;
-    private readonly Button _btnAdd;
-    private readonly Button _btnEdit;
-    private readonly Button _btnDelete;
-    private readonly Label _headerLabel;
-
     private List<TestProfile> _profiles = new();
 
     // -------------------------------------------------------------------------
@@ -42,70 +36,11 @@ public class ProfileManagerPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
+        Dock    = DockStyle.Fill;
         Padding = new Padding(0);
 
-        // --- Header ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 48,
-        };
+        InitializeComponent();
 
-        _headerLabel = new Label
-        {
-            Text = "Test Profiles",
-            AutoSize = true,
-            Location = new Point(0, 8),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnAdd    = new Button { Text = "Add Profile", Width = 100, Height = 32, Location = new Point(0,   4) };
-        _btnEdit   = new Button { Text = "Edit",        Width = 80,  Height = 32, Location = new Point(106, 4) };
-        _btnDelete = new Button { Text = "Delete",      Width = 80,  Height = 32, Location = new Point(192, 4) };
-
-        ThemeHelper.StyleButton(_btnAdd,    isPrimary: true);
-        ThemeHelper.StyleButton(_btnEdit,   isPrimary: false);
-        ThemeHelper.StyleButton(_btnDelete, isPrimary: false);
-
-        toolbar.Controls.Add(_btnAdd);
-        toolbar.Controls.Add(_btnEdit);
-        toolbar.Controls.Add(_btnDelete);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id",               HeaderText = "ID",                FillWeight = 8  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name",             HeaderText = "Name",              FillWeight = 28 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Description",      HeaderText = "Description",       FillWeight = 46 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "EffortMultiplier", HeaderText = "Effort Multiplier", FillWeight = 18 });
-
-        // -------------------------------------------------------------------------
-        // Layout
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Events
-        // -------------------------------------------------------------------------
         _btnAdd.Click    += BtnAdd_Click;
         _btnEdit.Click   += BtnEdit_Click;
         _btnDelete.Click += BtnDelete_Click;
@@ -277,8 +212,8 @@ public class ProfileManagerPanel : UserControl
 sealed class ProfileDialog : Form
 {
     // Outputs
-    public string ProfileName     => _txtName.Text.Trim();
-    public string Description     => _txtDescription.Text.Trim();
+    public string ProfileName      => _txtName.Text.Trim();
+    public string Description      => _txtDescription.Text.Trim();
     public double EffortMultiplier => (double)_nudMultiplier.Value;
 
     private readonly TextBox       _txtName;
@@ -317,9 +252,9 @@ sealed class ProfileDialog : Form
         layout.Controls.Add(MakeLabel("Description"), 0, 1);
         _txtDescription = new TextBox
         {
-            Dock      = DockStyle.Fill,
-            Multiline = true,
-            Height    = 60,
+            Dock       = DockStyle.Fill,
+            Multiline  = true,
+            Height     = 60,
             ScrollBars = ScrollBars.Vertical,
         };
         ThemeHelper.StyleTextBox(_txtDescription);

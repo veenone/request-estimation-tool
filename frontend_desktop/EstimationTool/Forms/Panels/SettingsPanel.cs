@@ -10,7 +10,7 @@ namespace EstimationTool.Forms.Panels;
 /// Loads all configuration from the backend and allows inline editing
 /// with a Save button that persists each changed key individually.
 /// </summary>
-public class SettingsPanel : UserControl
+public partial class SettingsPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // Known configuration keys with human-readable descriptions
@@ -23,7 +23,6 @@ public class SettingsPanel : UserControl
         ("working_hours_per_day",     "Working Hours Per Day"),
         ("buffer_percentage",         "Buffer Percentage (% added to grand total)"),
         ("estimation_number_prefix",  "Estimation Number Prefix (e.g. EST-)"),
-        ("request_number_prefix",     "Request Number Prefix (e.g. REQ-)"),
     ];
 
     // -------------------------------------------------------------------------
@@ -31,12 +30,6 @@ public class SettingsPanel : UserControl
     // -------------------------------------------------------------------------
 
     private readonly BackendApiService _ipc;
-
-    private readonly DataGridView _grid;
-    private readonly Button _btnSave;
-    private readonly Button _btnRefresh;
-    private readonly Label _headerLabel;
-    private readonly Label _subtitleLabel;
 
     // Tracks the original values to detect changes
     private Dictionary<string, string> _originalValues = new();
@@ -49,109 +42,14 @@ public class SettingsPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
-        Padding = new Padding(0);
+        InitializeComponent();
 
-        // --- Header row ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 64,
-            Padding = new Padding(0, 0, 0, 8),
-        };
+        // Populate backend URL text box with the current service URL
+        txtBackendUrl.Text = _ipc.BaseUrl;
 
-        _headerLabel = new Label
-        {
-            Text = "Settings",
-            AutoSize = true,
-            Location = new Point(0, 4),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-
-        _subtitleLabel = new Label
-        {
-            Text = "Configure global defaults used in calculations and reports.",
-            AutoSize = true,
-            Location = new Point(0, 32),
-        };
-        ThemeHelper.StyleLabel(_subtitleLabel, isHeader: false);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnRefresh = new Button
-        {
-            Text = "Refresh",
-            Width = 90,
-            Height = 32,
-            Location = new Point(0, 4),
-        };
-        ThemeHelper.StyleButton(_btnRefresh, isPrimary: false);
-
-        _btnSave = new Button
-        {
-            Text = "Save Changes",
-            Width = 120,
-            Height = 32,
-            Location = new Point(96, 4),
-        };
-        ThemeHelper.StyleButton(_btnSave, isPrimary: true);
-
-        toolbar.Controls.Add(_btnRefresh);
-        toolbar.Controls.Add(_btnSave);
-
-        headerPanel.Controls.Add(_subtitleLabel);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Backend URL section ---
-        var backendPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 44,
-            Padding = new Padding(0, 4, 0, 8),
-        };
-
-        var backendLabel = new Label
-        {
-            Text = "Backend URL:",
-            AutoSize = true,
-            Location = new Point(0, 10),
-            ForeColor = ThemeHelper.Text,
-            Font = new Font("Segoe UI", 9f),
-        };
-
-        var txtBackendUrl = new TextBox
-        {
-            Text = _ipc.BaseUrl,
-            Location = new Point(100, 7),
-            Width = 300,
-            BackColor = ThemeHelper.Surface,
-            ForeColor = ThemeHelper.Text,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f),
-        };
-
-        var btnTestConnection = new Button
-        {
-            Text = "Test Connection",
-            Width = 120,
-            Height = 28,
-            Location = new Point(410, 6),
-        };
-        ThemeHelper.StyleButton(btnTestConnection, isPrimary: false);
-
-        var btnSaveUrl = new Button
-        {
-            Text = "Save URL",
-            Width = 90,
-            Height = 28,
-            Location = new Point(536, 6),
-        };
-        ThemeHelper.StyleButton(btnSaveUrl, isPrimary: true);
+        // Wire events
+        _btnRefresh.Click += async (s, e) => await LoadDataAsync();
+        _btnSave.Click += BtnSave_Click;
 
         btnTestConnection.Click += async (s, ev) =>
         {
@@ -227,63 +125,6 @@ public class SettingsPanel : UserControl
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         };
-
-        backendPanel.Controls.Add(btnSaveUrl);
-        backendPanel.Controls.Add(btnTestConnection);
-        backendPanel.Controls.Add(txtBackendUrl);
-        backendPanel.Controls.Add(backendLabel);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = false,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        // Make only the Value column editable
-        _grid.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Key",
-            HeaderText = "Setting Key",
-            ReadOnly = true,
-            FillWeight = 25,
-        });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Description",
-            HeaderText = "Description",
-            ReadOnly = true,
-            FillWeight = 45,
-        });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Value",
-            HeaderText = "Value",
-            ReadOnly = false,
-            FillWeight = 30,
-        });
-
-        // Style the editable cell distinctly so users know it is editable
-        _grid.Columns["Value"].DefaultCellStyle.BackColor = ThemeHelper.Surface;
-        _grid.Columns["Value"].DefaultCellStyle.ForeColor = ThemeHelper.Text;
-
-        // -------------------------------------------------------------------------
-        // Layout — add controls in bottom-to-top order for DockStyle stacking
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(backendPanel);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Wire events
-        // -------------------------------------------------------------------------
-        _btnRefresh.Click += async (s, e) => await LoadDataAsync();
-        _btnSave.Click += BtnSave_Click;
 
         ThemeHelper.ApplyTheme(this);
 

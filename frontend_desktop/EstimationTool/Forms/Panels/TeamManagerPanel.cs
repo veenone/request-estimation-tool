@@ -8,7 +8,7 @@ namespace EstimationTool.Forms.Panels;
 /// Panel for managing team members. Supports creating, editing, and
 /// deleting team members via the Python IPC backend.
 /// </summary>
-public class TeamManagerPanel : UserControl
+public partial class TeamManagerPanel : UserControl
 {
     // -------------------------------------------------------------------------
     // IPC response wrapper
@@ -26,12 +26,6 @@ public class TeamManagerPanel : UserControl
 
     private readonly BackendApiService _ipc;
 
-    private readonly DataGridView _grid;
-    private readonly Button _btnAdd;
-    private readonly Button _btnEdit;
-    private readonly Button _btnDelete;
-    private readonly Label _headerLabel;
-
     private List<TeamMember> _members = new();
 
     // -------------------------------------------------------------------------
@@ -42,70 +36,11 @@ public class TeamManagerPanel : UserControl
     {
         _ipc = ipc;
 
-        Dock = DockStyle.Fill;
+        Dock    = DockStyle.Fill;
         Padding = new Padding(0);
 
-        // --- Header ---
-        var headerPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 48,
-        };
+        InitializeComponent();
 
-        _headerLabel = new Label
-        {
-            Text = "Team Members",
-            AutoSize = true,
-            Location = new Point(0, 8),
-        };
-        ThemeHelper.StyleLabel(_headerLabel, isHeader: true);
-        headerPanel.Controls.Add(_headerLabel);
-
-        // --- Toolbar ---
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 40,
-        };
-
-        _btnAdd    = new Button { Text = "Add Member", Width = 100, Height = 32, Location = new Point(0,   4) };
-        _btnEdit   = new Button { Text = "Edit",       Width = 80,  Height = 32, Location = new Point(106, 4) };
-        _btnDelete = new Button { Text = "Delete",     Width = 80,  Height = 32, Location = new Point(192, 4) };
-
-        ThemeHelper.StyleButton(_btnAdd,    isPrimary: true);
-        ThemeHelper.StyleButton(_btnEdit,   isPrimary: false);
-        ThemeHelper.StyleButton(_btnDelete, isPrimary: false);
-
-        toolbar.Controls.Add(_btnAdd);
-        toolbar.Controls.Add(_btnEdit);
-        toolbar.Controls.Add(_btnDelete);
-
-        // --- Grid ---
-        _grid = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            MultiSelect = false,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-        };
-        ThemeHelper.StyleDataGridView(_grid);
-
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id",               HeaderText = "ID",                  FillWeight = 8  });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name",             HeaderText = "Name",                FillWeight = 35 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Role",             HeaderText = "Role",                FillWeight = 25 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "AvailableHours",   HeaderText = "Available Hours/Day", FillWeight = 20 });
-
-        // -------------------------------------------------------------------------
-        // Layout
-        // -------------------------------------------------------------------------
-        Controls.Add(_grid);
-        Controls.Add(toolbar);
-        Controls.Add(headerPanel);
-
-        // -------------------------------------------------------------------------
-        // Events
-        // -------------------------------------------------------------------------
         _btnAdd.Click    += BtnAdd_Click;
         _btnEdit.Click   += BtnEdit_Click;
         _btnDelete.Click += BtnDelete_Click;
@@ -277,8 +212,8 @@ public class TeamManagerPanel : UserControl
 sealed class TeamMemberDialog : Form
 {
     // Outputs
-    public string MemberName          => _txtName.Text.Trim();
-    public string Role                => _cmbRole.SelectedItem?.ToString() ?? "TESTER";
+    public string MemberName           => _txtName.Text.Trim();
+    public string Role                 => _cmbRole.SelectedItem?.ToString() ?? "TESTER";
     public double AvailableHoursPerDay => (double)_nudHours.Value;
 
     private readonly TextBox       _txtName;

@@ -16,7 +16,7 @@ def sample_report_data() -> ExcelReportData:
         project_type="EVOLUTION",
         created_by="Test Manager",
         created_at="2026-02-26",
-        request_number="REQ-2026-015",
+        request_number="REQ_26/0015",
         requester_name="Banking BU",
         business_unit="Banking",
         priority="HIGH",

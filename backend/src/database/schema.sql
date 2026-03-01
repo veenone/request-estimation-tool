@@ -219,5 +219,4 @@ INSERT OR IGNORE INTO configuration (key, value, description) VALUES
     ('new_feature_study_hours', '16.0', 'Hours to study and create tests for a new feature'),
     ('working_hours_per_day', '7.0', 'Productive hours per working day'),
     ('buffer_percentage', '10', 'Additional percentage buffer for unknowns'),
-    ('estimation_number_prefix', 'EST', 'Prefix for auto-generated estimation numbers'),
-    ('request_number_prefix', 'REQ', 'Prefix for auto-generated request numbers');
+    ('estimation_number_prefix', 'EST', 'Prefix for auto-generated estimation numbers');
