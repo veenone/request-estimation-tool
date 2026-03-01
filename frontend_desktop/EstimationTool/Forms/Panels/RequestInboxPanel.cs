@@ -150,6 +150,8 @@ public sealed partial class RequestInboxPanel : UserControl
         dataGridViewTextBoxColumn7.FillWeight = 80;
         dataGridViewTextBoxColumn8.HeaderText = "Delivery Date";
         dataGridViewTextBoxColumn8.FillWeight = 80;
+        dataGridViewTextBoxColumn9.HeaderText = "Assigned To";
+        dataGridViewTextBoxColumn9.FillWeight = 90;
 
         // -- Action bar --
         actionBarPanel.Dock = DockStyle.Fill;
@@ -240,7 +242,8 @@ public sealed partial class RequestInboxPanel : UserControl
                     r.Status,
                     r.BusinessUnit ?? "",
                     FormatDate(r.ReceivedDate),
-                    FormatDate(r.RequestedDeliveryDate)
+                    FormatDate(r.RequestedDeliveryDate),
+                    r.AssignedToName ?? "Unassigned"
                 );
             }
 

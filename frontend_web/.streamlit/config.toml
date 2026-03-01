@@ -1,0 +1,10 @@
+[theme]
+# Default theme - users can toggle via Settings page
+# Dark theme colors (default)
+primaryColor = "#2F5496"
+backgroundColor = "#1E1E2E"
+secondaryBackgroundColor = "#2B2B3B"
+textColor = "#FFFFFF"
+
+[server]
+headless = true

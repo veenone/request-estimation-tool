@@ -218,6 +218,7 @@ public sealed partial class EstimationDetailPanel : UserControl
         _lblDelivery.Text     = e.ExpectedDelivery ?? "—";
         _lblCreatedBy.Text    = e.CreatedBy ?? "—";
         _lblCreatedAt.Text    = e.CreatedAt ?? "—";
+        _lblAssignedTo.Text   = e.AssignedToName ?? "Unassigned";
     }
 
     private void PopulateEffortCards(Estimation e)

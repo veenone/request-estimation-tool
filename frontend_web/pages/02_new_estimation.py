@@ -16,14 +16,14 @@ from datetime import date, timedelta
 from pathlib import Path
 
 # ── Backend path setup ────────────────────────────────────────────────────────
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 import streamlit as st
 
-from database.migrations import get_engine
-from database.models import (
+from src.database.migrations import get_engine
+from src.database.models import (
     DutType,
     Estimation,
     EstimationTask,
@@ -34,16 +34,16 @@ from database.models import (
     TeamMember,
     TestProfile,
 )
-from engine.calculator import (
+from src.engine.calculator import (
     EstimationInput,
     PRFixInput,
     TaskInput,
     calculate_estimation,
 )
-from engine.calibration import HistoricalDataPoint, calibrate
-from engine.feasibility import assess_risks
-from reports.excel_report import ExcelReportData, generate_excel_report
-from reports.word_report import generate_word_report
+from src.engine.calibration import HistoricalDataPoint, calibrate
+from src.engine.feasibility import assess_risks
+from src.reports.excel_report import ExcelReportData, generate_excel_report
+from src.reports.word_report import generate_word_report
 from sqlalchemy.orm import Session
 
 # ── Session-state initialisation ──────────────────────────────────────────────

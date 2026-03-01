@@ -11,12 +11,12 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import Configuration
+from src.database.migrations import get_engine
+from src.database.models import Configuration
 
 st.title("⚙️ Settings")
 st.markdown("Configure global system parameters")
@@ -326,6 +326,43 @@ with info_col2:
         **Number Prefixes:** Used to generate unique identifiers for estimations and requests.
         """
     )
+
+# Theme settings
+st.divider()
+st.subheader("Appearance")
+
+theme_col1, theme_col2 = st.columns(2)
+
+with theme_col1:
+    current_theme = st.session_state.get("theme", "dark")
+    selected_theme = st.selectbox(
+        "Theme",
+        options=["dark", "light"],
+        index=0 if current_theme == "dark" else 1,
+        help="Switch between dark and light mode. Changes take effect on page reload.",
+    )
+    if selected_theme != current_theme:
+        st.session_state["theme"] = selected_theme
+        st.info(
+            "Theme preference saved. Note: Streamlit's theme is primarily controlled "
+            "via the `.streamlit/config.toml` file. For full theme switching, use the "
+            "NiceGUI frontend or the desktop application."
+        )
+
+with theme_col2:
+    st.write("**Theme Preview**")
+    if st.session_state.get("theme", "dark") == "dark":
+        st.markdown(
+            '<div style="background:#1E1E2E;color:#FFFFFF;padding:12px;border-radius:8px;">'
+            '<b>Dark Theme</b> - Default<br>Background: #1E1E2E, Accent: #2F5496</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="background:#FFFFFF;color:#1E1E2E;padding:12px;border-radius:8px;border:1px solid #ddd;">'
+            '<b>Light Theme</b><br>Background: #FFFFFF, Accent: #2F5496</div>',
+            unsafe_allow_html=True,
+        )
 
 # Import/Export section
 st.divider()

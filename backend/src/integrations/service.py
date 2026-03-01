@@ -3,16 +3,17 @@
 import json
 from datetime import date, datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 try:
-    from ..database.models import Configuration, IntegrationConfig, Request
+    from ..database.models import Configuration, Estimation, EstimationTask, IntegrationConfig, Request
 except ImportError:
-    from database.models import Configuration, IntegrationConfig, Request  # type: ignore[no-redef]
+    from database.models import Configuration, Estimation, EstimationTask, IntegrationConfig, Request  # type: ignore[no-redef]
 
 from .base import BaseAdapter, ConnectionTestResult, ExternalRequest, SyncResult, SyncStatus
 from .email_adapter import EmailAdapter
 from .jira_adapter import JiraAdapter
+from .outline_adapter import OutlineAdapter
 from .redmine_adapter import RedmineAdapter
 
 
@@ -20,6 +21,7 @@ ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
     "REDMINE": RedmineAdapter,
     "JIRA": JiraAdapter,
     "EMAIL": EmailAdapter,
+    "OUTLINE": OutlineAdapter,
 }
 
 
@@ -182,6 +184,104 @@ def sync_export(
             errors=[f"{system_name} is not configured or not enabled."],
         )
     return adapter.export_estimation(estimation_data)
+
+
+def _estimation_to_export_dict(est: "Estimation") -> dict:
+    """Convert an Estimation ORM object to the dict expected by adapters."""
+    tasks_data = []
+    for t in est.tasks:
+        tasks_data.append({
+            "task_name": t.task_name,
+            "task_type": t.task_type,
+            "calculated_hours": t.calculated_hours,
+        })
+    return {
+        "estimation_number": est.estimation_number or f"EST-{est.id}",
+        "project_name": est.project_name,
+        "project_type": est.project_type,
+        "status": est.status,
+        "feasibility_status": est.feasibility_status,
+        "total_tester_hours": est.total_tester_hours,
+        "total_leader_hours": est.total_leader_hours,
+        "grand_total_hours": est.grand_total_hours,
+        "grand_total_days": est.grand_total_days,
+        "dut_count": est.dut_count,
+        "profile_count": est.profile_count,
+        "dut_profile_combinations": est.dut_profile_combinations,
+        "pr_fix_count": est.pr_fix_count,
+        "created_at": str(est.created_at) if est.created_at else "",
+        "assigned_to_name": (est.assigned_to.display_name or est.assigned_to.username) if est.assigned_to else None,
+        "tasks": tasks_data,
+    }
+
+
+def sync_export_all(system_name: str, session: Session) -> SyncResult:
+    """Export all saved estimations to an external system.
+
+    Iterates over every estimation in the database and calls
+    ``adapter.export_estimation()`` for each one.  Returns an aggregate
+    SyncResult.
+    """
+    adapter = get_adapter(system_name, session)
+    if not adapter:
+        return SyncResult(
+            system=system_name,
+            direction="EXPORT",
+            status=SyncStatus.FAILED,
+            errors=[f"{system_name} is not configured or not enabled."],
+        )
+
+    estimations = session.query(Estimation).options(
+        joinedload(Estimation.assigned_to),
+        joinedload(Estimation.tasks),
+    ).all()
+    if not estimations:
+        return SyncResult(
+            system=system_name,
+            direction="EXPORT",
+            status=SyncStatus.SUCCESS,
+            items_processed=0,
+            errors=["No estimations found to export."],
+        )
+
+    total = len(estimations)
+    created = 0
+    updated = 0
+    failed = 0
+    errors: list[str] = []
+
+    for est in estimations:
+        est_data = _estimation_to_export_dict(est)
+        result = adapter.export_estimation(est_data)
+        if result.status == SyncStatus.SUCCESS:
+            created += result.items_created
+            updated += result.items_updated
+        else:
+            failed += 1
+            errors.extend(result.errors)
+
+    # Update last_sync_at
+    config_row = (
+        session.query(IntegrationConfig)
+        .filter(IntegrationConfig.system_name == system_name)
+        .first()
+    )
+    if config_row:
+        config_row.last_sync_at = datetime.now()
+        session.commit()
+
+    status = SyncStatus.SUCCESS if failed == 0 else (SyncStatus.PARTIAL if created + updated > 0 else SyncStatus.FAILED)
+
+    return SyncResult(
+        system=system_name,
+        direction="EXPORT",
+        status=status,
+        items_processed=total,
+        items_created=created,
+        items_updated=updated,
+        items_failed=failed,
+        errors=errors,
+    )
 
 
 def get_integration_status(session: Session) -> list[dict]:

@@ -107,7 +107,8 @@ public sealed partial class DashboardPanel : UserControl
                     e.ProjectName,
                     e.GrandTotalHours.ToString("F1"),
                     e.FeasibilityStatus,
-                    e.Status
+                    e.Status,
+                    e.AssignedToName ?? "Unassigned"
                 );
             }
 
@@ -120,7 +121,8 @@ public sealed partial class DashboardPanel : UserControl
                     r.RequestNumber,
                     r.Title,
                     r.Priority,
-                    r.Status
+                    r.Status,
+                    r.AssignedToName ?? "Unassigned"
                 );
             }
         };

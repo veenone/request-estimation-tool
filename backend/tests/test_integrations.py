@@ -476,10 +476,19 @@ class TestIntegrationAPI:
         yield client
         app.dependency_overrides.clear()
 
-    def _create_integration_config(self, client, system_name="REDMINE"):
+    @pytest.fixture
+    def auth_headers(self, client):
+        """Log in as the default admin and return Bearer auth headers."""
+        resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert resp.status_code == 200, f"Login failed: {resp.text}"
+        token = resp.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    def _create_integration_config(self, client, auth_headers, system_name="REDMINE"):
         """Helper to create an integration config."""
         return client.put(
             f"/api/integrations/{system_name}",
+            headers=auth_headers,
             json={
                 "base_url": "https://redmine.example.com",
                 "api_key": "test-key",
@@ -487,14 +496,14 @@ class TestIntegrationAPI:
             },
         )
 
-    def test_list_integrations_empty(self, client):
-        resp = client.get("/api/integrations")
+    def test_list_integrations_empty(self, client, auth_headers):
+        resp = client.get("/api/integrations", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_create_and_get_integration(self, client):
+    def test_create_and_get_integration(self, client, auth_headers):
         # Create via PUT (upsert)
-        resp = self._create_integration_config(client)
+        resp = self._create_integration_config(client, auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["system_name"] == "REDMINE"
@@ -502,55 +511,56 @@ class TestIntegrationAPI:
         assert data["has_api_key"] is True
 
         # Get
-        resp2 = client.get("/api/integrations/REDMINE")
+        resp2 = client.get("/api/integrations/REDMINE", headers=auth_headers)
         assert resp2.status_code == 200
         assert resp2.json()["system_name"] == "REDMINE"
 
-    def test_get_integration_not_found(self, client):
-        resp = client.get("/api/integrations/NONEXISTENT")
+    def test_get_integration_not_found(self, client, auth_headers):
+        resp = client.get("/api/integrations/NONEXISTENT", headers=auth_headers)
         assert resp.status_code == 404
 
-    def test_update_integration(self, client):
-        self._create_integration_config(client)
+    def test_update_integration(self, client, auth_headers):
+        self._create_integration_config(client, auth_headers)
         resp = client.put(
             "/api/integrations/REDMINE",
+            headers=auth_headers,
             json={"enabled": False},
         )
         assert resp.status_code == 200
         assert resp.json()["enabled"] is False
 
-    def test_list_integrations_after_create(self, client):
-        self._create_integration_config(client, "REDMINE")
-        self._create_integration_config(client, "JIRA")
-        resp = client.get("/api/integrations")
+    def test_list_integrations_after_create(self, client, auth_headers):
+        self._create_integration_config(client, auth_headers, "REDMINE")
+        self._create_integration_config(client, auth_headers, "JIRA")
+        resp = client.get("/api/integrations", headers=auth_headers)
         assert resp.status_code == 200
         names = [i["system_name"] for i in resp.json()]
         assert "REDMINE" in names
         assert "JIRA" in names
 
-    def test_integration_status(self, client):
-        self._create_integration_config(client)
-        resp = client.get("/api/integrations/REDMINE/status")
+    def test_integration_status(self, client, auth_headers):
+        self._create_integration_config(client, auth_headers)
+        resp = client.get("/api/integrations/REDMINE/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["system_name"] == "REDMINE"
         assert data["enabled"] is True
         assert data["configured"] is True
 
-    def test_integration_status_not_found(self, client):
-        resp = client.get("/api/integrations/NONEXISTENT/status")
+    def test_integration_status_not_found(self, client, auth_headers):
+        resp = client.get("/api/integrations/NONEXISTENT/status", headers=auth_headers)
         assert resp.status_code == 404
 
-    def test_test_integration_not_configured(self, client):
+    def test_test_integration_not_configured(self, client, auth_headers):
         """Test connection for an unconfigured integration should fail gracefully."""
-        resp = client.post("/api/integrations/REDMINE/test")
+        resp = client.post("/api/integrations/REDMINE/test", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is False
 
-    def test_sync_not_configured(self, client):
+    def test_sync_not_configured(self, client, auth_headers):
         """Sync for an unconfigured integration should fail gracefully."""
-        resp = client.post("/api/integrations/REDMINE/sync")
+        resp = client.post("/api/integrations/REDMINE/sync", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "FAILED"

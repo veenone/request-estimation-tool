@@ -1,27 +1,102 @@
 namespace EstimationTool.Services;
 
 /// <summary>
-/// Provides dark-theme constants and helper methods for consistently styling
-/// WinForms controls throughout the application.
+/// Theme enumeration for light and dark mode support.
+/// </summary>
+public enum AppTheme
+{
+    Dark,
+    Light
+}
+
+/// <summary>
+/// Provides theme-aware constants and helper methods for consistently styling
+/// WinForms controls throughout the application. Supports both dark and light themes.
 /// </summary>
 public static class ThemeHelper
 {
     // -------------------------------------------------------------------------
-    // Base palette
+    // Theme state
     // -------------------------------------------------------------------------
 
-    public static readonly Color Background     = ColorFromHex("#1E1E2E");
-    public static readonly Color Surface        = ColorFromHex("#2A2A3E");
-    public static readonly Color Sidebar        = ColorFromHex("#181825");
-    public static readonly Color SidebarHover   = ColorFromHex("#313244");
-    public static readonly Color Accent         = ColorFromHex("#2F5496");
-    public static readonly Color AccentHover    = ColorFromHex("#3A65B0");
-    public static readonly Color Text           = ColorFromHex("#CDD6F4");
-    public static readonly Color TextSecondary  = ColorFromHex("#A6ADC8");
-    public static readonly Color Border         = ColorFromHex("#45475A");
+    private static AppTheme _currentTheme = AppTheme.Dark;
+
+    /// <summary>
+    /// Gets or sets the current application theme.
+    /// </summary>
+    public static AppTheme CurrentTheme
+    {
+        get => _currentTheme;
+        private set => _currentTheme = value;
+    }
+
+    /// <summary>
+    /// Raised when the theme changes. Subscribers should re-apply theming.
+    /// </summary>
+    public static event EventHandler<AppTheme>? ThemeChanged;
+
+    /// <summary>
+    /// Switches to the specified theme and raises <see cref="ThemeChanged"/>.
+    /// </summary>
+    public static void SetTheme(AppTheme theme)
+    {
+        if (_currentTheme == theme) return;
+        _currentTheme = theme;
+        ThemeChanged?.Invoke(null, theme);
+    }
+
+    /// <summary>
+    /// Toggles between Dark and Light themes.
+    /// </summary>
+    public static void ToggleTheme()
+    {
+        SetTheme(_currentTheme == AppTheme.Dark ? AppTheme.Light : AppTheme.Dark);
+    }
 
     // -------------------------------------------------------------------------
-    // Semantic / status colors
+    // Dark palette
+    // -------------------------------------------------------------------------
+
+    private static readonly Color DarkBackground   = ColorFromHex("#1E1E2E");
+    private static readonly Color DarkSurface      = ColorFromHex("#2A2A3E");
+    private static readonly Color DarkSidebar      = ColorFromHex("#181825");
+    private static readonly Color DarkSidebarHover = ColorFromHex("#313244");
+    private static readonly Color DarkAccent       = ColorFromHex("#2F5496");
+    private static readonly Color DarkAccentHover  = ColorFromHex("#3A65B0");
+    private static readonly Color DarkText         = ColorFromHex("#CDD6F4");
+    private static readonly Color DarkTextSecondary = ColorFromHex("#A6ADC8");
+    private static readonly Color DarkBorder       = ColorFromHex("#45475A");
+
+    // -------------------------------------------------------------------------
+    // Light palette
+    // -------------------------------------------------------------------------
+
+    private static readonly Color LightBackground   = ColorFromHex("#FFFFFF");
+    private static readonly Color LightSurface      = ColorFromHex("#F5F5F5");
+    private static readonly Color LightSidebar      = ColorFromHex("#E8E8E8");
+    private static readonly Color LightSidebarHover = ColorFromHex("#D0D0D0");
+    private static readonly Color LightAccent       = ColorFromHex("#2F5496");
+    private static readonly Color LightAccentHover  = ColorFromHex("#3A65B0");
+    private static readonly Color LightText         = ColorFromHex("#1E1E2E");
+    private static readonly Color LightTextSecondary = ColorFromHex("#555555");
+    private static readonly Color LightBorder       = ColorFromHex("#CCCCCC");
+
+    // -------------------------------------------------------------------------
+    // Theme-aware color properties
+    // -------------------------------------------------------------------------
+
+    public static Color Background     => _currentTheme == AppTheme.Dark ? DarkBackground   : LightBackground;
+    public static Color Surface        => _currentTheme == AppTheme.Dark ? DarkSurface      : LightSurface;
+    public static Color Sidebar        => _currentTheme == AppTheme.Dark ? DarkSidebar      : LightSidebar;
+    public static Color SidebarHover   => _currentTheme == AppTheme.Dark ? DarkSidebarHover : LightSidebarHover;
+    public static Color Accent         => _currentTheme == AppTheme.Dark ? DarkAccent       : LightAccent;
+    public static Color AccentHover    => _currentTheme == AppTheme.Dark ? DarkAccentHover  : LightAccentHover;
+    public static Color Text           => _currentTheme == AppTheme.Dark ? DarkText         : LightText;
+    public static Color TextSecondary  => _currentTheme == AppTheme.Dark ? DarkTextSecondary : LightTextSecondary;
+    public static Color Border         => _currentTheme == AppTheme.Dark ? DarkBorder       : LightBorder;
+
+    // -------------------------------------------------------------------------
+    // Semantic / status colors (same for both themes)
     // -------------------------------------------------------------------------
 
     // Feasibility
@@ -49,7 +124,7 @@ public static class ThemeHelper
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Recursively applies the dark theme BackColor and ForeColor to a control
+    /// Recursively applies the current theme BackColor and ForeColor to a control
     /// and all of its children.
     /// </summary>
     public static void ApplyTheme(Control control)
@@ -162,7 +237,7 @@ public static class ThemeHelper
         btn.FlatStyle = FlatStyle.Flat;
         btn.Font = DefaultFont;
         btn.Cursor = Cursors.Hand;
-        btn.ForeColor = Text;
+        btn.ForeColor = isPrimary ? Color.White : Text;
 
         if (isPrimary)
         {
@@ -196,7 +271,7 @@ public static class ThemeHelper
         btn.FlatStyle = FlatStyle.Flat;
         btn.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
         btn.Cursor = Cursors.Hand;
-        btn.ForeColor = isActive ? Text : TextSecondary;
+        btn.ForeColor = isActive ? (_currentTheme == AppTheme.Dark ? DarkText : Color.White) : TextSecondary;
         btn.TextAlign = ContentAlignment.MiddleLeft;
         btn.Dock = DockStyle.Top;
         btn.Height = 44;
@@ -213,7 +288,7 @@ public static class ThemeHelper
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Applies a dark theme to a DataGridView with alternating row colors,
+    /// Applies the current theme to a DataGridView with alternating row colors,
     /// hidden row headers, and auto-sized columns.
     /// </summary>
     public static void StyleDataGridView(DataGridView dgv)
@@ -232,7 +307,7 @@ public static class ThemeHelper
         dgv.DefaultCellStyle.BackColor = Surface;
         dgv.DefaultCellStyle.ForeColor = Text;
         dgv.DefaultCellStyle.SelectionBackColor = Accent;
-        dgv.DefaultCellStyle.SelectionForeColor = Text;
+        dgv.DefaultCellStyle.SelectionForeColor = _currentTheme == AppTheme.Dark ? Text : Color.White;
         dgv.DefaultCellStyle.Font = DefaultFont;
         dgv.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
 
@@ -240,7 +315,7 @@ public static class ThemeHelper
         dgv.AlternatingRowsDefaultCellStyle.BackColor = Background;
         dgv.AlternatingRowsDefaultCellStyle.ForeColor = Text;
         dgv.AlternatingRowsDefaultCellStyle.SelectionBackColor = Accent;
-        dgv.AlternatingRowsDefaultCellStyle.SelectionForeColor = Text;
+        dgv.AlternatingRowsDefaultCellStyle.SelectionForeColor = _currentTheme == AppTheme.Dark ? Text : Color.White;
 
         // Column header style
         dgv.ColumnHeadersDefaultCellStyle.BackColor = Sidebar;
@@ -261,7 +336,7 @@ public static class ThemeHelper
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Applies consistent dark-theme styling to a TextBox.
+    /// Applies consistent theme styling to a TextBox.
     /// </summary>
     public static void StyleTextBox(TextBox txt)
     {
@@ -276,7 +351,7 @@ public static class ThemeHelper
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Applies consistent dark-theme styling to a ComboBox.
+    /// Applies consistent theme styling to a ComboBox.
     /// Note: WinForms ComboBox has limited owner-draw support; this sets
     /// the most impactful properties.
     /// </summary>
@@ -293,7 +368,7 @@ public static class ThemeHelper
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Styles a Panel to appear as a dark card with a subtle border.
+    /// Styles a Panel to appear as a card with a subtle border.
     /// </summary>
     public static void StylePanel(Panel panel)
     {

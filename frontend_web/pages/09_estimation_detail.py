@@ -16,15 +16,15 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 # ── Backend path setup ─────────────────────────────────────────────────────
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import Estimation, EstimationTask, Request
-from reports.excel_report import ExcelReportData, generate_excel_report
-from reports.pdf_report import generate_pdf_report
-from reports.word_report import generate_word_report
+from src.database.migrations import get_engine
+from src.database.models import Estimation, EstimationTask, Request
+from src.reports.excel_report import ExcelReportData, generate_excel_report
+from src.reports.pdf_report import generate_pdf_report
+from src.reports.word_report import generate_word_report
 
 st.title("Estimation Detail")
 st.markdown("View and manage your saved estimations")
@@ -132,6 +132,10 @@ def load_estimation_detail(estimation_id: int):
             "request": request_data,
             "tasks": tasks,
             "reference_project_ids": reference_ids,
+            "assigned_to_id": estimation.assigned_to_id,
+            "assigned_to_name": (
+                estimation.assigned_to.display_name or estimation.assigned_to.username
+            ) if estimation.assigned_to else None,
         }
 
 
@@ -328,6 +332,10 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# Assignee info block
+assigned_display = est.get("assigned_to_name") or "Unassigned"
+st.info(f"**Assigned To:** {assigned_display}")
+
 # ── Request Details (if linked) ────────────────────────────────────────────
 
 if est["request"]:
@@ -492,7 +500,7 @@ if (
         help=f"Push estimation results back to {source.title()} issue #{req_data['external_id']}",
     ):
         with st.spinner(f"Exporting to {source.title()}..."):
-            from integrations.service import sync_export
+            from src.integrations.service import sync_export
 
             with Session(engine) as session:
                 estimation_data = {
@@ -580,6 +588,8 @@ with col2:
         st.write(f"**Approved By:** {est['approved_by']}")
     else:
         st.write("**Approved:** Not yet approved")
+    assigned_meta = est.get("assigned_to_name") or "Unassigned"
+    st.write(f"**Assigned To:** {assigned_meta}")
 
 with col3:
     if est["reference_project_ids"]:

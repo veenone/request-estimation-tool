@@ -1,0 +1,1 @@
+"""NiceGUI frontend pages package."""

@@ -13,13 +13,13 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import IntegrationConfig
-from integrations.service import get_integration_status, sync_import, test_integration
+from src.database.migrations import get_engine
+from src.database.models import IntegrationConfig
+from src.integrations.service import get_integration_status, sync_import, test_integration
 
 
 
@@ -498,6 +498,105 @@ def render_jira_tab():
             st.rerun()
 
 
+def render_outline_tab():
+    """Render Outline wiki integration tab."""
+    st.subheader("Outline Wiki Configuration")
+
+    config = get_integration_config("OUTLINE")
+
+    additional_config = {}
+    if config and config.additional_config_json:
+        try:
+            additional_config = json.loads(config.additional_config_json)
+        except json.JSONDecodeError:
+            additional_config = {}
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Connection Settings**")
+
+        base_url = st.text_input(
+            "Outline URL",
+            value=config.base_url or "",
+            placeholder="https://wiki.example.com",
+            key="outline_base_url",
+            help="Outline wiki server URL",
+        )
+
+        api_key = st.text_input(
+            "API Key",
+            value=config.api_key or "",
+            type="password",
+            placeholder="Your Outline API key",
+            key="outline_api_key",
+            help="Generate from Outline settings > API",
+        )
+
+    with col2:
+        st.write("**Publishing Settings**")
+
+        collection_id = st.text_input(
+            "Collection ID",
+            value=additional_config.get("collection_id", ""),
+            placeholder="UUID of target collection",
+            key="outline_collection_id",
+            help="UUID of the Outline collection where estimations are published",
+        )
+
+        auto_publish = st.checkbox(
+            "Auto-publish on approval",
+            value=additional_config.get("auto_publish", False),
+            key="outline_auto_publish",
+            help="Automatically publish estimation to Outline when status changes to APPROVED",
+        )
+
+    st.divider()
+
+    col1, col2, col3 = st.columns(3)
+
+    enabled = st.checkbox(
+        "Enable Outline Integration",
+        value=config.enabled if config else False,
+        key="outline_enabled",
+    )
+
+    with col2:
+        if st.button("Test Connection", key="outline_test"):
+            with st.spinner("Testing connection..."):
+                with Session(engine) as session:
+                    result = test_integration("OUTLINE", session)
+                if result.success:
+                    st.success(f"Connection successful! {result.message}")
+                else:
+                    st.error(f"Connection failed: {result.message}")
+
+    with col3:
+        st.write("**Search Wiki**")
+        query = st.text_input("Search", key="outline_search", placeholder="Search Outline wiki...")
+        if query and st.button("Search", key="outline_search_btn"):
+            st.info("Wiki search results would appear here when Outline is configured.")
+
+    st.divider()
+
+    if st.button("Save Outline Configuration", type="primary", use_container_width=True):
+        additional_config = {
+            "collection_id": collection_id,
+            "auto_publish": auto_publish,
+        }
+
+        if save_integration_config(
+            "OUTLINE",
+            base_url,
+            api_key,
+            "",
+            additional_config,
+            enabled,
+        ):
+            st.success("Outline configuration saved successfully!")
+            st.rerun()
+
+
 def render_email_tab():
     """Render Email integration tab."""
     st.subheader("Email Configuration")
@@ -669,7 +768,7 @@ def render_integration_status():
 render_integration_status()
 
 # Tabs for each integration
-tab1, tab2, tab3 = st.tabs(["Redmine", "Jira", "Email"])
+tab1, tab2, tab3, tab4 = st.tabs(["Redmine", "Jira", "Email", "Outline Wiki"])
 
 with tab1:
     render_redmine_tab()
@@ -679,6 +778,9 @@ with tab2:
 
 with tab3:
     render_email_tab()
+
+with tab4:
+    render_outline_tab()
 
 # Information section
 st.divider()
@@ -735,6 +837,26 @@ with st.expander("Jira Setup Instructions"):
     - Click "Test Connection" to verify configuration
     - It will show the deployment type (Cloud / Server / Data Center) and version
     - Click "Manual Sync" to import requests
+    """)
+
+with st.expander("Outline Wiki Setup Instructions"):
+    st.markdown("""
+    **1. Get API Key:**
+    - Go to Outline Settings > API
+    - Create a new API key
+    - Copy the key value
+
+    **2. Find Collection ID:**
+    - Navigate to the target collection in Outline
+    - The collection UUID is in the URL or via the API: `POST /api/collections.list`
+
+    **3. Auto-Publish:**
+    - When enabled, estimations are automatically published to Outline
+      when their status changes to APPROVED
+    - The estimation summary is formatted as a markdown wiki page
+
+    **4. Test the Connection:**
+    - Click "Test Connection" to verify Outline access
     """)
 
 with st.expander("Email Setup Instructions"):

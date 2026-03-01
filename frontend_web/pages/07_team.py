@@ -12,12 +12,12 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import TeamMember
+from src.database.migrations import get_engine
+from src.database.models import TeamMember
 
 st.title("👥 Team Management")
 st.markdown("Manage team members and track capacity")

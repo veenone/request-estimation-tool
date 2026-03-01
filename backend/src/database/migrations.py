@@ -1,11 +1,12 @@
-"""Database initialization and seed data loading."""
+"""Database initialization, seed data loading, and schema migrations."""
 
 import json
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
+from .engine import DEFAULT_DB_PATH, get_engine as _get_engine
 from .models import (
     Base,
     Configuration,
@@ -14,35 +15,161 @@ from .models import (
     TaskTemplate,
     TestProfile,
 )
+# Import auth models so they register with Base.metadata for create_all
+from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "estimation.db"
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
+SCHEMA_VERSION = 2  # v2.0 adds users, sessions, audit_log, assignment columns
+
 
 def get_engine(db_path: Path | str | None = None):
-    if db_path is None:
-        db_path = DEFAULT_DB_PATH
-    db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite:///{db_path}", echo=False)
+    """Backward-compatible wrapper around engine.get_engine."""
+    return _get_engine(db_path)
 
 
-def init_database(db_path: Path | str | None = None) -> None:
-    """Create all tables and load seed data if the database is empty."""
-    engine = get_engine(db_path)
+def _get_schema_version(session: Session) -> int:
+    """Read current schema version from configuration table."""
+    try:
+        cfg = session.query(Configuration).filter(Configuration.key == "schema_version").first()
+        return int(cfg.value) if cfg else 1
+    except Exception:
+        return 1
+
+
+def _set_schema_version(session: Session, version: int) -> None:
+    cfg = session.query(Configuration).filter(Configuration.key == "schema_version").first()
+    if cfg:
+        cfg.value = str(version)
+    else:
+        session.add(Configuration(
+            key="schema_version",
+            value=str(version),
+            description="Database schema version",
+        ))
+
+
+def _table_exists(engine, table_name: str) -> bool:
+    insp = inspect(engine)
+    return table_name in insp.get_table_names()
+
+
+def _column_exists(engine, table_name: str, column_name: str) -> bool:
+    insp = inspect(engine)
+    columns = [c["name"] for c in insp.get_columns(table_name)]
+    return column_name in columns
+
+
+def _migrate_v1_to_v2(engine, session: Session) -> None:
+    """Migrate from v1 (no auth) to v2 (auth, assignment, audit)."""
+    is_sqlite = engine.dialect.name == "sqlite"
+
+    # Create new tables via ORM metadata (handles both SQLite and MySQL)
+    for table_name in ("users", "user_sessions", "audit_log"):
+        if not _table_exists(engine, table_name):
+            table = Base.metadata.tables.get(table_name)
+            if table is not None:
+                table.create(engine, checkfirst=True)
+
+    # Add new columns to estimations
+    if _table_exists(engine, "estimations"):
+        for col_name, col_def in [
+            ("created_by_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ("approved_by_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ("assigned_to_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+        ]:
+            if not _column_exists(engine, "estimations", col_name):
+                session.execute(text(
+                    f"ALTER TABLE estimations ADD COLUMN {col_name} {col_def}"
+                ))
+
+    # Add assigned_to_id to requests
+    if _table_exists(engine, "requests"):
+        if not _column_exists(engine, "requests", "assigned_to_id"):
+            session.execute(text(
+                "ALTER TABLE requests ADD COLUMN assigned_to_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
+            ))
+
+    # Add auth-related config defaults
+    auth_configs = {
+        "jwt_secret": ("", "JWT signing secret (auto-generated on first use)"),
+        "smtp_host": ("", "SMTP server hostname for notifications"),
+        "smtp_port": ("587", "SMTP server port"),
+        "smtp_user": ("", "SMTP username"),
+        "smtp_password": ("", "SMTP password"),
+        "smtp_from": ("", "SMTP sender email address"),
+        "smtp_tls": ("true", "Use TLS for SMTP"),
+        "ldap_url": ("", "LDAP/AD server URL"),
+        "ldap_bind_dn": ("", "LDAP bind distinguished name"),
+        "ldap_bind_password": ("", "LDAP bind password"),
+        "ldap_search_base": ("", "LDAP search base DN"),
+        "ldap_user_filter": ("(sAMAccountName={username})", "LDAP user search filter"),
+        "ldap_group_mapping_json": ("{}", "JSON mapping of app roles to AD groups"),
+        "oidc_issuer": ("", "OpenID Connect issuer URL"),
+        "oidc_client_id": ("", "OIDC client ID"),
+        "oidc_client_secret": ("", "OIDC client secret"),
+        "oidc_redirect_uri": ("", "OIDC redirect URI"),
+        "oidc_scopes": ("openid profile email", "OIDC scopes to request"),
+        "oidc_role_claim": ("roles", "OIDC claim containing user roles"),
+        "oidc_role_mapping_json": ("{}", "JSON mapping of app roles to OIDC roles"),
+    }
+
+    for key, (value, desc) in auth_configs.items():
+        existing = session.query(Configuration).filter(Configuration.key == key).first()
+        if not existing:
+            session.add(Configuration(key=key, value=value, description=desc))
+
+    # Update schema version
+    _set_schema_version(session, 2)
+    session.commit()
+
+
+def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
+    """Create all tables, run migrations, and load seed data if empty."""
+    engine = _get_engine(db_path, db_url)
+
+    # Create all tables that don't exist yet
     Base.metadata.create_all(engine)
 
     with Session(engine) as session:
-        # Enable WAL mode and foreign keys
-        session.execute(text("PRAGMA journal_mode = WAL"))
-        session.execute(text("PRAGMA foreign_keys = ON"))
-
         # Only seed if features table is empty
         feature_count = session.query(Feature).count()
         if feature_count == 0:
             _load_seed_data(session)
+
+        # Run migrations
+        current_version = _get_schema_version(session)
+        if current_version < 2:
+            _migrate_v1_to_v2(engine, session)
+
+        # Ensure default admin user exists
+        user_count = session.query(User).count()
+        if user_count == 0:
+            _create_default_admin(session)
+
         session.commit()
+
+
+def _create_default_admin(session: Session) -> None:
+    """Create the default admin user with password 'admin'."""
+    try:
+        import bcrypt
+        password_hash = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode()
+    except ImportError:
+        password_hash = None
+
+    admin = User(
+        username="admin",
+        display_name="Administrator",
+        email="admin@localhost",
+        password_hash=password_hash,
+        auth_provider="local",
+        role="ADMIN",
+        is_active=True,
+    )
+    session.add(admin)
+    session.flush()
 
 
 def _load_seed_data(session: Session) -> None:

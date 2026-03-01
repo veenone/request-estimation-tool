@@ -230,6 +230,13 @@ public sealed class BackendApiService : IDisposable
             // ── Send report email ───────────────────────────────
             "send_estimation_report" => await SendEstimationReportAsync<T>(payload),
 
+            // ── Authentication & User management ─────────────────
+            "login"       => await PostAsync<T>("/api/auth/login", payload),
+            "get_users"   => await GetWrapped<T>("/api/users", "users"),
+            "create_user" => await PostAsync<T>("/api/users", payload),
+            "update_user" => await PutByIdAsync<T>("/api/users", payload),
+            "delete_user" => await DeleteByIdAsync<T>("/api/users", payload),
+
             _ => throw new IpcException($"Unknown command: {command}", command),
         };
     }

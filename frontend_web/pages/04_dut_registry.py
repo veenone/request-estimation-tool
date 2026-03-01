@@ -11,12 +11,12 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import DutType
+from src.database.migrations import get_engine
+from src.database.models import DutType
 
 st.title("📱 DUT Registry")
 st.markdown("Manage Device Under Test (DUT) types and configurations")

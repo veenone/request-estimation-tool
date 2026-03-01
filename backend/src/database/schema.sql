@@ -198,6 +198,58 @@ CREATE TABLE IF NOT EXISTS integration_config (
 );
 
 -- ============================================================
+-- Table: users
+-- Authentication accounts (v2.0)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT,
+    auth_provider TEXT NOT NULL DEFAULT 'local'
+        CHECK (auth_provider IN ('local', 'ldap', 'oidc')),
+    external_id TEXT,
+    role TEXT NOT NULL DEFAULT 'VIEWER'
+        CHECK (role IN ('VIEWER', 'ESTIMATOR', 'APPROVER', 'ADMIN')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    team_member_id INTEGER,
+    last_login_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (team_member_id) REFERENCES team_members(id)
+);
+
+-- ============================================================
+-- Table: user_sessions
+-- JWT refresh token storage (v2.0)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    refresh_token TEXT NOT NULL UNIQUE,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- Table: audit_log
+-- Activity tracking (v2.0)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id INTEGER,
+    details_json TEXT DEFAULT '{}',
+    ip_address TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- ============================================================
 -- Indexes for performance
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
@@ -209,6 +261,15 @@ CREATE INDEX IF NOT EXISTS idx_estimations_request ON estimations(request_id);
 CREATE INDEX IF NOT EXISTS idx_estimations_status ON estimations(status);
 CREATE INDEX IF NOT EXISTS idx_estimation_tasks_estimation ON estimation_tasks(estimation_id);
 CREATE INDEX IF NOT EXISTS idx_historical_projects_type ON historical_projects(project_type);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(refresh_token);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_estimations_assigned ON estimations(assigned_to_id);
+CREATE INDEX IF NOT EXISTS idx_requests_assigned ON requests(assigned_to_id);
 
 -- ============================================================
 -- Default configuration values

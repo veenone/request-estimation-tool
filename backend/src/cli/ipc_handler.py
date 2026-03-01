@@ -4,8 +4,10 @@ Reads JSON commands from stdin, dispatches to the appropriate handler,
 and writes JSON responses to stdout.
 
 Protocol:
-  Input:  {"command": "...", "payload": {...}}
+  Input:  {"command": "...", "payload": {...}, "token": "eyJ..."}
   Output: {"status": "ok"|"error", "result": {...}} or {"status": "error", "message": "..."}
+
+v2.0: Added token-based authentication. Write commands require a valid JWT.
 """
 
 import base64
@@ -18,7 +20,8 @@ from pathlib import Path
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 
-from ..database.migrations import get_engine, init_database
+from ..database.migrations import init_database
+from ..database.engine import get_engine
 from ..database.models import (
     Configuration,
     DutType,
@@ -32,6 +35,8 @@ from ..database.models import (
     TeamMember,
     TestProfile,
 )
+from ..auth.models import AuditLog, User
+from ..auth.service import AuthService
 from ..engine.calculator import (
     EstimationInput,
     PRFixInput,
@@ -57,6 +62,240 @@ def _generate_number(session: Session, prefix_key: str, table_class: type) -> st
     year = datetime.now().year
     count = session.query(table_class).count()
     return f"{prefix}-{year}-{count + 1:03d}"
+
+
+# ── Authentication ──────────────────────────────────────
+
+
+def _validate_token(session: Session, token: str | None) -> User | None:
+    """Validate JWT token and return User or None."""
+    if not token:
+        return None
+    auth_service = AuthService(session)
+    payload = auth_service.validate_access_token(token)
+    if not payload:
+        return None
+    return auth_service.get_user_by_id(int(payload["sub"]))
+
+
+def handle_login(session: Session, payload: dict) -> dict:
+    """Authenticate user and return JWT tokens."""
+    username = payload.get("username", "")
+    password = payload.get("password", "")
+
+    auth_service = AuthService(session)
+    result = auth_service.login(username, password)
+
+    # Try LDAP if local fails
+    if result is None:
+        try:
+            from ..auth.ldap_provider import LDAPProvider
+            ldap = LDAPProvider(session)
+            if ldap.is_configured:
+                ldap_user = ldap.authenticate(username, password)
+                if ldap_user:
+                    access_token = auth_service.create_access_token(ldap_user)
+                    refresh_token = auth_service.create_refresh_token(ldap_user)
+                    result = (ldap_user, access_token, refresh_token)
+        except Exception:
+            pass
+
+    if result is None:
+        raise ValueError("Invalid username or password")
+
+    user, access_token, refresh_token = result
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "auth_provider": user.auth_provider,
+            "is_active": user.is_active,
+        },
+    }
+
+
+def handle_refresh_token(session: Session, payload: dict) -> dict:
+    auth_service = AuthService(session)
+    result = auth_service.refresh(payload.get("refresh_token", ""))
+    if result is None:
+        raise ValueError("Invalid or expired refresh token")
+    user, access_token, new_refresh = result
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+        },
+    }
+
+
+def handle_logout(session: Session, payload: dict) -> dict:
+    auth_service = AuthService(session)
+    auth_service.logout(payload.get("refresh_token", ""))
+    return {"logged_out": True}
+
+
+def handle_validate_session(session: Session, payload: dict) -> dict:
+    """Validate a token and return user info."""
+    token = payload.get("token", "")
+    user = _validate_token(session, token)
+    if not user:
+        raise ValueError("Invalid or expired token")
+    return {
+        "valid": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "auth_provider": user.auth_provider,
+            "is_active": user.is_active,
+        },
+    }
+
+
+def handle_get_current_user(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user:
+        raise ValueError("Authentication required")
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": user.role,
+        "auth_provider": user.auth_provider,
+        "is_active": user.is_active,
+        "team_member_id": user.team_member_id,
+        "last_login_at": str(user.last_login_at) if user.last_login_at else None,
+    }
+
+
+def handle_change_password(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user:
+        raise ValueError("Authentication required")
+    auth_service = AuthService(session)
+    if not auth_service.change_password(
+        user.id, payload["current_password"], payload["new_password"]
+    ):
+        raise ValueError("Current password is incorrect")
+    return {"changed": True}
+
+
+# ── Users (ADMIN only) ─────────────────────────────────
+
+
+def handle_get_users(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "ADMIN"):
+        raise ValueError("Admin access required")
+    auth_service = AuthService(session)
+    users = auth_service.list_users(active_only=payload.get("active_only", False))
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "username": u.username,
+                "email": u.email,
+                "display_name": u.display_name,
+                "role": u.role,
+                "auth_provider": u.auth_provider,
+                "is_active": u.is_active,
+                "team_member_id": u.team_member_id,
+                "last_login_at": str(u.last_login_at) if u.last_login_at else None,
+                "created_at": str(u.created_at) if u.created_at else None,
+            }
+            for u in users
+        ]
+    }
+
+
+def handle_create_user(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "ADMIN"):
+        raise ValueError("Admin access required")
+    auth_service = AuthService(session)
+    existing = auth_service.get_user_by_username(payload["username"])
+    if existing:
+        raise ValueError(f"Username '{payload['username']}' already exists")
+    new_user = auth_service.create_user(
+        username=payload["username"],
+        display_name=payload["display_name"],
+        password=payload.get("password"),
+        email=payload.get("email"),
+        role=payload.get("role", "VIEWER"),
+        auth_provider=payload.get("auth_provider", "local"),
+        team_member_id=payload.get("team_member_id"),
+    )
+    auth_service.log_action(user.id, "CREATE", "user", new_user.id)
+    return {"id": new_user.id, "username": new_user.username}
+
+
+def handle_update_user(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "ADMIN"):
+        raise ValueError("Admin access required")
+    auth_service = AuthService(session)
+    kwargs = {}
+    for key in ("email", "display_name", "role", "is_active", "team_member_id", "password"):
+        if key in payload and key != "id":
+            kwargs[key] = payload[key]
+    updated = auth_service.update_user(payload["id"], **kwargs)
+    if not updated:
+        raise ValueError(f"User {payload['id']} not found")
+    auth_service.log_action(user.id, "UPDATE", "user", payload["id"])
+    return {"id": updated.id, "username": updated.username}
+
+
+def handle_delete_user(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "ADMIN"):
+        raise ValueError("Admin access required")
+    if payload["id"] == user.id:
+        raise ValueError("Cannot delete your own account")
+    auth_service = AuthService(session)
+    if not auth_service.delete_user(payload["id"]):
+        raise ValueError(f"User {payload['id']} not found")
+    auth_service.log_action(user.id, "DELETE", "user", payload["id"])
+    return {"deleted": True}
+
+
+# ── Audit Log ───────────────────────────────────────────
+
+
+def handle_get_audit_log(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "APPROVER"):
+        raise ValueError("Approver access required")
+    auth_service = AuthService(session)
+    logs = auth_service.get_audit_log(
+        limit=payload.get("limit", 100),
+        offset=payload.get("offset", 0),
+        action=payload.get("action"),
+        resource_type=payload.get("resource_type"),
+    )
+    return {
+        "entries": [
+            {
+                "id": log.id,
+                "user_id": log.user_id,
+                "username": log.user.username if log.user else None,
+                "action": log.action,
+                "resource_type": log.resource_type,
+                "resource_id": log.resource_id,
+                "details_json": log.details_json,
+                "ip_address": log.ip_address,
+                "created_at": str(log.created_at) if log.created_at else None,
+            }
+            for log in logs
+        ]
+    }
 
 
 # ── Features ─────────────────────────────────────────────
@@ -337,6 +576,7 @@ def handle_get_requests(session: Session, payload: dict) -> dict:
                 "status": r.status,
                 "requested_delivery_date": str(r.requested_delivery_date) if r.requested_delivery_date else None,
                 "received_date": str(r.received_date) if r.received_date else None,
+                "assigned_to_id": r.assigned_to_id,
                 "notes": r.notes,
                 "created_at": str(r.created_at) if r.created_at else None,
             }
@@ -382,6 +622,8 @@ def handle_update_request(session: Session, payload: dict) -> dict:
     if "requested_delivery_date" in payload:
         val = payload["requested_delivery_date"]
         req.requested_delivery_date = date.fromisoformat(val) if val else None
+    if "assigned_to_id" in payload:
+        req.assigned_to_id = payload["assigned_to_id"]
     session.commit()
     return {"id": req.id, "request_number": req.request_number}
 
@@ -414,6 +656,7 @@ def handle_get_estimations(session: Session, payload: dict) -> dict:
                 "created_by": e.created_by,
                 "approved_by": e.approved_by,
                 "approved_at": str(e.approved_at) if e.approved_at else None,
+                "assigned_to_id": e.assigned_to_id,
             }
             for e in estimations
         ]
@@ -424,7 +667,6 @@ def handle_get_estimation(session: Session, payload: dict) -> dict:
     est = session.get(Estimation, payload["id"])
     if not est:
         raise ValueError(f"Estimation {payload['id']} not found")
-    # Include linked request info for export button
     req = session.get(Request, est.request_id) if est.request_id else None
 
     return {
@@ -451,6 +693,7 @@ def handle_get_estimation(session: Session, payload: dict) -> dict:
         "created_by": est.created_by,
         "approved_by": est.approved_by,
         "approved_at": str(est.approved_at) if est.approved_at else None,
+        "assigned_to_id": est.assigned_to_id,
         "tasks": [
             {
                 "id": t.id,
@@ -559,6 +802,8 @@ def handle_save_estimation(session: Session, payload: dict) -> dict:
         feasibility_status=result.feasibility_status,
         status="DRAFT",
         created_by=payload.get("created_by"),
+        created_by_id=payload.get("created_by_id"),
+        assigned_to_id=payload.get("assigned_to_id"),
     )
     session.add(estimation)
     session.flush()
@@ -603,6 +848,7 @@ def handle_update_estimation_status(session: Session, payload: dict) -> dict:
         "REVISED": ["DRAFT"],
     }
 
+    old_status = est.status
     target = payload["status"]
     allowed = valid_transitions.get(est.status, [])
     if target not in allowed:
@@ -611,9 +857,11 @@ def handle_update_estimation_status(session: Session, payload: dict) -> dict:
     est.status = target
     if target == "APPROVED":
         est.approved_by = payload.get("approved_by")
+        est.approved_by_id = payload.get("approved_by_id")
         est.approved_at = datetime.now()
     elif target == "REVISED":
         est.approved_by = None
+        est.approved_by_id = None
         est.approved_at = None
 
     session.commit()
@@ -621,6 +869,23 @@ def handle_update_estimation_status(session: Session, payload: dict) -> dict:
     # Auto-export to external system when estimation is finalized or approved
     if target in ("FINAL", "APPROVED") and est.request_id:
         _try_export_estimation(est, session)
+
+    # Send notification
+    try:
+        from ..notifications.service import NotificationService
+        notifier = NotificationService(session)
+        notifier.notify_estimation_status_changed(
+            est.estimation_number or f"EST-{est.id}",
+            est.project_name,
+            old_status,
+            target,
+            payload.get("changed_by", "System"),
+            est.grand_total_hours,
+            creator_user_id=est.created_by_id,
+            assigned_user_id=est.assigned_to_id,
+        )
+    except Exception:
+        pass
 
     return {"id": est.id, "status": est.status}
 
@@ -632,7 +897,7 @@ def _try_export_estimation(estimation: Estimation, session: Session) -> None:
         return
 
     try:
-        from integrations.service import sync_export
+        from ..integrations.service import sync_export
 
         estimation_data = {
             "external_id": req.external_id,
@@ -642,7 +907,6 @@ def _try_export_estimation(estimation: Estimation, session: Session) -> None:
         }
         sync_export(req.request_source, estimation_data, session)
     except Exception:
-        # Export failure should not block the status transition
         pass
 
 
@@ -660,7 +924,7 @@ def handle_export_estimation(session: Session, payload: dict) -> dict:
     if req.request_source == "MANUAL":
         raise ValueError("Request source is MANUAL — no external system to export to")
 
-    from integrations.service import sync_export
+    from ..integrations.service import sync_export
 
     estimation_data = {
         "external_id": req.external_id,
@@ -676,6 +940,56 @@ def handle_export_estimation(session: Session, payload: dict) -> dict:
         "items_updated": result.items_updated,
         "errors": result.errors,
     }
+
+
+# ── Assignment ──────────────────────────────────────────
+
+
+def handle_assign_estimation(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "APPROVER"):
+        raise ValueError("Approver access required")
+    est = session.get(Estimation, payload["id"])
+    if not est:
+        raise ValueError(f"Estimation {payload['id']} not found")
+    target_user = session.get(User, payload["assigned_to_id"])
+    if not target_user:
+        raise ValueError(f"User {payload['assigned_to_id']} not found")
+    est.assigned_to_id = payload["assigned_to_id"]
+    session.commit()
+
+    # Notify assignee
+    try:
+        from ..notifications.service import NotificationService
+        notifier = NotificationService(session)
+        notifier.notify_user_assigned(
+            est.estimation_number or f"EST-{est.id}",
+            est.project_name,
+            payload["assigned_to_id"],
+            user.display_name,
+        )
+    except Exception:
+        pass
+
+    AuthService(session).log_action(
+        user.id, "ASSIGN", "estimation", est.id,
+        details={"assigned_to_id": payload["assigned_to_id"]},
+    )
+    return {"id": est.id, "assigned_to_id": est.assigned_to_id}
+
+
+def handle_assign_request(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "APPROVER"):
+        raise ValueError("Approver access required")
+    req = session.get(Request, payload["id"])
+    if not req:
+        raise ValueError(f"Request {payload['id']} not found")
+    req.assigned_to_id = payload["assigned_to_id"]
+    session.commit()
+    AuthService(session).log_action(
+        user.id, "ASSIGN", "request", req.id,
+        details={"assigned_to_id": payload["assigned_to_id"]},
+    )
+    return {"id": req.id, "assigned_to_id": req.assigned_to_id}
 
 
 # ── Configuration ────────────────────────────────────────
@@ -932,25 +1246,84 @@ def handle_generate_report(session: Session, payload: dict) -> dict:
         raise ValueError(f"Estimation {payload['id']} not found")
 
     fmt = payload.get("format", "xlsx").lower()
-    report_data = _build_report_data(est, session)
+    report_type = payload.get("report_type", "standard")
 
-    if fmt == "xlsx":
-        from ..reports.excel_report import generate_excel_report
-        content = generate_excel_report(report_data)
-        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ext = "xlsx"
-    elif fmt == "docx":
-        from ..reports.word_report import generate_word_report
-        content = generate_word_report(report_data)
-        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ext = "docx"
-    elif fmt == "pdf":
-        from ..reports.pdf_report import generate_pdf_report
-        content = generate_pdf_report(report_data)
+    if report_type == "executive_summary":
+        from ..reports.executive_summary import ExecutiveSummaryData, generate_executive_summary
+        data = ExecutiveSummaryData(
+            project_name=est.project_name,
+            estimation_number=est.estimation_number or "",
+            project_type=est.project_type,
+            created_by=est.created_by,
+            created_at=str(est.created_at.date()) if est.created_at else "",
+            grand_total_hours=est.grand_total_hours,
+            grand_total_days=est.grand_total_days,
+            feasibility_status=est.feasibility_status,
+            total_tester_hours=est.total_tester_hours,
+            total_leader_hours=est.total_leader_hours,
+            dut_count=est.dut_count,
+            profile_count=est.profile_count,
+            dut_profile_combinations=est.dut_profile_combinations,
+            tasks=[
+                {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+                for t in est.tasks
+            ],
+        )
+        content = generate_executive_summary(data)
         mime = "application/pdf"
         ext = "pdf"
+    elif report_type == "comparison" and payload.get("compare_with_id"):
+        est_b = session.get(Estimation, payload["compare_with_id"])
+        if not est_b:
+            raise ValueError(f"Comparison estimation {payload['compare_with_id']} not found")
+        from ..reports.comparison_report import generate_comparison_excel
+        from ..reports.templates import ComparisonReportData
+
+        def _est_dict(e):
+            return {
+                "estimation_number": e.estimation_number,
+                "project_name": e.project_name,
+                "project_type": e.project_type,
+                "grand_total_hours": e.grand_total_hours,
+                "grand_total_days": e.grand_total_days,
+                "total_tester_hours": e.total_tester_hours,
+                "total_leader_hours": e.total_leader_hours,
+                "feasibility_status": e.feasibility_status,
+                "dut_count": e.dut_count,
+                "profile_count": e.profile_count,
+                "dut_profile_combinations": e.dut_profile_combinations,
+                "pr_fix_count": e.pr_fix_count,
+                "status": e.status,
+                "tasks": [
+                    {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+                    for t in e.tasks
+                ],
+            }
+
+        data = ComparisonReportData(estimation_a=_est_dict(est), estimation_b=_est_dict(est_b))
+        content = generate_comparison_excel(data)
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ext = "xlsx"
     else:
-        raise ValueError(f"Unsupported format: {fmt}. Use xlsx, docx, or pdf.")
+        # Standard reports
+        report_data = _build_report_data(est, session)
+        if fmt == "xlsx":
+            from ..reports.excel_report import generate_excel_report
+            content = generate_excel_report(report_data)
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ext = "xlsx"
+        elif fmt == "docx":
+            from ..reports.word_report import generate_word_report
+            content = generate_word_report(report_data)
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ext = "docx"
+        elif fmt == "pdf":
+            from ..reports.pdf_report import generate_pdf_report
+            content = generate_pdf_report(report_data)
+            mime = "application/pdf"
+            ext = "pdf"
+        else:
+            raise ValueError(f"Unsupported format: {fmt}. Use xlsx, docx, or pdf.")
 
     filename = f"{est.estimation_number or f'EST-{est.id}'}.{ext}"
     encoded = base64.b64encode(content).decode("ascii")
@@ -961,6 +1334,69 @@ def handle_generate_report(session: Session, payload: dict) -> dict:
         "content_base64": encoded,
         "size_bytes": len(content),
     }
+
+
+def handle_generate_trend_report(session: Session, payload: dict) -> dict:
+    """Generate trend analysis report from historical projects."""
+    from ..reports.trend_report import generate_trend_excel
+    from ..reports.templates import TrendReportData
+
+    projects = session.query(HistoricalProject).all()
+    data = TrendReportData(
+        projects=[
+            {
+                "project_name": p.project_name,
+                "project_type": p.project_type,
+                "estimated_hours": p.estimated_hours,
+                "actual_hours": p.actual_hours,
+                "dut_count": p.dut_count,
+                "completion_date": str(p.completion_date) if p.completion_date else "",
+            }
+            for p in projects
+        ]
+    )
+    content = generate_trend_excel(data)
+    encoded = base64.b64encode(content).decode("ascii")
+    return {
+        "filename": "trend_analysis.xlsx",
+        "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "content_base64": encoded,
+        "size_bytes": len(content),
+    }
+
+
+# ── Bulk Import ─────────────────────────────────────────
+
+
+def handle_preview_import(session: Session, payload: dict) -> dict:
+    """Preview import data without persisting."""
+    from ..imports.service import preview_import
+    import base64 as b64
+
+    content = b64.b64decode(payload["content_base64"])
+    return preview_import(content, payload["entity_type"], payload.get("filename", "data.csv"))
+
+
+def handle_import_data(session: Session, payload: dict, user: User | None = None) -> dict:
+    """Import data from base64-encoded file content."""
+    if not user or not AuthService.has_permission(user.role, "APPROVER"):
+        raise ValueError("Approver access required")
+
+    from ..imports.service import execute_import
+    import base64 as b64
+
+    content = b64.b64decode(payload["content_base64"])
+    result = execute_import(
+        content, payload["entity_type"],
+        payload.get("filename", "data.csv"),
+        session,
+        payload.get("skip_duplicates", True),
+    )
+    AuthService(session).log_action(
+        user.id, "IMPORT", payload["entity_type"],
+        details={"imported": result["imported"], "skipped": result["skipped"]},
+    )
+    return result
 
 
 # ── Integrations ─────────────────────────────────────────
@@ -1023,8 +1459,108 @@ def handle_trigger_sync(session: Session, payload: dict) -> dict:
     }
 
 
+# ── Outline Wiki ────────────────────────────────────────
+
+
+def handle_outline_publish(session: Session, payload: dict) -> dict:
+    """Publish estimation to Outline wiki."""
+    est = session.get(Estimation, payload["id"])
+    if not est:
+        raise ValueError(f"Estimation {payload['id']} not found")
+
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("OUTLINE", session)
+    if not adapter:
+        raise ValueError("Outline integration is not configured")
+
+    est_data = {
+        "estimation_number": est.estimation_number,
+        "project_name": est.project_name,
+        "project_type": est.project_type,
+        "total_tester_hours": est.total_tester_hours,
+        "total_leader_hours": est.total_leader_hours,
+        "grand_total_hours": est.grand_total_hours,
+        "grand_total_days": est.grand_total_days,
+        "feasibility_status": est.feasibility_status,
+        "status": est.status,
+        "dut_count": est.dut_count,
+        "profile_count": est.profile_count,
+        "dut_profile_combinations": est.dut_profile_combinations,
+        "pr_fix_count": est.pr_fix_count,
+        "created_at": str(est.created_at) if est.created_at else "",
+        "tasks": [
+            {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+            for t in est.tasks
+        ],
+    }
+    result = adapter.export_estimation(est_data)
+    return {
+        "status": result.status.value if hasattr(result.status, "value") else str(result.status),
+        "items_created": result.items_created,
+        "items_updated": result.items_updated,
+        "errors": result.errors,
+    }
+
+
+def handle_outline_search(session: Session, payload: dict) -> dict:
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("OUTLINE", session)
+    if not adapter:
+        raise ValueError("Outline integration is not configured")
+    results = adapter.search_documents(
+        payload.get("query", ""),
+        payload.get("limit", 10),
+    )
+    return {"results": results}
+
+
+# ── LDAP Sync ───────────────────────────────────────────
+
+
+def handle_ldap_sync(session: Session, payload: dict, user: User | None = None) -> dict:
+    if not user or not AuthService.has_permission(user.role, "ADMIN"):
+        raise ValueError("Admin access required")
+    from ..auth.ldap_provider import LDAPProvider
+    provider = LDAPProvider(session)
+    if not provider.is_configured:
+        raise ValueError("LDAP is not configured")
+    result = provider.sync_users()
+    AuthService(session).log_action(user.id, "LDAP_SYNC", details=result)
+    return result
+
+
 # ── Command dispatch table ───────────────────────────────
 
+# Commands that don't require authentication
+PUBLIC_COMMANDS: dict[str, callable] = {
+    "login": handle_login,
+    "refresh_token": handle_refresh_token,
+    "logout": handle_logout,
+    "validate_session": handle_validate_session,
+}
+
+# Commands that accept user context (token validated, user passed as kwarg)
+AUTH_AWARE_COMMANDS: dict[str, callable] = {
+    "get_current_user": handle_get_current_user,
+    "change_password": handle_change_password,
+    # Users
+    "get_users": handle_get_users,
+    "create_user": handle_create_user,
+    "update_user": handle_update_user,
+    "delete_user": handle_delete_user,
+    # Audit log
+    "get_audit_log": handle_get_audit_log,
+    # Assignment
+    "assign_estimation": handle_assign_estimation,
+    "assign_request": handle_assign_request,
+    # Import
+    "preview_import": handle_preview_import,
+    "import_data": handle_import_data,
+    # LDAP
+    "ldap_sync": handle_ldap_sync,
+}
+
+# Commands that work with or without auth (backward compatible)
 COMMANDS: dict[str, callable] = {
     # Features
     "get_features": handle_get_features,
@@ -1064,6 +1600,7 @@ COMMANDS: dict[str, callable] = {
     "get_dashboard_stats": handle_get_dashboard_stats,
     # Reports
     "generate_report": handle_generate_report,
+    "generate_trend_report": handle_generate_trend_report,
     # Configuration
     "get_configuration": handle_get_configuration,
     "set_configuration": handle_set_configuration,
@@ -1072,6 +1609,9 @@ COMMANDS: dict[str, callable] = {
     "update_integration": handle_update_integration,
     "test_integration": handle_test_integration,
     "trigger_sync": handle_trigger_sync,
+    # Outline
+    "outline_publish": handle_outline_publish,
+    "outline_search": handle_outline_search,
 }
 
 
@@ -1079,10 +1619,37 @@ def process_command(input_data: dict, db_path: str | None = None) -> dict:
     """Process a single IPC command and return the response."""
     command = input_data.get("command")
     payload = input_data.get("payload", {})
+    token = input_data.get("token")
 
     if not command:
         return {"status": "error", "message": "Missing 'command' field"}
 
+    # Check public commands first (no auth needed)
+    if command in PUBLIC_COMMANDS:
+        session = _get_session(db_path)
+        try:
+            result = PUBLIC_COMMANDS[command](session, payload)
+            return {"status": "ok", "result": result}
+        except Exception as e:
+            session.rollback()
+            return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+        finally:
+            session.close()
+
+    # Check auth-aware commands (require valid user)
+    if command in AUTH_AWARE_COMMANDS:
+        session = _get_session(db_path)
+        try:
+            user = _validate_token(session, token)
+            result = AUTH_AWARE_COMMANDS[command](session, payload, user=user)
+            return {"status": "ok", "result": result}
+        except Exception as e:
+            session.rollback()
+            return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+        finally:
+            session.close()
+
+    # Regular commands (work with or without auth for backward compat)
     handler = COMMANDS.get(command)
     if not handler:
         return {"status": "error", "message": f"Unknown command: {command}"}

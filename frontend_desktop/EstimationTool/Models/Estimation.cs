@@ -27,6 +27,8 @@ public class Estimation
     [JsonPropertyName("created_by")] public string? CreatedBy { get; set; }
     [JsonPropertyName("approved_by")] public string? ApprovedBy { get; set; }
     [JsonPropertyName("approved_at")] public string? ApprovedAt { get; set; }
+    [JsonPropertyName("assigned_to_id")] public int? AssignedToId { get; set; }
+    [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
     [JsonPropertyName("tasks")] public List<EstimationTask> Tasks { get; set; } = new();
 }
 

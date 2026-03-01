@@ -13,12 +13,12 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import Estimation, Request
+from src.database.migrations import get_engine
+from src.database.models import Estimation, Request
 
 st.title("📊 Dashboard")
 st.markdown("View all estimations and requests at a glance")

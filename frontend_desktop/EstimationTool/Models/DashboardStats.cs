@@ -26,6 +26,7 @@ public class RecentEstimation
     [JsonPropertyName("feasibility_status")] public string FeasibilityStatus { get; set; } = "";
     [JsonPropertyName("status")] public string Status { get; set; } = "";
     [JsonPropertyName("created_at")] public string? CreatedAt { get; set; }
+    [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
 }
 
 public class RecentRequest
@@ -36,4 +37,5 @@ public class RecentRequest
     [JsonPropertyName("priority")] public string Priority { get; set; } = "";
     [JsonPropertyName("status")] public string Status { get; set; } = "";
     [JsonPropertyName("created_at")] public string? CreatedAt { get; set; }
+    [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
 }

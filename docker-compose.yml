@@ -1,0 +1,54 @@
+# Test Effort Estimation Tool — Docker Compose
+#
+# Usage:
+#   docker-compose up -d                    # SQLite mode (default)
+#   docker-compose --profile mysql up -d    # With MySQL backend
+#
+# Environment variables (override via .env or shell exports):
+#   DB_TYPE                  sqlite | mysql  (default: sqlite)
+#   DB_URL                   SQLAlchemy URL  (default: sqlite:////app/data/estimation.db)
+#   MYSQL_ROOT_PASSWORD      (default: estimation_secret)
+#   MYSQL_DATABASE           (default: estimation)
+#   MYSQL_USER               (default: estimation)
+#   MYSQL_PASSWORD           (default: estimation_pass)
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"   # FastAPI REST API
+      - "8501:8501"   # Streamlit web UI
+    environment:
+      - DB_TYPE=${DB_TYPE:-sqlite}
+      - DB_URL=${DB_URL:-sqlite:////app/data/estimation.db}
+    volumes:
+      - app_data:/app/data
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+        required: false
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-estimation_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-estimation}
+      MYSQL_USER: ${MYSQL_USER:-estimation}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-estimation_pass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - mysql
+    restart: unless-stopped
+
+volumes:
+  app_data:
+  mysql_data:

@@ -19,4 +19,6 @@ public class Request
     [JsonPropertyName("received_date")] public string? ReceivedDate { get; set; }
     [JsonPropertyName("notes")] public string? Notes { get; set; }
     [JsonPropertyName("created_at")] public string? CreatedAt { get; set; }
+    [JsonPropertyName("assigned_to_id")] public int? AssignedToId { get; set; }
+    [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
 }

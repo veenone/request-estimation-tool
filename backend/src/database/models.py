@@ -38,11 +38,13 @@ class Request(Base):
     requested_delivery_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     received_date: Mapped[date] = mapped_column(Date, nullable=False)
     attachments_json: Mapped[str] = mapped_column(Text, default="[]")
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     estimations: Mapped[list["Estimation"]] = relationship(back_populates="request")
+    assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
 
 
 class Feature(Base):
@@ -131,11 +133,17 @@ class Estimation(Base):
     status: Mapped[str] = mapped_column(String, default="DRAFT")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    approved_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     request: Mapped[Optional["Request"]] = relationship(back_populates="estimations")
     tasks: Mapped[list["EstimationTask"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
+    creator: Mapped[Optional["User"]] = relationship(foreign_keys=[created_by_id])
+    approver: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
+    assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
 
 
 class EstimationTask(Base):
@@ -187,3 +195,10 @@ class IntegrationConfig(Base):
     additional_config_json: Mapped[str] = mapped_column(Text, default="{}")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+
+# Auth models (User, UserSession, AuditLog) are defined in auth.models
+# and share the same Base. They are registered with the ORM metadata
+# automatically when auth.models is imported. Import them from
+# ..auth.models wherever needed.

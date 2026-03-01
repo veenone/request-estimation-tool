@@ -178,11 +178,12 @@ partial class DashboardPanel
         };
         ThemeHelper.StyleDataGridView(_dgvEstimations);
         _dgvEstimations.Columns.AddRange(
-            new DataGridViewTextBoxColumn { Name = "ColEstNum",         HeaderText = "#",           FillWeight = 14 },
-            new DataGridViewTextBoxColumn { Name = "ColEstProject",     HeaderText = "Project",     FillWeight = 36 },
-            new DataGridViewTextBoxColumn { Name = "ColEstHours",       HeaderText = "Hours",       FillWeight = 14 },
-            new DataGridViewTextBoxColumn { Name = "ColEstFeasibility", HeaderText = "Feasibility", FillWeight = 20 },
-            new DataGridViewTextBoxColumn { Name = "ColEstStatus",      HeaderText = "Status",      FillWeight = 16 }
+            new DataGridViewTextBoxColumn { Name = "ColEstNum",         HeaderText = "#",           FillWeight = 12 },
+            new DataGridViewTextBoxColumn { Name = "ColEstProject",     HeaderText = "Project",     FillWeight = 30 },
+            new DataGridViewTextBoxColumn { Name = "ColEstHours",       HeaderText = "Hours",       FillWeight = 12 },
+            new DataGridViewTextBoxColumn { Name = "ColEstFeasibility", HeaderText = "Feasibility", FillWeight = 17 },
+            new DataGridViewTextBoxColumn { Name = "ColEstStatus",      HeaderText = "Status",      FillWeight = 13 },
+            new DataGridViewTextBoxColumn { Name = "ColEstAssignedTo",  HeaderText = "Assigned To", FillWeight = 16 }
         );
 
         _pnlEstimations = CreateGridContainer(_lblEstimationsHeader);
@@ -213,10 +214,11 @@ partial class DashboardPanel
         };
         ThemeHelper.StyleDataGridView(_dgvRequests);
         _dgvRequests.Columns.AddRange(
-            new DataGridViewTextBoxColumn { Name = "ColReqNum",      HeaderText = "#",        FillWeight = 16 },
-            new DataGridViewTextBoxColumn { Name = "ColReqTitle",    HeaderText = "Title",    FillWeight = 46 },
-            new DataGridViewTextBoxColumn { Name = "ColReqPriority", HeaderText = "Priority", FillWeight = 20 },
-            new DataGridViewTextBoxColumn { Name = "ColReqStatus",   HeaderText = "Status",   FillWeight = 18 }
+            new DataGridViewTextBoxColumn { Name = "ColReqNum",        HeaderText = "#",           FillWeight = 14 },
+            new DataGridViewTextBoxColumn { Name = "ColReqTitle",      HeaderText = "Title",       FillWeight = 36 },
+            new DataGridViewTextBoxColumn { Name = "ColReqPriority",   HeaderText = "Priority",    FillWeight = 16 },
+            new DataGridViewTextBoxColumn { Name = "ColReqStatus",     HeaderText = "Status",      FillWeight = 16 },
+            new DataGridViewTextBoxColumn { Name = "ColReqAssignedTo", HeaderText = "Assigned To", FillWeight = 18 }
         );
 
         _pnlRequests = CreateGridContainer(_lblRequestsHeader);

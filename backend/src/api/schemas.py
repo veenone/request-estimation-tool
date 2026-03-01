@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Features ──────────────────────────────────────────────
@@ -190,10 +190,20 @@ class RequestOut(RequestBase):
     id: int
     status: str
     attachments_json: str = "[]"
+    assigned_to_id: Optional[int] = None
+    assigned_to_name: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _resolve_assigned_to_name(cls, data, handler):
+        obj = handler(data)
+        if obj.assigned_to_name is None and hasattr(data, "assigned_to") and data.assigned_to is not None:
+            obj.assigned_to_name = data.assigned_to.display_name or data.assigned_to.username
+        return obj
 
 
 # ── Configuration ────────────────────────────────────────
@@ -298,9 +308,20 @@ class EstimationOut(BaseModel):
     created_by: Optional[str] = None
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
+    assigned_to_id: Optional[int] = None
+    assigned_to_name: Optional[str] = None
     tasks: list[EstimationTaskOut] = []
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _resolve_assigned_to_name(cls, data, handler):
+        # When constructing from an ORM object, resolve the relationship
+        obj = handler(data)
+        if obj.assigned_to_name is None and hasattr(data, "assigned_to") and data.assigned_to is not None:
+            obj.assigned_to_name = data.assigned_to.display_name or data.assigned_to.username
+        return obj
 
 class EstimationUpdate(BaseModel):
     project_name: Optional[str] = None

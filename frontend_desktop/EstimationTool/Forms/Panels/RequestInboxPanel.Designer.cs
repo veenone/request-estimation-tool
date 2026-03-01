@@ -38,6 +38,7 @@ partial class RequestInboxPanel
         dataGridViewTextBoxColumn6 = new DataGridViewTextBoxColumn();
         dataGridViewTextBoxColumn7 = new DataGridViewTextBoxColumn();
         dataGridViewTextBoxColumn8 = new DataGridViewTextBoxColumn();
+        dataGridViewTextBoxColumn9 = new DataGridViewTextBoxColumn();
         stack.SuspendLayout();
         toolbarPanel.SuspendLayout();
         gridContainer.SuspendLayout();
@@ -121,7 +122,7 @@ partial class RequestInboxPanel
         // 
         // _dgv
         // 
-        _dgv.Columns.AddRange(new DataGridViewColumn[] { dataGridViewTextBoxColumn1, dataGridViewTextBoxColumn2, dataGridViewTextBoxColumn3, dataGridViewTextBoxColumn4, dataGridViewTextBoxColumn5, dataGridViewTextBoxColumn6, dataGridViewTextBoxColumn7, dataGridViewTextBoxColumn8 });
+        _dgv.Columns.AddRange(new DataGridViewColumn[] { dataGridViewTextBoxColumn1, dataGridViewTextBoxColumn2, dataGridViewTextBoxColumn3, dataGridViewTextBoxColumn4, dataGridViewTextBoxColumn5, dataGridViewTextBoxColumn6, dataGridViewTextBoxColumn7, dataGridViewTextBoxColumn8, dataGridViewTextBoxColumn9 });
         _dgv.Location = new Point(0, 0);
         _dgv.Name = "_dgv";
         _dgv.Size = new Size(240, 150);
@@ -202,8 +203,12 @@ partial class RequestInboxPanel
         dataGridViewTextBoxColumn7.Name = "dataGridViewTextBoxColumn7";
         // 
         // dataGridViewTextBoxColumn8
-        // 
+        //
         dataGridViewTextBoxColumn8.Name = "dataGridViewTextBoxColumn8";
+        //
+        // dataGridViewTextBoxColumn9
+        //
+        dataGridViewTextBoxColumn9.Name = "dataGridViewTextBoxColumn9";
         // 
         // RequestInboxPanel
         // 
@@ -242,6 +247,7 @@ partial class RequestInboxPanel
     private DataGridViewTextBoxColumn dataGridViewTextBoxColumn6;
     private DataGridViewTextBoxColumn dataGridViewTextBoxColumn7;
     private DataGridViewTextBoxColumn dataGridViewTextBoxColumn8;
+    private DataGridViewTextBoxColumn dataGridViewTextBoxColumn9;
     private Panel actionBarPanel;
     private Panel statusBarPanel;
 }

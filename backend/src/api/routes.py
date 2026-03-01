@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from starlette.requests import Request as HTTPRequest
 
 from ..database.models import (
     Configuration,
@@ -65,6 +66,19 @@ from .schemas import (
     TestProfileOut,
     TestProfileUpdate,
 )
+from ..auth.models import AuditLog, User
+from ..auth.schemas import (
+    AuditLogOut,
+    LoginRequest,
+    PasswordChange,
+    RefreshRequest,
+    TokenResponse,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
+from ..auth.service import AuthService
+from ..auth.dependencies import get_current_user, get_optional_user, RequireRole
 
 router = APIRouter()
 
@@ -84,15 +98,179 @@ def _generate_number(db: Session, prefix_key: str, table_class: type, number_fie
     return f"{prefix}-{year}-{count + 1:03d}"
 
 
+# ── Authentication ──────────────────────────────────────
+
+@router.post("/auth/login")
+def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db)):
+    """Authenticate and get JWT tokens."""
+    auth_service = AuthService(db)
+
+    # Try local auth first
+    result = auth_service.login(data.username, data.password)
+
+    # Try LDAP if local fails
+    if result is None:
+        from ..auth.ldap_provider import LDAPProvider
+        ldap = LDAPProvider(db)
+        if ldap.is_configured:
+            ldap_user = ldap.authenticate(data.username, data.password)
+            if ldap_user:
+                access_token = auth_service.create_access_token(ldap_user)
+                refresh_token = auth_service.create_refresh_token(ldap_user)
+                result = (ldap_user, access_token, refresh_token)
+
+    if result is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    user, access_token, refresh_token = result
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserOut.model_validate(user),
+    )
+
+
+@router.post("/auth/refresh")
+def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    result = auth_service.refresh(data.refresh_token)
+    if result is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    user, access_token, new_refresh = result
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh,
+        user=UserOut.model_validate(user),
+    )
+
+
+@router.post("/auth/logout")
+def logout(data: RefreshRequest, db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    auth_service.logout(data.refresh_token)
+    return {"status": "ok"}
+
+
+@router.get("/auth/me", response_model=UserOut)
+def get_current_user_info(user: User = Depends(get_current_user)):
+    return user
+
+
+@router.post("/auth/change-password")
+def change_password(data: PasswordChange, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    if not auth_service.change_password(user.id, data.current_password, data.new_password):
+        raise HTTPException(400, "Current password is incorrect")
+    return {"status": "ok"}
+
+
+# ── Users (ADMIN only) ─────────────────────────────────
+
+@router.get("/users", response_model=list[UserOut])
+def list_users(active_only: bool = False, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    return auth_service.list_users(active_only=active_only)
+
+
+@router.post("/users", response_model=UserOut, status_code=201)
+def create_user(data: UserCreate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    existing = auth_service.get_user_by_username(data.username)
+    if existing:
+        raise HTTPException(400, f"Username '{data.username}' already exists")
+    new_user = auth_service.create_user(
+        username=data.username,
+        display_name=data.display_name,
+        password=data.password,
+        email=data.email,
+        role=data.role,
+        auth_provider=data.auth_provider,
+        team_member_id=data.team_member_id,
+    )
+    auth_service.log_action(user.id, "CREATE", "user", new_user.id)
+    return new_user
+
+
+@router.get("/users/{user_id}", response_model=UserOut)
+def get_user(user_id: int, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    return target
+
+
+@router.put("/users/{user_id}", response_model=UserOut)
+def update_user(user_id: int, data: UserUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    auth_service = AuthService(db)
+    updated = auth_service.update_user(user_id, **data.model_dump(exclude_unset=True))
+    if not updated:
+        raise HTTPException(404, "User not found")
+    auth_service.log_action(user.id, "UPDATE", "user", user_id)
+    return updated
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: int, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    if user_id == user.id:
+        raise HTTPException(400, "Cannot delete your own account")
+    auth_service = AuthService(db)
+    if not auth_service.delete_user(user_id):
+        raise HTTPException(404, "User not found")
+    auth_service.log_action(user.id, "DELETE", "user", user_id)
+
+
+# ── LDAP Sync (ADMIN only) ─────────────────────────────
+
+@router.post("/auth/ldap/sync")
+def ldap_sync(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    from ..auth.ldap_provider import LDAPProvider
+    provider = LDAPProvider(db)
+    if not provider.is_configured:
+        raise HTTPException(400, "LDAP is not configured")
+    result = provider.sync_users()
+    AuthService(db).log_action(user.id, "LDAP_SYNC", details=result)
+    return result
+
+
+# ── Audit Log (APPROVER+) ──────────────────────────────
+
+@router.get("/audit-log")
+def list_audit_log(
+    limit: int = 100,
+    offset: int = 0,
+    action: str | None = None,
+    resource_type: str | None = None,
+    user: User = Depends(RequireRole("APPROVER")),
+    db: Session = Depends(get_db),
+):
+    auth_service = AuthService(db)
+    logs = auth_service.get_audit_log(limit=limit, offset=offset, action=action, resource_type=resource_type)
+    result = []
+    for log in logs:
+        entry = {
+            "id": log.id,
+            "user_id": log.user_id,
+            "username": log.user.username if log.user else None,
+            "action": log.action,
+            "resource_type": log.resource_type,
+            "resource_id": log.resource_id,
+            "details_json": log.details_json,
+            "ip_address": log.ip_address,
+            "created_at": str(log.created_at) if log.created_at else None,
+        }
+        result.append(entry)
+    return result
+
+
 # ── Features ─────────────────────────────────────────────
 
 @router.get("/features", response_model=list[FeatureOut])
-def list_features(db: Session = Depends(get_db)):
+def list_features(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Feature).all()
 
 
 @router.post("/features", response_model=FeatureOut, status_code=201)
-def create_feature(data: FeatureCreate, db: Session = Depends(get_db)):
+def create_feature(data: FeatureCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     feature = Feature(**data.model_dump())
     db.add(feature)
     db.commit()
@@ -101,7 +279,7 @@ def create_feature(data: FeatureCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/features/{feature_id}", response_model=FeatureOut)
-def get_feature(feature_id: int, db: Session = Depends(get_db)):
+def get_feature(feature_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
@@ -109,7 +287,7 @@ def get_feature(feature_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/features/{feature_id}", response_model=FeatureOut)
-def update_feature(feature_id: int, data: FeatureUpdate, db: Session = Depends(get_db)):
+def update_feature(feature_id: int, data: FeatureUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
@@ -121,7 +299,7 @@ def update_feature(feature_id: int, data: FeatureUpdate, db: Session = Depends(g
 
 
 @router.delete("/features/{feature_id}", status_code=204)
-def delete_feature(feature_id: int, db: Session = Depends(get_db)):
+def delete_feature(feature_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
@@ -132,7 +310,7 @@ def delete_feature(feature_id: int, db: Session = Depends(get_db)):
 # ── Task Templates ───────────────────────────────────────
 
 @router.get("/task-templates", response_model=list[TaskTemplateOut])
-def list_task_templates(feature_id: int | None = None, db: Session = Depends(get_db)):
+def list_task_templates(feature_id: int | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(TaskTemplate)
     if feature_id is not None:
         q = q.filter(TaskTemplate.feature_id == feature_id)
@@ -140,7 +318,7 @@ def list_task_templates(feature_id: int | None = None, db: Session = Depends(get
 
 
 @router.post("/task-templates", response_model=TaskTemplateOut, status_code=201)
-def create_task_template(data: TaskTemplateCreate, db: Session = Depends(get_db)):
+def create_task_template(data: TaskTemplateCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     tmpl = TaskTemplate(**data.model_dump())
     db.add(tmpl)
     db.commit()
@@ -149,7 +327,7 @@ def create_task_template(data: TaskTemplateCreate, db: Session = Depends(get_db)
 
 
 @router.put("/task-templates/{template_id}", response_model=TaskTemplateOut)
-def update_task_template(template_id: int, data: TaskTemplateUpdate, db: Session = Depends(get_db)):
+def update_task_template(template_id: int, data: TaskTemplateUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     tmpl = db.get(TaskTemplate, template_id)
     if not tmpl:
         raise HTTPException(404, "Task template not found")
@@ -161,7 +339,7 @@ def update_task_template(template_id: int, data: TaskTemplateUpdate, db: Session
 
 
 @router.delete("/task-templates/{template_id}", status_code=204)
-def delete_task_template(template_id: int, db: Session = Depends(get_db)):
+def delete_task_template(template_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     tmpl = db.get(TaskTemplate, template_id)
     if not tmpl:
         raise HTTPException(404, "Task template not found")
@@ -172,12 +350,12 @@ def delete_task_template(template_id: int, db: Session = Depends(get_db)):
 # ── DUT Types ────────────────────────────────────────────
 
 @router.get("/dut-types", response_model=list[DutTypeOut])
-def list_dut_types(db: Session = Depends(get_db)):
+def list_dut_types(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(DutType).all()
 
 
 @router.post("/dut-types", response_model=DutTypeOut, status_code=201)
-def create_dut_type(data: DutTypeCreate, db: Session = Depends(get_db)):
+def create_dut_type(data: DutTypeCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     dut = DutType(**data.model_dump())
     db.add(dut)
     db.commit()
@@ -186,7 +364,7 @@ def create_dut_type(data: DutTypeCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/dut-types/{dut_id}", response_model=DutTypeOut)
-def update_dut_type(dut_id: int, data: DutTypeUpdate, db: Session = Depends(get_db)):
+def update_dut_type(dut_id: int, data: DutTypeUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     dut = db.get(DutType, dut_id)
     if not dut:
         raise HTTPException(404, "DUT type not found")
@@ -198,7 +376,7 @@ def update_dut_type(dut_id: int, data: DutTypeUpdate, db: Session = Depends(get_
 
 
 @router.delete("/dut-types/{dut_id}", status_code=204)
-def delete_dut_type(dut_id: int, db: Session = Depends(get_db)):
+def delete_dut_type(dut_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     dut = db.get(DutType, dut_id)
     if not dut:
         raise HTTPException(404, "DUT type not found")
@@ -209,12 +387,12 @@ def delete_dut_type(dut_id: int, db: Session = Depends(get_db)):
 # ── Test Profiles ────────────────────────────────────────
 
 @router.get("/profiles", response_model=list[TestProfileOut])
-def list_profiles(db: Session = Depends(get_db)):
+def list_profiles(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TestProfile).all()
 
 
 @router.post("/profiles", response_model=TestProfileOut, status_code=201)
-def create_profile(data: TestProfileCreate, db: Session = Depends(get_db)):
+def create_profile(data: TestProfileCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     profile = TestProfile(**data.model_dump())
     db.add(profile)
     db.commit()
@@ -223,7 +401,7 @@ def create_profile(data: TestProfileCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/profiles/{profile_id}", response_model=TestProfileOut)
-def update_profile(profile_id: int, data: TestProfileUpdate, db: Session = Depends(get_db)):
+def update_profile(profile_id: int, data: TestProfileUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     profile = db.get(TestProfile, profile_id)
     if not profile:
         raise HTTPException(404, "Profile not found")
@@ -235,7 +413,7 @@ def update_profile(profile_id: int, data: TestProfileUpdate, db: Session = Depen
 
 
 @router.delete("/profiles/{profile_id}", status_code=204)
-def delete_profile(profile_id: int, db: Session = Depends(get_db)):
+def delete_profile(profile_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     profile = db.get(TestProfile, profile_id)
     if not profile:
         raise HTTPException(404, "Profile not found")
@@ -246,12 +424,12 @@ def delete_profile(profile_id: int, db: Session = Depends(get_db)):
 # ── Historical Projects ──────────────────────────────────
 
 @router.get("/historical-projects", response_model=list[HistoricalProjectOut])
-def list_historical_projects(db: Session = Depends(get_db)):
+def list_historical_projects(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(HistoricalProject).all()
 
 
 @router.post("/historical-projects", response_model=HistoricalProjectOut, status_code=201)
-def create_historical_project(data: HistoricalProjectCreate, db: Session = Depends(get_db)):
+def create_historical_project(data: HistoricalProjectCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     proj = HistoricalProject(**data.model_dump())
     db.add(proj)
     db.commit()
@@ -262,12 +440,12 @@ def create_historical_project(data: HistoricalProjectCreate, db: Session = Depen
 # ── Team Members ─────────────────────────────────────────
 
 @router.get("/team-members", response_model=list[TeamMemberOut])
-def list_team_members(db: Session = Depends(get_db)):
+def list_team_members(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(TeamMember).all()
 
 
 @router.post("/team-members", response_model=TeamMemberOut, status_code=201)
-def create_team_member(data: TeamMemberCreate, db: Session = Depends(get_db)):
+def create_team_member(data: TeamMemberCreate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     member = TeamMember(**data.model_dump())
     db.add(member)
     db.commit()
@@ -276,7 +454,7 @@ def create_team_member(data: TeamMemberCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/team-members/{member_id}", response_model=TeamMemberOut)
-def update_team_member(member_id: int, data: TeamMemberUpdate, db: Session = Depends(get_db)):
+def update_team_member(member_id: int, data: TeamMemberUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     member = db.get(TeamMember, member_id)
     if not member:
         raise HTTPException(404, "Team member not found")
@@ -288,7 +466,7 @@ def update_team_member(member_id: int, data: TeamMemberUpdate, db: Session = Dep
 
 
 @router.delete("/team-members/{member_id}", status_code=204)
-def delete_team_member(member_id: int, db: Session = Depends(get_db)):
+def delete_team_member(member_id: int, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     member = db.get(TeamMember, member_id)
     if not member:
         raise HTTPException(404, "Team member not found")
@@ -299,7 +477,7 @@ def delete_team_member(member_id: int, db: Session = Depends(get_db)):
 # ── Requests ─────────────────────────────────────────────
 
 @router.get("/requests", response_model=list[RequestOut])
-def list_requests(status: str | None = None, db: Session = Depends(get_db)):
+def list_requests(status: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(Request)
     if status:
         q = q.filter(Request.status == status)
@@ -307,7 +485,7 @@ def list_requests(status: str | None = None, db: Session = Depends(get_db)):
 
 
 @router.post("/requests", response_model=RequestOut, status_code=201)
-def create_request(data: RequestCreate, db: Session = Depends(get_db)):
+def create_request(data: RequestCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     req_data = data.model_dump()
     req = Request(**req_data)
     db.add(req)
@@ -317,7 +495,7 @@ def create_request(data: RequestCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/requests/{request_id}", response_model=RequestOut)
-def get_request(request_id: int, db: Session = Depends(get_db)):
+def get_request(request_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     req = db.get(Request, request_id)
     if not req:
         raise HTTPException(404, "Request not found")
@@ -325,7 +503,7 @@ def get_request(request_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/requests/{request_id}", response_model=RequestOut)
-def update_request(request_id: int, data: RequestUpdate, db: Session = Depends(get_db)):
+def update_request(request_id: int, data: RequestUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     req = db.get(Request, request_id)
     if not req:
         raise HTTPException(404, "Request not found")
@@ -339,16 +517,19 @@ def update_request(request_id: int, data: RequestUpdate, db: Session = Depends(g
 # ── Configuration ────────────────────────────────────────
 
 @router.get("/configuration", response_model=list[ConfigurationOut])
-def list_configuration(db: Session = Depends(get_db)):
+def list_configuration(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Configuration).all()
 
 
 @router.put("/configuration/{key}", response_model=ConfigurationOut)
-def update_configuration(key: str, data: ConfigurationUpdate, db: Session = Depends(get_db)):
+def update_configuration(key: str, data: ConfigurationUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     cfg = db.get(Configuration, key)
     if not cfg:
-        raise HTTPException(404, "Configuration key not found")
-    cfg.value = data.value
+        # Upsert: create the key if it doesn't exist yet
+        cfg = Configuration(key=key, value=data.value, description="")
+        db.add(cfg)
+    else:
+        cfg.value = data.value
     db.commit()
     db.refresh(cfg)
     return cfg
@@ -357,7 +538,7 @@ def update_configuration(key: str, data: ConfigurationUpdate, db: Session = Depe
 # ── Estimations ──────────────────────────────────────────
 
 @router.post("/estimations/calculate", response_model=CalculationResultOut)
-def calculate_estimation_preview(data: CalculateInput, db: Session = Depends(get_db)):
+def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Run calculation from wizard inputs without persisting to DB."""
     leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
     study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
@@ -368,10 +549,14 @@ def calculate_estimation_preview(data: CalculateInput, db: Session = Depends(get
     new_feature_ids = data.resolved_new_feature_ids
     delivery = data.expected_delivery or data.delivery_date
 
-    features = db.query(Feature).filter(Feature.id.in_(feature_ids)).all()
-    templates = db.query(TaskTemplate).filter(
-        (TaskTemplate.feature_id.in_(feature_ids)) | (TaskTemplate.feature_id.is_(None))
-    ).all()
+    if feature_ids:
+        features = db.query(Feature).filter(Feature.id.in_(feature_ids)).all()
+        templates = db.query(TaskTemplate).filter(
+            (TaskTemplate.feature_id.in_(feature_ids)) | (TaskTemplate.feature_id.is_(None))
+        ).all()
+    else:
+        features = []
+        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
 
     task_inputs: list[TaskInput] = []
     for tmpl in templates:
@@ -449,12 +634,12 @@ def calculate_estimation_preview(data: CalculateInput, db: Session = Depends(get
 
 
 @router.get("/estimations", response_model=list[EstimationOut])
-def list_estimations(db: Session = Depends(get_db)):
+def list_estimations(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Estimation).order_by(Estimation.created_at.desc()).all()
 
 
 @router.get("/estimations/{estimation_id}", response_model=EstimationOut)
-def get_estimation(estimation_id: int, db: Session = Depends(get_db)):
+def get_estimation(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     est = db.get(Estimation, estimation_id)
     if not est:
         raise HTTPException(404, "Estimation not found")
@@ -462,7 +647,7 @@ def get_estimation(estimation_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/estimations", response_model=EstimationOut, status_code=201)
-def create_estimation(data: EstimationCreate, db: Session = Depends(get_db)):
+def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Create a new estimation: resolve inputs, run calculation, save result."""
     # Resolve config
     leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
@@ -471,10 +656,14 @@ def create_estimation(data: EstimationCreate, db: Session = Depends(get_db)):
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
 
     # Resolve features and their task templates
-    features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
-    templates = db.query(TaskTemplate).filter(
-        (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
-    ).all()
+    if data.feature_ids:
+        features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
+        templates = db.query(TaskTemplate).filter(
+            (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
+        ).all()
+    else:
+        features = []
+        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
 
     # Build task inputs
     task_inputs: list[TaskInput] = []
@@ -575,7 +764,7 @@ def create_estimation(data: EstimationCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/estimations/{estimation_id}/calculate", response_model=CalculationResultOut)
-def recalculate_estimation(estimation_id: int, db: Session = Depends(get_db)):
+def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Recalculate an existing estimation and return the results."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -718,7 +907,7 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
 
 
 @router.get("/estimations/{estimation_id}/report/xlsx")
-def download_excel_report(estimation_id: int, db: Session = Depends(get_db)):
+def download_excel_report(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
         raise HTTPException(404, "Estimation not found")
@@ -736,7 +925,7 @@ def download_excel_report(estimation_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/estimations/{estimation_id}/report/docx")
-def download_word_report(estimation_id: int, db: Session = Depends(get_db)):
+def download_word_report(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
         raise HTTPException(404, "Estimation not found")
@@ -754,7 +943,7 @@ def download_word_report(estimation_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/estimations/{estimation_id}/report/pdf")
-def download_pdf_report(estimation_id: int, db: Session = Depends(get_db)):
+def download_pdf_report(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
         raise HTTPException(404, "Estimation not found")
@@ -828,13 +1017,13 @@ class ConnectionTestOut(BaseModel):
 
 
 @router.get("/integrations")
-def list_integrations(db: Session = Depends(get_db)) -> list[dict]:
+def list_integrations(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
     configs = db.query(IntegrationConfig).all()
     return [IntegrationConfigOut.from_model(c).model_dump() for c in configs]
 
 
 @router.get("/integrations/{system_name}")
-def get_integration(system_name: str, db: Session = Depends(get_db)) -> dict:
+def get_integration(system_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     cfg = db.query(IntegrationConfig).filter(IntegrationConfig.system_name == system_name.upper()).first()
     if not cfg:
         raise HTTPException(404, f"Integration {system_name} not found")
@@ -842,7 +1031,7 @@ def get_integration(system_name: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.put("/integrations/{system_name}")
-def update_integration(system_name: str, data: IntegrationConfigUpdate, db: Session = Depends(get_db)) -> dict:
+def update_integration(system_name: str, data: IntegrationConfigUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)) -> dict:
     system_name = system_name.upper()
     cfg = db.query(IntegrationConfig).filter(IntegrationConfig.system_name == system_name).first()
     if not cfg:
@@ -858,7 +1047,7 @@ def update_integration(system_name: str, data: IntegrationConfigUpdate, db: Sess
 
 
 @router.post("/integrations/{system_name}/test")
-def test_integration_endpoint(system_name: str, db: Session = Depends(get_db)) -> dict:
+def test_integration_endpoint(system_name: str, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)) -> dict:
     from ..integrations.service import test_integration
     result = test_integration(system_name.upper(), db)
     return ConnectionTestOut(
@@ -869,9 +1058,18 @@ def test_integration_endpoint(system_name: str, db: Session = Depends(get_db)) -
 
 
 @router.post("/integrations/{system_name}/sync")
-def trigger_sync(system_name: str, db: Session = Depends(get_db)) -> dict:
-    from ..integrations.service import sync_import
-    result = sync_import(system_name.upper(), db)
+def trigger_sync(system_name: str, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)) -> dict:
+    name = system_name.upper()
+
+    # Outline is export-only: push estimations to wiki.
+    # All other integrations import requests.
+    if name == "OUTLINE":
+        from ..integrations.service import sync_export_all
+        result = sync_export_all(name, db)
+    else:
+        from ..integrations.service import sync_import
+        result = sync_import(name, db)
+
     return SyncResultOut(
         system=result.system,
         direction=result.direction,
@@ -885,7 +1083,7 @@ def trigger_sync(system_name: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/integrations/{system_name}/status")
-def integration_health(system_name: str, db: Session = Depends(get_db)) -> dict:
+def integration_health(system_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     cfg = db.query(IntegrationConfig).filter(IntegrationConfig.system_name == system_name.upper()).first()
     if not cfg:
         raise HTTPException(404, f"Integration {system_name} not found")
@@ -900,7 +1098,7 @@ def integration_health(system_name: str, db: Session = Depends(get_db)) -> dict:
 # ── Send report via email ────────────────────────────────
 
 @router.post("/estimations/{estimation_id}/send-report")
-def send_estimation_report(estimation_id: int, to_email: str, db: Session = Depends(get_db)) -> dict:
+def send_estimation_report(estimation_id: int, to_email: str, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)) -> dict:
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
         raise HTTPException(404, "Estimation not found")
@@ -936,7 +1134,7 @@ def send_estimation_report(estimation_id: int, to_email: str, db: Session = Depe
 # ── Estimation CRUD (update, delete, status) ─────────────
 
 @router.put("/estimations/{estimation_id}", response_model=EstimationOut)
-def update_estimation(estimation_id: int, data: EstimationUpdate, db: Session = Depends(get_db)):
+def update_estimation(estimation_id: int, data: EstimationUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Update estimation metadata (project name, type, delivery date, notes)."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -949,7 +1147,7 @@ def update_estimation(estimation_id: int, data: EstimationUpdate, db: Session = 
 
 
 @router.delete("/estimations/{estimation_id}", status_code=204)
-def delete_estimation(estimation_id: int, db: Session = Depends(get_db)):
+def delete_estimation(estimation_id: int, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
         raise HTTPException(404, "Estimation not found")
@@ -958,7 +1156,7 @@ def delete_estimation(estimation_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/estimations/{estimation_id}/status", response_model=EstimationOut)
-def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, db: Session = Depends(get_db)):
+def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Update estimation status following the workflow: DRAFT -> FINAL -> APPROVED."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -992,6 +1190,23 @@ def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, d
     db.commit()
     db.refresh(estimation)
 
+    # Send notification
+    try:
+        from ..notifications.service import NotificationService
+        notifier = NotificationService(db)
+        notifier.notify_estimation_status_changed(
+            estimation.estimation_number or f"EST-{estimation.id}",
+            estimation.project_name,
+            current,
+            target,
+            user.display_name,
+            estimation.grand_total_hours,
+            creator_user_id=estimation.created_by_id,
+            assigned_user_id=estimation.assigned_to_id,
+        )
+    except Exception:
+        pass
+
     # Auto-export to external system when estimation is finalized or approved
     if target in ("FINAL", "APPROVED") and estimation.request_id:
         _try_export_estimation(estimation, db)
@@ -1021,7 +1236,7 @@ def _try_export_estimation(estimation: "Estimation", db: Session) -> None:
 
 
 @router.post("/estimations/{estimation_id}/export")
-def export_estimation_to_external(estimation_id: int, db: Session = Depends(get_db)):
+def export_estimation_to_external(estimation_id: int, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Manually export estimation results to the linked external system (Redmine/Jira)."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -1056,7 +1271,7 @@ def export_estimation_to_external(estimation_id: int, db: Session = Depends(get_
 # ── Request detail with linked estimations ───────────────
 
 @router.get("/requests/{request_id}/detail", response_model=RequestDetailOut)
-def get_request_detail(request_id: int, db: Session = Depends(get_db)):
+def get_request_detail(request_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get request with all linked estimations."""
     req = db.get(Request, request_id)
     if not req:
@@ -1067,7 +1282,7 @@ def get_request_detail(request_id: int, db: Session = Depends(get_db)):
 # ── Request attachment upload ────────────────────────────
 
 @router.post("/requests/{request_id}/attachments")
-async def upload_attachment(request_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_attachment(request_id: int, file: UploadFile = File(...), user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Upload an attachment to a request."""
     import os
 
@@ -1105,7 +1320,7 @@ async def upload_attachment(request_id: int, file: UploadFile = File(...), db: S
 # ── Calibration endpoint ────────────────────────────────
 
 @router.post("/estimations/{estimation_id}/calibrate", response_model=CalibrationResultOut)
-def calibrate_estimation(estimation_id: int, db: Session = Depends(get_db)):
+def calibrate_estimation(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Apply historical calibration to an estimation."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -1161,7 +1376,7 @@ def calibrate_estimation(estimation_id: int, db: Session = Depends(get_db)):
 # ── Dashboard stats ─────────────────────────────────────
 
 @router.get("/dashboard/stats", response_model=DashboardStatsOut)
-def get_dashboard_stats(db: Session = Depends(get_db)):
+def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get aggregate statistics for the dashboard."""
     from sqlalchemy import func as sqlfunc
 
@@ -1223,3 +1438,260 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         recent_estimations=recent_estimations,
         recent_requests=recent_requests,
     )
+
+
+# ── Bulk Import ─────────────────────────────────────────
+
+@router.post("/import/{entity_type}/preview")
+async def preview_import_endpoint(
+    entity_type: str,
+    file: UploadFile = File(...),
+    user: User = Depends(RequireRole("ESTIMATOR")),
+):
+    from ..imports.service import preview_import
+    content = await file.read()
+    return preview_import(content, entity_type, file.filename or "data.csv")
+
+
+@router.post("/import/{entity_type}")
+async def execute_import_endpoint(
+    entity_type: str,
+    file: UploadFile = File(...),
+    skip_duplicates: bool = True,
+    user: User = Depends(RequireRole("APPROVER")),
+    db: Session = Depends(get_db),
+):
+    from ..imports.service import execute_import
+    content = await file.read()
+    result = execute_import(content, entity_type, file.filename or "data.csv", db, skip_duplicates)
+    AuthService(db).log_action(
+        user.id, "IMPORT", entity_type,
+        details={"imported": result["imported"], "skipped": result["skipped"]},
+    )
+    return result
+
+
+# ── Assignment ──────────────────────────────────────────
+
+@router.post("/estimations/{estimation_id}/assign")
+def assign_estimation(
+    estimation_id: int,
+    assigned_to_id: int,
+    user: User = Depends(RequireRole("APPROVER")),
+    db: Session = Depends(get_db),
+):
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    target_user = db.get(User, assigned_to_id)
+    if not target_user:
+        raise HTTPException(404, "Target user not found")
+    estimation.assigned_to_id = assigned_to_id
+    db.commit()
+
+    # Notify assignee
+    try:
+        from ..notifications.service import NotificationService
+        notifier = NotificationService(db)
+        notifier.notify_user_assigned(
+            estimation.estimation_number or f"EST-{estimation.id}",
+            estimation.project_name,
+            assigned_to_id,
+            user.display_name,
+        )
+    except Exception:
+        pass
+
+    AuthService(db).log_action(user.id, "ASSIGN", "estimation", estimation_id, details={"assigned_to_id": assigned_to_id})
+    return {"status": "ok", "assigned_to_id": assigned_to_id}
+
+
+@router.post("/requests/{request_id}/assign")
+def assign_request(
+    request_id: int,
+    assigned_to_id: int,
+    user: User = Depends(RequireRole("APPROVER")),
+    db: Session = Depends(get_db),
+):
+    req = db.get(Request, request_id)
+    if not req:
+        raise HTTPException(404, "Request not found")
+    target_user = db.get(User, assigned_to_id)
+    if not target_user:
+        raise HTTPException(404, "Target user not found")
+    req.assigned_to_id = assigned_to_id
+    db.commit()
+    AuthService(db).log_action(user.id, "ASSIGN", "request", request_id, details={"assigned_to_id": assigned_to_id})
+    return {"status": "ok", "assigned_to_id": assigned_to_id}
+
+
+# ── Advanced Reports ────────────────────────────────────
+
+@router.get("/estimations/{estimation_id}/report/executive-summary")
+def download_executive_summary(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+
+    from ..reports.executive_summary import ExecutiveSummaryData, generate_executive_summary
+    data = ExecutiveSummaryData(
+        project_name=estimation.project_name,
+        estimation_number=estimation.estimation_number or "",
+        project_type=estimation.project_type,
+        created_by=estimation.created_by,
+        created_at=str(estimation.created_at.date()) if estimation.created_at else "",
+        grand_total_hours=estimation.grand_total_hours,
+        grand_total_days=estimation.grand_total_days,
+        feasibility_status=estimation.feasibility_status,
+        total_tester_hours=estimation.total_tester_hours,
+        total_leader_hours=estimation.total_leader_hours,
+        dut_count=estimation.dut_count,
+        profile_count=estimation.profile_count,
+        dut_profile_combinations=estimation.dut_profile_combinations,
+        tasks=[
+            {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+            for t in estimation.tasks
+        ],
+    )
+    content = generate_executive_summary(data)
+    filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}_summary.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/reports/comparison")
+def generate_comparison(
+    estimation_a_id: int,
+    estimation_b_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    est_a = db.get(Estimation, estimation_a_id)
+    est_b = db.get(Estimation, estimation_b_id)
+    if not est_a or not est_b:
+        raise HTTPException(404, "One or both estimations not found")
+
+    from ..reports.comparison_report import ComparisonReportData, generate_comparison_excel
+    from ..reports.templates import ReportMetadata
+
+    def _est_to_dict(est):
+        return {
+            "estimation_number": est.estimation_number,
+            "project_name": est.project_name,
+            "project_type": est.project_type,
+            "grand_total_hours": est.grand_total_hours,
+            "grand_total_days": est.grand_total_days,
+            "total_tester_hours": est.total_tester_hours,
+            "total_leader_hours": est.total_leader_hours,
+            "feasibility_status": est.feasibility_status,
+            "dut_count": est.dut_count,
+            "profile_count": est.profile_count,
+            "dut_profile_combinations": est.dut_profile_combinations,
+            "pr_fix_count": est.pr_fix_count,
+            "status": est.status,
+            "tasks": [
+                {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+                for t in est.tasks
+            ],
+        }
+
+    data = ComparisonReportData(
+        estimation_a=_est_to_dict(est_a),
+        estimation_b=_est_to_dict(est_b),
+    )
+    content = generate_comparison_excel(data)
+    filename = f"comparison_{est_a.estimation_number}_{est_b.estimation_number}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/reports/trend")
+def generate_trend(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from ..reports.trend_report import TrendReportData, generate_trend_excel
+
+    projects = db.query(HistoricalProject).all()
+    data = TrendReportData(
+        projects=[
+            {
+                "project_name": p.project_name,
+                "project_type": p.project_type,
+                "estimated_hours": p.estimated_hours,
+                "actual_hours": p.actual_hours,
+                "dut_count": p.dut_count,
+                "completion_date": str(p.completion_date) if p.completion_date else "",
+            }
+            for p in projects
+        ]
+    )
+    content = generate_trend_excel(data)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="trend_analysis.xlsx"'},
+    )
+
+
+# ── Outline Wiki ────────────────────────────────────────
+
+@router.post("/integrations/outline/publish/{estimation_id}")
+def publish_to_outline(
+    estimation_id: int,
+    user: User = Depends(RequireRole("ESTIMATOR")),
+    db: Session = Depends(get_db),
+):
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("OUTLINE", db)
+    if not adapter:
+        raise HTTPException(400, "Outline integration is not configured")
+
+    est_data = {
+        "estimation_number": estimation.estimation_number,
+        "project_name": estimation.project_name,
+        "project_type": estimation.project_type,
+        "total_tester_hours": estimation.total_tester_hours,
+        "total_leader_hours": estimation.total_leader_hours,
+        "grand_total_hours": estimation.grand_total_hours,
+        "grand_total_days": estimation.grand_total_days,
+        "feasibility_status": estimation.feasibility_status,
+        "status": estimation.status,
+        "dut_count": estimation.dut_count,
+        "profile_count": estimation.profile_count,
+        "dut_profile_combinations": estimation.dut_profile_combinations,
+        "pr_fix_count": estimation.pr_fix_count,
+        "created_at": str(estimation.created_at) if estimation.created_at else "",
+        "tasks": [
+            {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
+            for t in estimation.tasks
+        ],
+    }
+    result = adapter.export_estimation(est_data)
+    return {
+        "status": result.status.value if hasattr(result.status, 'value') else str(result.status),
+        "items_created": result.items_created,
+        "items_updated": result.items_updated,
+        "errors": result.errors,
+    }
+
+
+@router.get("/integrations/outline/search")
+def search_outline(
+    query: str,
+    limit: int = 10,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("OUTLINE", db)
+    if not adapter:
+        raise HTTPException(400, "Outline integration is not configured")
+    return adapter.search_documents(query, limit)

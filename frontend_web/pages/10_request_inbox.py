@@ -15,12 +15,12 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 # Add backend to path
-backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend" / "src")
+backend_path = str(Path(__file__).resolve().parent.parent.parent / "backend")
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from database.migrations import get_engine
-from database.models import Estimation, Request
+from src.database.migrations import get_engine
+from src.database.models import Estimation, Request
 
 st.title("📥 Request Inbox")
 st.markdown("Manage incoming test requests and track their estimation workflow")
@@ -59,6 +59,10 @@ def get_requests_data():
                 "notes": r.notes,
                 "created_at": r.created_at,
                 "updated_at": r.updated_at,
+                "assigned_to_id": r.assigned_to_id,
+                "assigned_to_name": (
+                    r.assigned_to.display_name or r.assigned_to.username
+                ) if r.assigned_to else None,
             }
             for r in requests
         ]
@@ -142,6 +146,7 @@ def format_request_for_display(req: dict, linked_estimations: dict | None = None
         "Business Unit": req["business_unit"] or "N/A",
         "Status": req["status"],
         "Priority": req["priority"],
+        "Assigned To": req.get("assigned_to_name") or "—",
         "Estimation #": est_nums,
         "Source": req["request_source"],
         "Received": req["received_date"].strftime("%Y-%m-%d") if req["received_date"] else "",
@@ -295,7 +300,7 @@ def show_request_details(request_id: int):
             st.markdown("**Requester Email**")
             st.text(request.requester_email or "N/A")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         with col1:
             st.markdown("**Business Unit**")
@@ -307,6 +312,13 @@ def show_request_details(request_id: int):
                 request.requested_delivery_date.strftime("%Y-%m-%d")
                 if request.requested_delivery_date else "Not specified"
             )
+
+        with col3:
+            st.markdown("**Assigned To**")
+            assigned_name = None
+            if request.assigned_to:
+                assigned_name = request.assigned_to.display_name or request.assigned_to.username
+            st.text(assigned_name or "—")
 
         st.markdown("---")
         st.markdown("**Title**")
@@ -672,6 +684,7 @@ def show_requests_table():
                 "Business Unit": st.column_config.TextColumn(width="small"),
                 "Status": st.column_config.TextColumn(width="small"),
                 "Priority": st.column_config.TextColumn(width="small"),
+                "Assigned To": st.column_config.TextColumn(width="small"),
                 "Estimation #": st.column_config.TextColumn(width="small"),
                 "Source": st.column_config.TextColumn(width="small"),
                 "Received": st.column_config.TextColumn(width="small"),

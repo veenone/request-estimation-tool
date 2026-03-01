@@ -28,6 +28,7 @@ partial class EstimationDetailPanel
     private Label _lblDelivery = null!;
     private Label _lblCreatedBy = null!;
     private Label _lblCreatedAt = null!;
+    private Label _lblAssignedTo = null!;
 
     // Effort summary cards — value labels updated after load
     private Label _lblTesterHours = null!;
@@ -118,7 +119,7 @@ partial class EstimationDetailPanel
         stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));   // Row 0 — page header
         stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));    // Row 1 — spacer
-        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));  // Row 2 — info grid
+        stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));  // Row 2 — info grid
         stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));    // Row 3 — spacer
         stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 114));  // Row 4 — effort cards
         stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));    // Row 5 — spacer
@@ -249,13 +250,14 @@ partial class EstimationDetailPanel
             Dock = DockStyle.Fill,
             BackColor = Color.Transparent,
             ColumnCount = 4,
-            RowCount = 2,
+            RowCount = 3,
             Padding = new Padding(0),
         };
         for (int i = 0; i < 4; i++)
             tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
-        tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+        tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+        tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+        tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 33.4f));
 
         // Row 0
         tlp.Controls.Add(MakeLabelPair("Project Type",  out _lblProjectType),  0, 0);
@@ -268,6 +270,9 @@ partial class EstimationDetailPanel
         tlp.Controls.Add(MakeLabelPair("Expected Delivery",  out _lblDelivery),    1, 1);
         tlp.Controls.Add(MakeLabelPair("Created By",         out _lblCreatedBy),   2, 1);
         tlp.Controls.Add(MakeLabelPair("Created At",         out _lblCreatedAt),   3, 1);
+
+        // Row 2
+        tlp.Controls.Add(MakeLabelPair("Assigned To", out _lblAssignedTo), 0, 2);
 
         outer.Controls.Add(tlp);
         outer.Paint += PaintSurfaceBorder;
