@@ -162,6 +162,33 @@ def _build_redmine_panel(data: dict) -> None:
 
         ui.separator()
 
+        # -- Auto-sync Settings ------------------------------------------------
+        ui.label("Auto-sync Settings").classes("text-subtitle1 text-weight-medium")
+
+        with ui.row().classes("w-full gap-3 flex-wrap items-end"):
+            poll_interval_input = ui.number(
+                label="Polling Interval (minutes)",
+                value=int(extra.get("poll_interval_minutes", 0) or 0),
+                min=0,
+                step=5,
+                format="%.0f",
+            ).classes("flex-1")
+            ui.label(
+                "Set to 0 to disable auto-polling. Requires app restart to take effect."
+            ).classes("text-caption text-grey")
+
+        webhook_secret_input = ui.input(
+            label="Webhook Secret",
+            value=extra.get("webhook_secret", ""),
+            placeholder="Shared secret for webhook validation",
+        ).classes("w-full")
+
+        with ui.column().classes("q-mt-xs"):
+            ui.label("Webhook URL (configure in Redmine):").classes("text-caption text-grey")
+            ui.label("/api/webhooks/redmine").classes("text-body2 text-primary")
+
+        ui.separator()
+
         # -- Field Mappings -----------------------------------------------------
         ui.label("Field Mappings").classes("text-subtitle1 text-weight-medium")
 
@@ -205,6 +232,8 @@ def _build_redmine_panel(data: dict) -> None:
             _eff=effort_field_input,
             _fea=feasibility_field_input,
             _est=estimation_field_input,
+            _poll=poll_interval_input,
+            _ws=webhook_secret_input,
         ) -> None:
             additional: dict = {
                 "project_id":               (_pid.value or "").strip(),
@@ -212,6 +241,8 @@ def _build_redmine_panel(data: dict) -> None:
                 "effort_hours_field_id":    (_eff.value or "").strip(),
                 "feasibility_field_id":     (_fea.value or "").strip(),
                 "estimation_number_field_id": (_est.value or "").strip(),
+                "poll_interval_minutes":    int(_poll.value or 0),
+                "webhook_secret":           (_ws.value or "").strip(),
             }
             payload: dict = {
                 "enabled":                _tog.value,

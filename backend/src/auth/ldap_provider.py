@@ -36,6 +36,10 @@ from ..database.models import Configuration
 from .models import User
 
 
+class LDAPConnectionError(Exception):
+    """Raised when the LDAP server is unreachable or the service bind fails."""
+
+
 class LDAPProvider:
     """LDAP authentication provider for Active Directory integration."""
 
@@ -100,6 +104,10 @@ class LDAPProvider:
         Returns:
             The local ``User`` instance on success, ``None`` on any failure
             (wrong credentials, user not found, library not installed, etc.).
+
+        Raises:
+            LDAPConnectionError: When the LDAP server is unreachable or the
+                service account bind fails.
         """
         if not self.is_configured:
             return None
@@ -107,7 +115,11 @@ class LDAPProvider:
         try:
             import ldap3  # type: ignore[import-untyped]
 
-            server = ldap3.Server(self.config["ldap_url"], get_info=ldap3.ALL)
+            server = ldap3.Server(
+                self.config["ldap_url"],
+                get_info=ldap3.ALL,
+                connect_timeout=10,
+            )
 
             search_base = self.config.get("ldap_search_base", "")
             user_filter_tpl = self.config.get(
@@ -121,11 +133,18 @@ class LDAPProvider:
                 user=self.config.get("ldap_bind_dn"),
                 password=self.config.get("ldap_bind_password"),
                 auto_bind=True,
+                receive_timeout=10,
             )
             conn.search(
                 search_base,
                 user_filter,
-                attributes=["cn", "mail", "memberOf", "distinguishedName"],
+                attributes=[
+                    "sAMAccountName",
+                    "cn",
+                    "mail",
+                    "memberOf",
+                    "distinguishedName",
+                ],
             )
 
             if not conn.entries:
@@ -135,7 +154,12 @@ class LDAPProvider:
             user_dn = str(entry.entry_dn)
 
             # Step 2: verify the user's password by binding as them.
-            user_conn = ldap3.Connection(server, user=user_dn, password=password)
+            user_conn = ldap3.Connection(
+                server,
+                user=user_dn,
+                password=password,
+                receive_timeout=10,
+            )
             if not user_conn.bind():
                 return None
 
@@ -161,6 +185,7 @@ class LDAPProvider:
                 local_user.display_name = display_name
                 local_user.email = email
                 local_user.external_id = user_dn
+                local_user.auth_provider = "ldap"
                 local_user.role = role
                 local_user.is_active = True
             else:
@@ -180,8 +205,13 @@ class LDAPProvider:
             return local_user
 
         except ImportError:
-            return None
-        except Exception:
+            raise LDAPConnectionError("ldap3 library is not installed")
+        except LDAPConnectionError:
+            raise
+        except Exception as exc:
+            err_msg = str(exc)
+            if "connect" in err_msg.lower() or "timeout" in err_msg.lower() or "socket" in err_msg.lower():
+                raise LDAPConnectionError(f"Cannot reach LDAP server: {err_msg}")
             return None
 
     # ------------------------------------------------------------------

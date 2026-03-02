@@ -105,20 +105,35 @@ def _generate_number(db: Session, prefix_key: str, table_class: type, number_fie
 def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db)):
     """Authenticate and get JWT tokens."""
     auth_service = AuthService(db)
+    method = getattr(data, "auth_method", "auto") or "auto"
 
-    # Try local auth first
-    result = auth_service.login(data.username, data.password)
+    result = None
 
-    # Try LDAP if local fails
-    if result is None:
-        from ..auth.ldap_provider import LDAPProvider
+    # Try local auth (unless method is explicitly "ldap")
+    if method in ("auto", "local"):
+        result = auth_service.login(data.username, data.password)
+
+    # Try LDAP if local fails or method is explicitly "ldap"
+    if result is None and method in ("auto", "ldap"):
+        from ..auth.ldap_provider import LDAPConnectionError, LDAPProvider
         ldap = LDAPProvider(db)
         if ldap.is_configured:
-            ldap_user = ldap.authenticate(data.username, data.password)
+            try:
+                ldap_user = ldap.authenticate(data.username, data.password)
+            except LDAPConnectionError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"LDAP server unreachable: {exc}",
+                )
             if ldap_user:
                 access_token = auth_service.create_access_token(ldap_user)
                 refresh_token = auth_service.create_refresh_token(ldap_user)
                 result = (ldap_user, access_token, refresh_token)
+        elif method == "ldap":
+            raise HTTPException(
+                status_code=400,
+                detail="LDAP authentication is not configured",
+            )
 
     if result is None:
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -129,6 +144,19 @@ def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db
         refresh_token=refresh_token,
         user=UserOut.model_validate(user),
     )
+
+
+@router.get("/auth/providers")
+def get_auth_providers(db: Session = Depends(get_db)):
+    """Return which authentication providers are available."""
+    providers = ["local"]
+    ldap_url = _get_config_value(db, "ldap_url", "")
+    if ldap_url.strip():
+        providers.append("ldap")
+    oidc_issuer = _get_config_value(db, "oidc_issuer", "")
+    if oidc_issuer.strip():
+        providers.append("oidc")
+    return {"providers": providers}
 
 
 @router.post("/auth/refresh")
@@ -266,8 +294,11 @@ def list_audit_log(
 # ── Features ─────────────────────────────────────────────
 
 @router.get("/features", response_model=list[FeatureOut])
-def list_features(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(Feature).all()
+def list_features(product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    q = db.query(Feature)
+    if product_type:
+        q = q.filter((Feature.product_type == product_type) | (Feature.product_type.is_(None)))
+    return q.all()
 
 
 @router.post("/features", response_model=FeatureOut, status_code=201)
@@ -351,8 +382,11 @@ def delete_task_template(template_id: int, user: User = Depends(RequireRole("APP
 # ── DUT Types ────────────────────────────────────────────
 
 @router.get("/dut-types", response_model=list[DutTypeOut])
-def list_dut_types(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(DutType).all()
+def list_dut_types(product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    q = db.query(DutType)
+    if product_type:
+        q = q.filter((DutType.product_type == product_type) | (DutType.product_type.is_(None)))
+    return q.all()
 
 
 @router.post("/dut-types", response_model=DutTypeOut, status_code=201)
@@ -388,8 +422,11 @@ def delete_dut_type(dut_id: int, user: User = Depends(RequireRole("APPROVER")), 
 # ── Test Profiles ────────────────────────────────────────
 
 @router.get("/profiles", response_model=list[TestProfileOut])
-def list_profiles(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(TestProfile).all()
+def list_profiles(product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    q = db.query(TestProfile)
+    if product_type:
+        q = q.filter((TestProfile.product_type == product_type) | (TestProfile.product_type.is_(None)))
+    return q.all()
 
 
 @router.post("/profiles", response_model=TestProfileOut, status_code=201)
@@ -432,6 +469,60 @@ def list_historical_projects(user: User = Depends(get_current_user), db: Session
 @router.post("/historical-projects", response_model=HistoricalProjectOut, status_code=201)
 def create_historical_project(data: HistoricalProjectCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
     proj = HistoricalProject(**data.model_dump())
+    db.add(proj)
+    db.commit()
+    db.refresh(proj)
+    return proj
+
+
+@router.put("/historical-projects/{project_id}", response_model=HistoricalProjectOut)
+def update_historical_project(project_id: int, data: HistoricalProjectCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    proj = db.get(HistoricalProject, project_id)
+    if not proj:
+        raise HTTPException(404, "Historical project not found")
+    for key, val in data.model_dump(exclude_unset=True).items():
+        setattr(proj, key, val)
+    db.commit()
+    db.refresh(proj)
+    return proj
+
+
+@router.delete("/historical-projects/{project_id}", status_code=204)
+def delete_historical_project(project_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    proj = db.get(HistoricalProject, project_id)
+    if not proj:
+        raise HTTPException(404, "Historical project not found")
+    db.delete(proj)
+    db.commit()
+
+
+@router.post("/estimations/{estimation_id}/archive", response_model=HistoricalProjectOut, status_code=201)
+def archive_estimation_to_history(estimation_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    """Convert an APPROVED estimation into a historical project record."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if estimation.status != "APPROVED":
+        raise HTTPException(400, f"Only APPROVED estimations can be archived (current: {estimation.status})")
+
+    # Check for existing archive
+    existing = db.query(HistoricalProject).filter(HistoricalProject.estimation_id == estimation_id).first()
+    if existing:
+        raise HTTPException(400, "This estimation has already been archived")
+
+    wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
+
+    proj = HistoricalProject(
+        project_name=estimation.project_name,
+        project_type=estimation.project_type,
+        estimated_hours=estimation.grand_total_hours,
+        dut_count=estimation.dut_count,
+        profile_count=estimation.profile_count,
+        pr_count=estimation.pr_fix_count,
+        features_json=json.dumps(wizard.get("feature_ids", [])),
+        notes=f"Archived from estimation {estimation.estimation_number or estimation_id}",
+        estimation_id=estimation.id,
+    )
     db.add(proj)
     db.commit()
     db.refresh(proj)
@@ -529,6 +620,16 @@ def get_dut_categories(user: User = Depends(get_current_user), db: Session = Dep
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+@router.get("/configuration/product_types", response_model=list[str])
+def get_product_types(db: Session = Depends(get_db)):
+    """Return the configured product types as a list of strings."""
+    raw = _get_config_value(db, "product_types", '["Payment", "Telco"]')
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 @router.put("/configuration/{key}", response_model=ConfigurationOut)
 def update_configuration(key: str, data: ConfigurationUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     cfg = db.get(Configuration, key)
@@ -552,6 +653,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
     study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
     hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     feature_ids = data.resolved_feature_ids
     new_feature_ids = data.resolved_new_feature_ids
@@ -604,6 +706,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         new_feature_study_hours=study_hours_cfg,
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
+        pr_scales_with_profile=pr_scales_profile,
     )
     result = calculate_estimation(calc_input)
 
@@ -662,6 +765,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
     study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
     hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     # Resolve features and their task templates
     if data.feature_ids:
@@ -715,6 +819,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         new_feature_study_hours=study_hours_cfg,
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
+        pr_scales_with_profile=pr_scales_profile,
     )
     result = calculate_estimation(calc_input)
 
@@ -734,9 +839,11 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             "medium": data.pr_fixes.medium,
             "complex": data.pr_fixes.complex_,
         },
+        "pr_details": [d.model_dump() for d in data.pr_details] if data.pr_details else [],
         "team_size": data.team_size,
         "has_leader": data.has_leader,
         "working_days": data.working_days,
+        "start_date": str(data.start_date) if data.start_date else None,
     }
 
     # Save estimation
@@ -750,9 +857,13 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         profile_count=profile_count,
         dut_profile_combinations=combinations,
         pr_fix_count=pr_total,
+        start_date=data.start_date,
         expected_delivery=data.expected_delivery,
         total_tester_hours=result.total_tester_hours,
         total_leader_hours=result.total_leader_hours,
+        pr_fix_hours=result.pr_fix_hours,
+        study_hours=result.study_hours,
+        buffer_hours=result.buffer_hours,
         grand_total_hours=result.grand_total_hours,
         grand_total_days=result.grand_total_days,
         feasibility_status=result.feasibility_status,
@@ -903,11 +1014,32 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
             "task_type": t.task_type,
             "base_hours": t.base_hours,
             "calculated_hours": t.calculated_hours,
+            "leader_hours": t.leader_hours,
             "is_new_feature_study": t.is_new_feature_study,
             "notes": t.notes or "",
         }
         for t in estimation.tasks
     ]
+
+    # Resolve DUT/profile names and matrix from wizard_inputs_json
+    wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
+    dut_ids = wizard.get("dut_ids", [])
+    profile_ids = wizard.get("profile_ids", [])
+    dut_profile_matrix = wizard.get("dut_profile_matrix", [])
+    pr_fixes_data = wizard.get("pr_fixes", {})
+
+    dut_types_data = []
+    if dut_ids:
+        duts = db.query(DutType).filter(DutType.id.in_(dut_ids)).all()
+        dut_types_data = [{"id": d.id, "name": d.name} for d in duts]
+
+    profiles_data = []
+    if profile_ids:
+        profiles = db.query(TestProfile).filter(TestProfile.id.in_(profile_ids)).all()
+        profiles_data = [{"id": p.id, "name": p.name} for p in profiles]
+
+    # PR details from wizard inputs
+    pr_details = wizard.get("pr_details", [])
 
     return ExcelReportData(
         project_name=estimation.project_name,
@@ -926,11 +1058,21 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         expected_delivery=str(estimation.expected_delivery) if estimation.expected_delivery else "",
         total_tester_hours=estimation.total_tester_hours,
         total_leader_hours=estimation.total_leader_hours,
+        pr_fix_hours=estimation.pr_fix_hours,
+        study_hours=estimation.study_hours,
+        buffer_hours=estimation.buffer_hours,
         grand_total_hours=estimation.grand_total_hours,
         grand_total_days=estimation.grand_total_days,
         feasibility_status=estimation.feasibility_status,
         tasks=tasks,
+        dut_types=dut_types_data,
+        profiles=profiles_data,
+        dut_profile_matrix=dut_profile_matrix,
+        pr_simple=pr_fixes_data.get("simple", 0),
+        pr_medium=pr_fixes_data.get("medium", 0),
+        pr_complex=pr_fixes_data.get("complex", 0),
         reference_projects=ref_projects,
+        pr_details=pr_details,
     )
 
 
@@ -1123,6 +1265,38 @@ def integration_health(system_name: str, user: User = Depends(get_current_user),
     }
 
 
+# ── Redmine Webhook ──────────────────────────────────────
+
+@router.post("/webhooks/redmine")
+def redmine_webhook(request: HTTPRequest, db: Session = Depends(get_db)):
+    """Handle incoming Redmine webhook payloads (no auth — uses shared secret)."""
+    import hmac
+    import hashlib
+
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.system_name == "REDMINE").first()
+    if not cfg or not cfg.enabled:
+        raise HTTPException(400, "Redmine integration is not enabled")
+
+    additional = json.loads(cfg.additional_config_json or "{}")
+    webhook_secret = additional.get("webhook_secret", "")
+
+    # Validate secret via query param if configured
+    if webhook_secret:
+        import urllib.parse
+        qs = urllib.parse.parse_qs(str(request.query_params))
+        token = qs.get("token", [""])[0] if isinstance(qs.get("token"), list) else qs.get("token", "")
+        if not hmac.compare_digest(str(token), webhook_secret):
+            raise HTTPException(403, "Invalid webhook token")
+
+    # Process payload asynchronously
+    try:
+        from ..integrations.service import sync_import
+        result = sync_import("REDMINE", db)
+        return {"status": "ok", "items_created": result.items_created, "items_updated": result.items_updated}
+    except Exception as e:
+        raise HTTPException(500, f"Webhook processing failed: {str(e)}")
+
+
 # ── Send report via email ────────────────────────────────
 
 @router.post("/estimations/{estimation_id}/send-report")
@@ -1302,6 +1476,7 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
     study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
     hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     # Resolve features and their task templates
     if data.feature_ids:
@@ -1355,6 +1530,7 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
         new_feature_study_hours=study_hours_cfg,
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
+        pr_scales_with_profile=pr_scales_profile,
     )
     result = calculate_estimation(calc_input)
 
@@ -1371,9 +1547,11 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
             "medium": data.pr_fixes.medium,
             "complex": data.pr_fixes.complex_,
         },
+        "pr_details": [d.model_dump() for d in data.pr_details] if data.pr_details else [],
         "team_size": data.team_size,
         "has_leader": data.has_leader,
         "working_days": data.working_days,
+        "start_date": str(data.start_date) if data.start_date else None,
     }
 
     # Update estimation in-place
@@ -1384,9 +1562,13 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
     estimation.profile_count = profile_count
     estimation.dut_profile_combinations = combinations
     estimation.pr_fix_count = pr_total
+    estimation.start_date = data.start_date
     estimation.expected_delivery = data.expected_delivery
     estimation.total_tester_hours = result.total_tester_hours
     estimation.total_leader_hours = result.total_leader_hours
+    estimation.pr_fix_hours = result.pr_fix_hours
+    estimation.study_hours = result.study_hours
+    estimation.buffer_hours = result.buffer_hours
     estimation.grand_total_hours = result.grand_total_hours
     estimation.grand_total_days = result.grand_total_days
     estimation.feasibility_status = result.feasibility_status

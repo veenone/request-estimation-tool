@@ -435,14 +435,15 @@ class OutlineAdapter(BaseAdapter):
             lines.extend([
                 "## Task Breakdown",
                 "",
-                "| Task | Type | Hours |",
-                "|------|------|------:|",
+                "| Task | Type | Tester Hours | Leader Hours |",
+                "|------|------|-------------:|-------------:|",
             ])
             for task in tasks:
                 name = task.get("task_name", task.get("name", ""))
                 task_type = task.get("task_type", "")
-                hours = task.get("calculated_hours", 0)
-                lines.append(f"| {name} | {task_type} | {hours:.1f} |")
+                tester_hours = task.get("calculated_hours", 0)
+                leader_hours = task.get("leader_hours", 0)
+                lines.append(f"| {name} | {task_type} | {tester_hours:.1f} | {leader_hours:.1f} |")
             lines.append("")
 
         lines.extend([

@@ -92,6 +92,7 @@ class EstimationInput:
     new_feature_study_hours: float = 16.0
     working_hours_per_day: float = 7.0
     buffer_percentage: float = 10.0
+    pr_scales_with_profile: bool = False
 
 
 @dataclass
@@ -144,17 +145,24 @@ def calculate_task_effort(
     )
 
 
-def calculate_pr_fix_effort(pr_fixes: PRFixInput, dut_count: int = 1) -> float:
+def calculate_pr_fix_effort(
+    pr_fixes: PRFixInput,
+    dut_count: int = 1,
+    profile_count: int = 1,
+    pr_scales_with_profile: bool = False,
+) -> float:
     """Calculate total PR fix validation effort.
 
     Each PR is validated per DUT (scales_with_dut = true per SPEC §9.2).
+    Optionally scales with profile count if pr_scales_with_profile is enabled.
     """
     total = (
         pr_fixes.simple * PR_COMPLEXITY_HOURS["simple"]
         + pr_fixes.medium * PR_COMPLEXITY_HOURS["medium"]
         + pr_fixes.complex * PR_COMPLEXITY_HOURS["complex"]
     )
-    return total * dut_count
+    profile_factor = profile_count if pr_scales_with_profile else 1
+    return total * dut_count * profile_factor
 
 
 def calculate_estimation(inputs: EstimationInput) -> EstimationResult:
@@ -181,7 +189,12 @@ def calculate_estimation(inputs: EstimationInput) -> EstimationResult:
     total_leader = total_tester * inputs.leader_effort_ratio if inputs.has_leader else 0.0
 
     # PR fix effort
-    pr_fix_hours = calculate_pr_fix_effort(inputs.pr_fixes, inputs.dut_count)
+    pr_fix_hours = calculate_pr_fix_effort(
+        inputs.pr_fixes,
+        inputs.dut_count,
+        inputs.profile_count,
+        inputs.pr_scales_with_profile,
+    )
 
     # New feature study effort (already included in tasks if study tasks are provided,
     # but this is the separate line item from SPEC §4.2 for features flagged as new)

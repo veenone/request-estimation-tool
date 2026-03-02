@@ -22,6 +22,7 @@ class LoginRequest(BaseModel):
 
     username: str
     password: str
+    auth_method: str = "auto"  # "auto", "local", or "ldap"
 
 
 class RefreshRequest(BaseModel):

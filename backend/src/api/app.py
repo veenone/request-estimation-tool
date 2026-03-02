@@ -27,7 +27,19 @@ def get_db() -> Session:  # type: ignore[misc]
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_database()
+    # Start Redmine auto-sync scheduler if configured
+    try:
+        from ..integrations.sync_scheduler import start_scheduler, stop_scheduler
+        start_scheduler(SessionLocal)
+    except Exception:
+        pass  # Scheduler is optional
     yield
+    # Stop scheduler on shutdown
+    try:
+        from ..integrations.sync_scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
 
 
 app = FastAPI(

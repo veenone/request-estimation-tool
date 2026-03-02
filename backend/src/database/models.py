@@ -40,6 +40,7 @@ class Request(Base):
     attachments_json: Mapped[str] = mapped_column(Text, default="[]")
     assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -56,6 +57,7 @@ class Feature(Base):
     complexity_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     has_existing_tests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     task_templates: Mapped[list["TaskTemplate"]] = relationship(back_populates="feature", cascade="all, delete-orphan")
@@ -84,6 +86,7 @@ class DutType(Base):
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     complexity_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class TestProfile(Base):
@@ -93,6 +96,7 @@ class TestProfile(Base):
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     effort_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class HistoricalProject(Base):
@@ -109,6 +113,7 @@ class HistoricalProject(Base):
     features_json: Mapped[str] = mapped_column(Text, default="[]")
     completion_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    estimation_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("estimations.id", ondelete="SET NULL"), nullable=True)
 
 
 class Estimation(Base):
@@ -124,9 +129,13 @@ class Estimation(Base):
     profile_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     dut_profile_combinations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pr_fix_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     expected_delivery: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     total_tester_hours: Mapped[float] = mapped_column(Float, default=0)
     total_leader_hours: Mapped[float] = mapped_column(Float, default=0)
+    pr_fix_hours: Mapped[float] = mapped_column(Float, default=0)
+    study_hours: Mapped[float] = mapped_column(Float, default=0)
+    buffer_hours: Mapped[float] = mapped_column(Float, default=0)
     grand_total_hours: Mapped[float] = mapped_column(Float, default=0)
     grand_total_days: Mapped[float] = mapped_column(Float, default=0)
     feasibility_status: Mapped[str] = mapped_column(String, default="FEASIBLE")

@@ -205,6 +205,26 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
     ))
     story.append(Spacer(1, 12))
 
+    # ── 4b. DUT x Profile Matrix ─────────────────────
+    if data.dut_types and data.profiles:
+        story.append(Paragraph("DUT x Profile Matrix", styles["SectionTitle"]))
+        matrix_headers = ["DUT \\ Profile"] + [p.get("name", "") for p in data.profiles]
+        active_combos = set()
+        for combo in data.dut_profile_matrix:
+            if len(combo) >= 2:
+                active_combos.add((combo[0], combo[1]))
+        matrix_rows = []
+        for dut in data.dut_types:
+            row = [dut.get("name", "")]
+            for prof in data.profiles:
+                is_active = (dut.get("id"), prof.get("id")) in active_combos or not data.dut_profile_matrix
+                row.append("Yes" if is_active else "-")
+            matrix_rows.append(row)
+        num_cols = len(data.profiles) + 1
+        matrix_col_w = [page_width / num_cols] * num_cols
+        story.append(_make_table(matrix_headers, matrix_rows, col_widths=matrix_col_w))
+        story.append(Spacer(1, 12))
+
     # ── 5. Task breakdown ──────────────────────────────
     story.append(Paragraph("Task Breakdown", styles["SectionTitle"]))
     task_rows = []
@@ -214,9 +234,10 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
             task.get("task_type", ""),
             f"{task.get('base_hours', 0):.1f}",
             f"{task.get('calculated_hours', 0):.1f}",
+            f"{task.get('leader_hours', 0):.1f}",
         ])
-    col_w = [page_width * 0.40, page_width * 0.20, page_width * 0.20, page_width * 0.20]
-    story.append(_make_table(["Task", "Type", "Base Hrs", "Calc. Hrs"], task_rows, col_widths=col_w))
+    col_w = [page_width * 0.32, page_width * 0.17, page_width * 0.17, page_width * 0.17, page_width * 0.17]
+    story.append(_make_table(["Task", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs"], task_rows, col_widths=col_w))
     story.append(Spacer(1, 12))
 
     # ── 6. Effort summary ──────────────────────────────

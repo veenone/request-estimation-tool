@@ -116,6 +116,8 @@ class ExcelReportData:
         # Risk flags
         risk_flags: list[str] | None = None,
         risk_messages: list[str] | None = None,
+        # PR details
+        pr_details: list[dict] | None = None,
     ):
         self.project_name = project_name
         self.estimation_number = estimation_number
@@ -154,6 +156,7 @@ class ExcelReportData:
         self.reference_projects = reference_projects or []
         self.risk_flags = risk_flags or []
         self.risk_messages = risk_messages or []
+        self.pr_details = pr_details or []
 
 
 # ── Sheet builders ───────────────────────────────────────
@@ -224,7 +227,7 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
 def _build_task_breakdown_sheet(ws: Any, data: ExcelReportData) -> None:
     ws.title = "Task Breakdown"
 
-    headers = ["Task Name", "Type", "Base Hours", "DUT ×", "Profile ×", "Complexity", "Calculated Hours", "Study?", "Notes"]
+    headers = ["Task Name", "Type", "Base Hours", "DUT x", "Profile x", "Complexity", "Tester Hours", "Leader Hours", "Study?", "Notes"]
     for col, header in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=header)
     _style_header_row(ws, 1, len(headers))
@@ -237,8 +240,9 @@ def _build_task_breakdown_sheet(ws: Any, data: ExcelReportData) -> None:
         ws.cell(row=i, column=5, value=task.get("profile_multiplier", 1))
         ws.cell(row=i, column=6, value=task.get("complexity_weight", 1.0))
         ws.cell(row=i, column=7, value=task.get("calculated_hours", 0))
-        ws.cell(row=i, column=8, value="Yes" if task.get("is_new_feature_study") else "")
-        ws.cell(row=i, column=9, value=task.get("notes", ""))
+        ws.cell(row=i, column=8, value=task.get("leader_hours", 0))
+        ws.cell(row=i, column=9, value="Yes" if task.get("is_new_feature_study") else "")
+        ws.cell(row=i, column=10, value=task.get("notes", ""))
         for col in range(1, len(headers) + 1):
             ws.cell(row=i, column=col).border = THIN_BORDER
 
@@ -246,6 +250,7 @@ def _build_task_breakdown_sheet(ws: Any, data: ExcelReportData) -> None:
     total_row = len(data.tasks) + 2
     ws.cell(row=total_row, column=1, value="TOTAL").font = LABEL_FONT
     ws.cell(row=total_row, column=7, value=data.total_tester_hours).font = LABEL_FONT
+    ws.cell(row=total_row, column=8, value=data.total_leader_hours).font = LABEL_FONT
 
     _auto_width(ws)
 
@@ -345,6 +350,23 @@ def _build_pr_fixes_sheet(ws: Any, data: ExcelReportData) -> None:
     ws.cell(row=7, column=1, value=f"DUT count: {data.dut_count}").font = LABEL_FONT
     ws.cell(row=8, column=1, value=f"Total PR fix effort (× {data.dut_count} DUTs):").font = LABEL_FONT
     ws.cell(row=8, column=2, value=f"{data.pr_fix_hours:.1f}h").font = LABEL_FONT
+
+    # PR details table (optional)
+    if data.pr_details:
+        detail_start = 10
+        ws.cell(row=detail_start, column=1, value="PR Details").font = SUBTITLE_FONT
+        detail_headers = ["PR Number", "Link", "Complexity", "Status"]
+        for col, header in enumerate(detail_headers, 1):
+            ws.cell(row=detail_start + 1, column=col, value=header)
+        _style_header_row(ws, detail_start + 1, len(detail_headers))
+
+        for i, pr in enumerate(data.pr_details, start=detail_start + 2):
+            ws.cell(row=i, column=1, value=pr.get("pr_number", ""))
+            ws.cell(row=i, column=2, value=pr.get("link", ""))
+            ws.cell(row=i, column=3, value=pr.get("complexity", ""))
+            ws.cell(row=i, column=4, value=pr.get("status", ""))
+            for col in range(1, 5):
+                ws.cell(row=i, column=col).border = THIN_BORDER
 
     _auto_width(ws)
 

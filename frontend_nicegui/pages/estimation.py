@@ -241,7 +241,9 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "pr_simple": 0,
         "pr_medium": 0,
         "pr_complex": 0,
+        "pr_details": [],
         # Step 6
+        "start_date": None,
         "delivery_date": None,
         "working_days": 20,
         "team_size": 1,
@@ -382,6 +384,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                     select_all_cb.on("update:model-value", _toggle_select_all)
 
+                    def _update_select_all_state() -> None:
+                        """Sync Select All checkbox when an individual feature is toggled."""
+                        all_checked = all(cb.value for cb in feature_checkbox_refs.values())
+                        if select_all_cb.value != all_checked:
+                            select_all_cb._event_listeners.clear()
+                            select_all_cb.value = all_checked
+                            select_all_cb.on("update:model-value", _toggle_select_all)
+
                     ui.separator()
 
                     for cat_name, cat_features in features_by_cat.items():
@@ -418,6 +428,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     def _sync(e) -> None:
                                         if not feature_checkbox_refs[f_id].value:
                                             n_cb.value = False
+                                        _update_select_all_state()
 
                                     return _sync
 
@@ -679,10 +690,72 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 pr_complex_input.on("update:model-value", lambda _: _update_pr_subtotal())
                 _update_pr_subtotal()
 
+                # -- PR Details (optional) --
+                ui.separator().classes("q-mt-md")
+                with ui.expansion("PR Details (optional)", icon="list").classes("w-full"):
+                    ui.label(
+                        "Optionally add individual PR details for tracking."
+                    ).classes("text-body2 text-grey q-mb-sm")
+
+                    pr_details_container = ui.column().classes("w-full")
+                    pr_detail_rows: list[dict] = list(state.get("pr_details", []))
+
+                    def _render_pr_details() -> None:
+                        pr_details_container.clear()
+                        with pr_details_container:
+                            for idx, pr in enumerate(pr_detail_rows):
+                                with ui.row().classes("items-center q-gutter-sm w-full"):
+                                    _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
+                                    _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                    _cx = ui.select(
+                                        options=["simple", "medium", "complex"],
+                                        value=pr.get("complexity", "simple"),
+                                        label="Complexity",
+                                    ).classes("w-32")
+                                    _st = ui.select(
+                                        options=["Open", "Merged", "Closed"],
+                                        value=pr.get("status", "Open"),
+                                        label="Status",
+                                    ).classes("w-28")
+
+                                    def _make_remove(i: int):
+                                        def _remove():
+                                            pr_detail_rows.pop(i)
+                                            _render_pr_details()
+                                        return _remove
+
+                                    ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+
+                                    # Bind updates back to data
+                                    def _make_updater(i: int, n=_num, l=_link, c=_cx, s=_st):
+                                        def _upd(_=None):
+                                            if i < len(pr_detail_rows):
+                                                pr_detail_rows[i] = {
+                                                    "pr_number": n.value or "",
+                                                    "link": l.value or "",
+                                                    "complexity": c.value or "simple",
+                                                    "status": s.value or "Open",
+                                                }
+                                        return _upd
+
+                                    updater = _make_updater(idx)
+                                    _num.on("update:model-value", updater)
+                                    _link.on("update:model-value", updater)
+                                    _cx.on("update:model-value", updater)
+                                    _st.on("update:model-value", updater)
+
+                    def _add_pr_detail() -> None:
+                        pr_detail_rows.append({"pr_number": "", "link": "", "complexity": "simple", "status": "Open"})
+                        _render_pr_details()
+
+                    ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+                    _render_pr_details()
+
                 def _collect_prs() -> None:
                     state["pr_simple"] = int(pr_simple_input.value or 0)
                     state["pr_medium"] = int(pr_medium_input.value or 0)
                     state["pr_complex"] = int(pr_complex_input.value or 0)
+                    state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
 
                 with ui.stepper_navigation():
                     def _back_step5() -> None:
@@ -703,12 +776,16 @@ async def new_estimation_page(request_id: str | None = None) -> None:
             # ---------------------------------------------------------- #
             with ui.step("Delivery & Team"):
                 ui.label(
-                    "Specify the deadline and team capacity for feasibility assessment."
+                    "Specify the start date, deadline, and team capacity for feasibility assessment."
                 ).classes("text-body2 text-grey q-mb-md")
+
+                start_date_input = ui.date(
+                    value=state.get("start_date") or "",
+                ).classes("w-full").props("label='Start Date (optional)'")
 
                 delivery_input = ui.date(
                     value=state["delivery_date"] or "",
-                ).classes("w-full").props("label='Target Delivery Date (optional)'")
+                ).classes("w-full q-mt-sm").props("label='Deadline (optional)'")
 
                 working_days_input = ui.number(
                     "Working Days Available",
@@ -717,6 +794,41 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     step=1,
                     precision=0,
                 ).classes("w-full q-mt-sm")
+
+                auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
+
+                def _auto_calc_working_days() -> None:
+                    sd = start_date_input.value
+                    dd = delivery_input.value
+                    if sd and dd:
+                        try:
+                            from datetime import date as _date, timedelta
+                            if isinstance(sd, str):
+                                s = _date.fromisoformat(sd)
+                            else:
+                                s = sd
+                            if isinstance(dd, str):
+                                d = _date.fromisoformat(dd)
+                            else:
+                                d = dd
+                            days = 0
+                            cur = s
+                            while cur <= d:
+                                if cur.weekday() < 5:
+                                    days += 1
+                                cur += timedelta(days=1)
+                            if days > 0:
+                                working_days_input.value = days
+                                auto_calc_label.set_text(f"Auto-calculated: {days} working days between dates")
+                            else:
+                                auto_calc_label.set_text("")
+                        except Exception:
+                            auto_calc_label.set_text("")
+                    else:
+                        auto_calc_label.set_text("")
+
+                start_date_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
 
                 team_size_input = ui.number(
                     "Team Size (testers)",
@@ -732,6 +844,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 ).classes("q-mt-sm")
 
                 def _collect_delivery() -> None:
+                    raw_start = start_date_input.value
+                    state["start_date"] = raw_start if raw_start else None
                     raw = delivery_input.value
                     state["delivery_date"] = raw if raw else None
                     state["working_days"] = int(working_days_input.value or 20)
@@ -925,9 +1039,11 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             "medium": state["pr_medium"],
                             "complex": state["pr_complex"],
                         },
+                        "pr_details": state.get("pr_details", []),
                         "team_size": state["team_size"],
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
+                        "start_date": state.get("start_date"),
                         "expected_delivery": state["delivery_date"],
                         "request_id": linked_request_id,
                         "created_by": user.get("username"),
@@ -1037,9 +1153,13 @@ async def estimation_detail_page(estimation_id: int) -> None:
             with ui.card().classes("q-pa-md"):
                 ui.label("Combinations").classes("text-caption text-grey")
                 ui.label(str(est.get("dut_profile_combinations", 0))).classes("text-body1")
+            if est.get("start_date"):
+                with ui.card().classes("q-pa-md"):
+                    ui.label("Start Date").classes("text-caption text-grey")
+                    ui.label(str(est["start_date"])).classes("text-body1")
             if est.get("expected_delivery"):
                 with ui.card().classes("q-pa-md"):
-                    ui.label("Delivery").classes("text-caption text-grey")
+                    ui.label("Deadline").classes("text-caption text-grey")
                     ui.label(str(est["expected_delivery"])).classes("text-body1")
             if est.get("created_at"):
                 with ui.card().classes("q-pa-md"):
@@ -1110,6 +1230,9 @@ async def estimation_detail_page(estimation_id: int) -> None:
         with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
             _hours_card("Tester Hours", est.get("total_tester_hours", 0), "person")
             _hours_card("Leader Hours", est.get("total_leader_hours", 0), "manage_accounts")
+            _hours_card("PR Fix Hours", est.get("pr_fix_hours", 0), "bug_report")
+            _hours_card("Study Hours", est.get("study_hours", 0), "school")
+            _hours_card("Buffer Hours", est.get("buffer_hours", 0), "security")
             _hours_card("Grand Total Hours", est.get("grand_total_hours", 0), "summarize")
             _hours_card("Grand Total Days", est.get("grand_total_days", 0), "calendar_today")
 
@@ -1192,6 +1315,24 @@ async def estimation_detail_page(estimation_id: int) -> None:
                         ).props(btn_props)
 
         _rebuild_status_buttons()
+
+        # ------------------------------------------------------------------ #
+        # Archive to History (Feature 6)                                       #
+        # ------------------------------------------------------------------ #
+        if est.get("status") == "APPROVED":
+            async def _archive_to_history() -> None:
+                try:
+                    await api_post(f"/estimations/{estimation_id}/archive")
+                    ui.notify("Estimation archived to Historical Projects.", type="positive")
+                except Exception as exc:
+                    ui.notify(f"Archive failed: {exc}", type="negative")
+
+            with ui.row().classes("q-mb-md"):
+                ui.button(
+                    "Archive to History",
+                    icon="archive",
+                    on_click=_archive_to_history,
+                ).props("color=accent outline")
 
         # ------------------------------------------------------------------ #
         # Report download buttons                                              #
@@ -1325,6 +1466,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "pr_simple": saved_inputs.get("pr_fixes", {}).get("simple", 0),
             "pr_medium": saved_inputs.get("pr_fixes", {}).get("medium", 0),
             "pr_complex": saved_inputs.get("pr_fixes", {}).get("complex", 0),
+            "pr_details": saved_inputs.get("pr_details", []),
+            "start_date": str(est.get("start_date") or "") or None,
             "delivery_date": str(est.get("expected_delivery") or "") or None,
             "working_days": saved_inputs.get("working_days", 20),
             "team_size": saved_inputs.get("team_size", 1),
@@ -1391,6 +1534,13 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                     select_all_cb.on("update:model-value", _toggle_select_all)
 
+                    def _update_select_all_state() -> None:
+                        all_checked = all(cb.value for cb in feature_checkbox_refs.values())
+                        if select_all_cb.value != all_checked:
+                            select_all_cb._event_listeners.clear()
+                            select_all_cb.value = all_checked
+                            select_all_cb.on("update:model-value", _toggle_select_all)
+
                     ui.separator()
 
                     for cat_name, cat_features in features_by_cat.items():
@@ -1424,6 +1574,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                     def _sync(e):
                                         if not feature_checkbox_refs[f_id].value:
                                             n_cb.value = False
+                                        _update_select_all_state()
                                     return _sync
                                 cb.on("update:model-value", _make_sync(fid, new_cb))
 
@@ -1566,10 +1717,53 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 pr_medium_input = ui.number("Medium PRs (4 h each)", value=state["pr_medium"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
                 pr_complex_input = ui.number("Complex PRs (8 h each)", value=state["pr_complex"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
 
+                # -- PR Details (optional) --
+                ui.separator().classes("q-mt-md")
+                with ui.expansion("PR Details (optional)", icon="list").classes("w-full"):
+                    ui.label("Optionally add individual PR details.").classes("text-body2 text-grey q-mb-sm")
+                    pr_details_container = ui.column().classes("w-full")
+                    pr_detail_rows: list[dict] = list(state.get("pr_details", []))
+
+                    def _render_pr_details() -> None:
+                        pr_details_container.clear()
+                        with pr_details_container:
+                            for idx, pr in enumerate(pr_detail_rows):
+                                with ui.row().classes("items-center q-gutter-sm w-full"):
+                                    _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
+                                    _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                    _cx = ui.select(options=["simple", "medium", "complex"], value=pr.get("complexity", "simple"), label="Complexity").classes("w-32")
+                                    _st = ui.select(options=["Open", "Merged", "Closed"], value=pr.get("status", "Open"), label="Status").classes("w-28")
+
+                                    def _make_remove(i: int):
+                                        def _remove():
+                                            pr_detail_rows.pop(i)
+                                            _render_pr_details()
+                                        return _remove
+                                    ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+
+                                    def _make_updater(i: int, n=_num, l=_link, c=_cx, s=_st):
+                                        def _upd(_=None):
+                                            if i < len(pr_detail_rows):
+                                                pr_detail_rows[i] = {"pr_number": n.value or "", "link": l.value or "", "complexity": c.value or "simple", "status": s.value or "Open"}
+                                        return _upd
+                                    updater = _make_updater(idx)
+                                    _num.on("update:model-value", updater)
+                                    _link.on("update:model-value", updater)
+                                    _cx.on("update:model-value", updater)
+                                    _st.on("update:model-value", updater)
+
+                    def _add_pr_detail() -> None:
+                        pr_detail_rows.append({"pr_number": "", "link": "", "complexity": "simple", "status": "Open"})
+                        _render_pr_details()
+
+                    ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+                    _render_pr_details()
+
                 def _collect_prs():
                     state["pr_simple"] = int(pr_simple_input.value or 0)
                     state["pr_medium"] = int(pr_medium_input.value or 0)
                     state["pr_complex"] = int(pr_complex_input.value or 0)
+                    state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
 
                 with ui.stepper_navigation():
                     def _back_s5():
@@ -1583,13 +1777,41 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
             # Step 6 — Delivery & Team
             with ui.step("Delivery & Team"):
-                ui.label("Specify deadline and team capacity.").classes("text-body2 text-grey q-mb-md")
-                delivery_input = ui.date(value=state["delivery_date"] or "").classes("w-full").props("label='Target Delivery Date (optional)'")
+                ui.label("Specify start date, deadline, and team capacity.").classes("text-body2 text-grey q-mb-md")
+                start_date_input = ui.date(value=state.get("start_date") or "").classes("w-full").props("label='Start Date (optional)'")
+                delivery_input = ui.date(value=state["delivery_date"] or "").classes("w-full q-mt-sm").props("label='Deadline (optional)'")
                 working_days_input = ui.number("Working Days Available", value=state["working_days"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
+
+                auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
+
+                def _auto_calc_working_days() -> None:
+                    sd = start_date_input.value
+                    dd = delivery_input.value
+                    if sd and dd:
+                        try:
+                            from datetime import date as _date, timedelta
+                            s = _date.fromisoformat(sd) if isinstance(sd, str) else sd
+                            d = _date.fromisoformat(dd) if isinstance(dd, str) else dd
+                            days = sum(1 for i in range((d - s).days + 1) if (s + timedelta(days=i)).weekday() < 5)
+                            if days > 0:
+                                working_days_input.value = days
+                                auto_calc_label.set_text(f"Auto-calculated: {days} working days")
+                            else:
+                                auto_calc_label.set_text("")
+                        except Exception:
+                            auto_calc_label.set_text("")
+                    else:
+                        auto_calc_label.set_text("")
+
+                start_date_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
+
                 team_size_input = ui.number("Team Size (testers)", value=state["team_size"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
                 leader_toggle = ui.switch("Include Test Leader effort", value=state["has_leader"]).classes("q-mt-sm")
 
                 def _collect_delivery():
+                    raw_start = start_date_input.value
+                    state["start_date"] = raw_start if raw_start else None
                     raw = delivery_input.value
                     state["delivery_date"] = raw if raw else None
                     state["working_days"] = int(working_days_input.value or 20)
@@ -1712,9 +1934,11 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             "medium": state["pr_medium"],
                             "complex": state["pr_complex"],
                         },
+                        "pr_details": state.get("pr_details", []),
                         "team_size": state["team_size"],
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
+                        "start_date": state.get("start_date"),
                         "expected_delivery": state["delivery_date"],
                     }
                     try:

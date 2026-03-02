@@ -71,19 +71,22 @@ class AuthService:
                 .filter(Configuration.key == "jwt_secret")
                 .first()
             )
-            if cfg:
+            if cfg and cfg.value:
                 self._jwt_secret = cfg.value
             else:
                 # Auto-generate a strong secret and store it so all instances
                 # share the same key across restarts.
                 secret = secrets.token_hex(32)
-                self.session.add(
-                    Configuration(
-                        key="jwt_secret",
-                        value=secret,
-                        description="JWT signing secret (auto-generated)",
+                if cfg:
+                    cfg.value = secret
+                else:
+                    self.session.add(
+                        Configuration(
+                            key="jwt_secret",
+                            value=secret,
+                            description="JWT signing secret (auto-generated)",
+                        )
                     )
-                )
                 self.session.commit()
                 self._jwt_secret = secret
         return self._jwt_secret

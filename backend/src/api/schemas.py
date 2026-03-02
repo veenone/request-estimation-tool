@@ -14,6 +14,7 @@ class FeatureBase(BaseModel):
     complexity_weight: float = 1.0
     has_existing_tests: bool = False
     description: Optional[str] = None
+    product_type: Optional[str] = None
 
 class FeatureCreate(FeatureBase):
     pass
@@ -24,6 +25,7 @@ class FeatureUpdate(BaseModel):
     complexity_weight: Optional[float] = None
     has_existing_tests: Optional[bool] = None
     description: Optional[str] = None
+    product_type: Optional[str] = None
 
 class TaskTemplateOut(BaseModel):
     id: int
@@ -74,6 +76,7 @@ class DutTypeBase(BaseModel):
     name: str
     category: Optional[str] = None
     complexity_multiplier: float = 1.0
+    product_type: Optional[str] = None
 
 class DutTypeCreate(DutTypeBase):
     pass
@@ -82,6 +85,7 @@ class DutTypeUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None
     complexity_multiplier: Optional[float] = None
+    product_type: Optional[str] = None
 
 class DutTypeOut(DutTypeBase):
     id: int
@@ -95,6 +99,7 @@ class TestProfileBase(BaseModel):
     name: str
     description: Optional[str] = None
     effort_multiplier: float = 1.0
+    product_type: Optional[str] = None
 
 class TestProfileCreate(TestProfileBase):
     pass
@@ -103,6 +108,7 @@ class TestProfileUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     effort_multiplier: Optional[float] = None
+    product_type: Optional[str] = None
 
 class TestProfileOut(TestProfileBase):
     id: int
@@ -123,6 +129,7 @@ class HistoricalProjectBase(BaseModel):
     features_json: str = "[]"
     completion_date: Optional[date] = None
     notes: Optional[str] = None
+    estimation_id: Optional[int] = None
 
 class HistoricalProjectCreate(HistoricalProjectBase):
     pass
@@ -171,6 +178,7 @@ class RequestBase(BaseModel):
     requested_delivery_date: Optional[date] = None
     received_date: date
     notes: Optional[str] = None
+    product_type: Optional[str] = None
 
 class RequestCreate(RequestBase):
     pass
@@ -185,6 +193,7 @@ class RequestUpdate(BaseModel):
     status: Optional[str] = None
     requested_delivery_date: Optional[date] = None
     notes: Optional[str] = None
+    product_type: Optional[str] = None
 
 class RequestOut(RequestBase):
     id: int
@@ -227,6 +236,13 @@ class PRFixInput(BaseModel):
     complex_: int = Field(0, alias="complex")
 
     model_config = {"populate_by_name": True}
+
+
+class PRDetailItem(BaseModel):
+    pr_number: str
+    link: Optional[str] = None
+    complexity: str = "simple"
+    status: str = "Open"
 
 class EstimationTaskOut(BaseModel):
     id: int
@@ -280,8 +296,10 @@ class EstimationCreate(BaseModel):
     profile_ids: list[int] = []
     dut_profile_matrix: list[list[int]] = []
     pr_fixes: PRFixInput = Field(default_factory=PRFixInput)
+    pr_details: list[PRDetailItem] = []
     team_size: int = 1
     has_leader: bool = False
+    start_date: Optional[date] = None
     expected_delivery: Optional[date] = None
     working_days: int = 20
     created_by: Optional[str] = None
@@ -297,9 +315,13 @@ class EstimationOut(BaseModel):
     profile_count: int
     dut_profile_combinations: int
     pr_fix_count: int
+    start_date: Optional[date] = None
     expected_delivery: Optional[date] = None
     total_tester_hours: float
     total_leader_hours: float
+    pr_fix_hours: float = 0
+    study_hours: float = 0
+    buffer_hours: float = 0
     grand_total_hours: float
     grand_total_days: float
     feasibility_status: str
@@ -343,8 +365,10 @@ class EstimationRevise(BaseModel):
     profile_ids: list[int] = []
     dut_profile_matrix: list[list[int]] = []
     pr_fixes: PRFixInput = Field(default_factory=PRFixInput)
+    pr_details: list[PRDetailItem] = []
     team_size: int = 1
     has_leader: bool = False
+    start_date: Optional[date] = None
     expected_delivery: Optional[date] = None
     working_days: int = 20
 

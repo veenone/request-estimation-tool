@@ -215,28 +215,69 @@ async def api_delete(path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @ui.page("/login")
-def login_page():
+async def login_page():
+    # Check which providers are available
+    providers = ["local"]
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{API_URL}/auth/providers")
+            if r.status_code == 200:
+                providers = r.json().get("providers", ["local"])
+    except Exception:
+        pass
+
+    has_ldap = "ldap" in providers
+
+    auth_method = {"value": "local"}
+
     async def try_login():
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(f"{API_URL}/auth/login", json={
-                    "username": username.value,
-                    "password": password.value,
-                })
+            payload = {
+                "username": username.value,
+                "password": password.value,
+                "auth_method": auth_method["value"],
+            }
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(f"{API_URL}/auth/login", json=payload)
+                if r.status_code == 401:
+                    ui.notify("Invalid username or password", type="negative")
+                    return
+                if r.status_code == 502:
+                    detail = r.json().get("detail", "LDAP server unreachable")
+                    ui.notify(detail, type="negative")
+                    return
+                if r.status_code == 400:
+                    detail = r.json().get("detail", "Bad request")
+                    ui.notify(detail, type="negative")
+                    return
                 r.raise_for_status()
                 data = r.json()
                 app.storage.user["token"] = data["access_token"]
                 app.storage.user["refresh_token"] = data["refresh_token"]
                 app.storage.user["user"] = data["user"]
                 ui.navigate.to("/")
-        except httpx.HTTPStatusError:
-            ui.notify("Invalid credentials", type="negative")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", "Authentication failed")
+            except Exception:
+                detail = "Authentication failed"
+            ui.notify(detail, type="negative")
+        except httpx.TimeoutException:
+            ui.notify("Login timed out — server may be unreachable", type="negative")
         except Exception as e:
             ui.notify(f"Login error: {e}", type="negative")
 
     with ui.card().classes("absolute-center w-96"):
         ui.label("Test Effort Estimation Tool").classes("text-h5 text-center w-full")
         ui.label("Sign in to continue").classes("text-subtitle2 text-center w-full text-grey")
+
+        if has_ldap:
+            toggle = ui.toggle(
+                {"local": "Internal", "ldap": "LDAP"},
+                value="local",
+                on_change=lambda e: auth_method.update({"value": e.value}),
+            ).classes("w-full q-mb-sm")
+
         username = ui.input("Username").classes("w-full")
         username.on("keydown.enter", lambda: password.run_method("focus"))
         password = ui.input("Password", password=True, password_toggle_button=True).classes("w-full")
@@ -300,11 +341,12 @@ def sidebar():
 
             # -- Data Management --
             ui.item_label("DATA MANAGEMENT").props("header").classes("text-overline text-grey")
-            _nav_item("Feature Catalog",    "category", "/features")
-            _nav_item("DUT Registry",       "devices",  "/duts")
-            _nav_item("Test Profiles",      "tune",     "/profiles")
-            _nav_item("Historical Projects", "history", "/history")
-            _nav_item("Team Members",       "group",    "/team")
+            _nav_item("Feature Catalog",    "category",    "/features")
+            _nav_item("Task Templates",    "assignment",  "/tasks")
+            _nav_item("DUT Registry",       "devices",    "/duts")
+            _nav_item("Test Profiles",      "tune",       "/profiles")
+            _nav_item("Historical Projects", "history",   "/history")
+            _nav_item("Team Members",       "group",      "/team")
 
             ui.separator()
 
@@ -424,6 +466,7 @@ async def dashboard_page():
 # ---------------------------------------------------------------------------
 
 import frontend_nicegui.pages.features      # noqa: F401,E402
+import frontend_nicegui.pages.tasks         # noqa: F401,E402
 import frontend_nicegui.pages.duts          # noqa: F401,E402
 import frontend_nicegui.pages.profiles      # noqa: F401,E402
 import frontend_nicegui.pages.history       # noqa: F401,E402

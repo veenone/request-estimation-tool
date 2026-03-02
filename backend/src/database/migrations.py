@@ -21,7 +21,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 3  # v3 adds version, wizard_inputs_json, outline auto-export config
+SCHEMA_VERSION = 4  # v4 adds product_type, start_date, breakdown hours, estimation_id on history
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -163,6 +163,62 @@ def _migrate_v2_to_v3(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v3_to_v4(engine, session: Session) -> None:
+    """Migrate from v3 to v4 (product_type, start_date, breakdown hours, estimation_id on history)."""
+    # Add product_type to requests, features, dut_types, test_profiles
+    for table_name in ("requests", "features", "dut_types", "test_profiles"):
+        if _table_exists(engine, table_name):
+            if not _column_exists(engine, table_name, "product_type"):
+                session.execute(text(
+                    f"ALTER TABLE {table_name} ADD COLUMN product_type VARCHAR"
+                ))
+
+    # Add new columns to estimations
+    if _table_exists(engine, "estimations"):
+        for col_name, col_def in [
+            ("start_date", "DATE"),
+            ("pr_fix_hours", "REAL DEFAULT 0"),
+            ("study_hours", "REAL DEFAULT 0"),
+            ("buffer_hours", "REAL DEFAULT 0"),
+        ]:
+            if not _column_exists(engine, "estimations", col_name):
+                session.execute(text(
+                    f"ALTER TABLE estimations ADD COLUMN {col_name} {col_def}"
+                ))
+
+    # Add estimation_id to historical_projects
+    if _table_exists(engine, "historical_projects"):
+        if not _column_exists(engine, "historical_projects", "estimation_id"):
+            session.execute(text(
+                "ALTER TABLE historical_projects ADD COLUMN estimation_id INTEGER REFERENCES estimations(id) ON DELETE SET NULL"
+            ))
+
+    # Add product_types config key
+    existing = session.query(Configuration).filter(
+        Configuration.key == "product_types"
+    ).first()
+    if not existing:
+        session.add(Configuration(
+            key="product_types",
+            value='["Payment", "Telco"]',
+            description="JSON array of available product types for categorization",
+        ))
+
+    # Add pr_scales_with_profile config key
+    existing_pr = session.query(Configuration).filter(
+        Configuration.key == "pr_scales_with_profile"
+    ).first()
+    if not existing_pr:
+        session.add(Configuration(
+            key="pr_scales_with_profile",
+            value="false",
+            description="Whether PR fix validation effort scales with profile count",
+        ))
+
+    _set_schema_version(session, 4)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -171,8 +227,11 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
     Base.metadata.create_all(engine)
 
     with Session(engine) as session:
-        # Only seed if features table is empty
-        feature_count = session.query(Feature).count()
+        # Use raw SQL for the initial emptiness check — ORM queries reference
+        # all mapped columns (including newly-added ones like product_type).
+        # On existing databases those columns don't exist until migration runs,
+        # but seed data must load BEFORE migrations to avoid config-key conflicts.
+        feature_count = session.execute(text("SELECT count(*) FROM features")).scalar()
         if feature_count == 0:
             _load_seed_data(session)
 
@@ -182,12 +241,14 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v1_to_v2(engine, session)
         if current_version < 3:
             _migrate_v2_to_v3(engine, session)
+        if current_version < 4:
+            _migrate_v3_to_v4(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)
 
-        # Ensure default admin user exists
-        user_count = session.query(User).count()
+        # Ensure default admin user exists (also use raw SQL to avoid ORM issues)
+        user_count = session.execute(text("SELECT count(*) FROM users")).scalar()
         if user_count == 0:
             _create_default_admin(session)
 

@@ -164,10 +164,28 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
 
     doc.add_paragraph()
 
+    # ── 4b. DUT x Profile Matrix ─────────────────────
+    if data.dut_types and data.profiles:
+        doc.add_heading("DUT x Profile Matrix", level=1)
+        matrix_headers = ["DUT \\ Profile"] + [p.get("name", "") for p in data.profiles]
+        active_combos = set()
+        for combo in data.dut_profile_matrix:
+            if len(combo) >= 2:
+                active_combos.add((combo[0], combo[1]))
+        matrix_rows = []
+        for dut in data.dut_types:
+            row = [dut.get("name", "")]
+            for prof in data.profiles:
+                is_active = (dut.get("id"), prof.get("id")) in active_combos or not data.dut_profile_matrix
+                row.append("Yes" if is_active else "-")
+            matrix_rows.append(row)
+        _add_styled_table(doc, matrix_headers, matrix_rows)
+        doc.add_paragraph()
+
     # ── 5. Task breakdown ──────────────────────────────
     doc.add_heading("Detailed Task Breakdown", level=1)
 
-    task_headers = ["Task Name", "Type", "Base Hrs", "Calculated Hrs"]
+    task_headers = ["Task Name", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs"]
     task_rows = []
     for task in data.tasks:
         task_rows.append([
@@ -175,6 +193,7 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
             task.get("task_type", ""),
             f"{task.get('base_hours', 0):.1f}",
             f"{task.get('calculated_hours', 0):.1f}",
+            f"{task.get('leader_hours', 0):.1f}",
         ])
     _add_styled_table(doc, task_headers, task_rows)
 

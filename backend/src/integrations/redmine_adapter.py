@@ -204,15 +204,28 @@ class RedmineAdapter(BaseAdapter):
             if custom_field_values:
                 update_data["issue"]["custom_fields"] = custom_field_values
 
-            # Add a note with the summary
+            # Add a note with the summary and task breakdown
             est_num = estimation_data.get("estimation_number", "N/A")
             total = estimation_data.get("grand_total_hours", 0)
             status = estimation_data.get("feasibility_status", "N/A")
-            update_data["issue"]["notes"] = (
-                f"Estimation {est_num} completed.\n"
-                f"Total effort: {total:.1f} hours\n"
-                f"Feasibility: {status}"
-            )
+            note_lines = [
+                f"Estimation {est_num} completed.",
+                f"Total effort: {total:.1f} hours",
+                f"Feasibility: {status}",
+            ]
+
+            # Include task breakdown if available
+            tasks = estimation_data.get("tasks", [])
+            if tasks:
+                note_lines.append("")
+                note_lines.append("Task Breakdown:")
+                for task in tasks:
+                    name = task.get("task_name", task.get("name", ""))
+                    tester_h = task.get("calculated_hours", 0)
+                    leader_h = task.get("leader_hours", 0)
+                    note_lines.append(f"- {name}: {tester_h:.1f} tester hrs, {leader_h:.1f} leader hrs")
+
+            update_data["issue"]["notes"] = "\n".join(note_lines)
 
             resp = http_requests.put(
                 self._url(f"/issues/{external_id}.json"),

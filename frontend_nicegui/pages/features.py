@@ -125,20 +125,30 @@ async def features_page() -> None:
                     format="%.1f",
                 ).classes("w-full")
                 has_tests_toggle = ui.switch("Has Existing Tests", value=False)
+                product_type_input = ui.select(
+                    options=["", "Payment", "Telco"],
+                    label="Product Type (optional)",
+                    value="",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
                     try:
+                        payload: dict = {
+                            "name": str(name_input.value).strip(),
+                            "category": category_select.value,
+                            "complexity_weight": float(complexity_input.value or 1.0),
+                            "has_existing_tests": bool(has_tests_toggle.value),
+                        }
+                        if product_type_input.value:
+                            payload["product_type"] = product_type_input.value
                         await api_post(
                             "/features",
-                            json={
-                                "name": str(name_input.value).strip(),
-                                "category": category_select.value,
-                                "complexity_weight": float(complexity_input.value or 1.0),
-                                "has_existing_tests": bool(has_tests_toggle.value),
-                            },
+                            json=payload,
                         )
                         dialog.close()
                         ui.notify("Feature created.", type="positive")
@@ -177,20 +187,29 @@ async def features_page() -> None:
                     "Has Existing Tests",
                     value=bool(row.get("has_existing_tests", False)),
                 )
+                product_type_input = ui.select(
+                    options=["", "Payment", "Telco"],
+                    label="Product Type (optional)",
+                    value=row.get("product_type") or "",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
                     try:
+                        payload: dict = {
+                            "name": str(name_input.value).strip(),
+                            "category": category_select.value,
+                            "complexity_weight": float(complexity_input.value or 1.0),
+                            "has_existing_tests": bool(has_tests_toggle.value),
+                            "product_type": product_type_input.value if product_type_input.value else None,
+                        }
                         await api_put(
                             f"/features/{row['id']}",
-                            json={
-                                "name": str(name_input.value).strip(),
-                                "category": category_select.value,
-                                "complexity_weight": float(complexity_input.value or 1.0),
-                                "has_existing_tests": bool(has_tests_toggle.value),
-                            },
+                            json=payload,
                         )
                         dialog.close()
                         ui.notify("Feature updated.", type="positive")

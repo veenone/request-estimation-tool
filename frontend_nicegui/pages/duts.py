@@ -108,19 +108,29 @@ async def duts_page() -> None:
                     step=0.1,
                     format="%.1f",
                 ).classes("w-full")
+                product_type_input = ui.select(
+                    options=["", "Payment", "Telco"],
+                    label="Product Type (optional)",
+                    value="",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
                     try:
+                        payload: dict = {
+                            "name": str(name_input.value).strip(),
+                            "category": category_select.value,
+                            "complexity_multiplier": float(multiplier_input.value or 1.0),
+                        }
+                        if product_type_input.value:
+                            payload["product_type"] = product_type_input.value
                         await api_post(
                             "/dut-types",
-                            json={
-                                "name": str(name_input.value).strip(),
-                                "category": category_select.value,
-                                "complexity_multiplier": float(multiplier_input.value or 1.0),
-                            },
+                            json=payload,
                         )
                         dialog.close()
                         ui.notify("DUT type created.", type="positive")
@@ -155,19 +165,28 @@ async def duts_page() -> None:
                     step=0.1,
                     format="%.1f",
                 ).classes("w-full")
+                product_type_input = ui.select(
+                    options=["", "Payment", "Telco"],
+                    label="Product Type (optional)",
+                    value=row.get("product_type") or "",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
                     try:
+                        payload: dict = {
+                            "name": str(name_input.value).strip(),
+                            "category": category_select.value,
+                            "complexity_multiplier": float(multiplier_input.value or 1.0),
+                            "product_type": product_type_input.value if product_type_input.value else None,
+                        }
                         await api_put(
                             f"/dut-types/{row['id']}",
-                            json={
-                                "name": str(name_input.value).strip(),
-                                "category": category_select.value,
-                                "complexity_multiplier": float(multiplier_input.value or 1.0),
-                            },
+                            json=payload,
                         )
                         dialog.close()
                         ui.notify("DUT type updated.", type="positive")

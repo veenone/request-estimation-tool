@@ -36,9 +36,13 @@ def _get_db():
     ``api.app``.  Importing ``api.app.get_db`` at module level here would
     therefore create a circular dependency.  We resolve it by deferring the
     import to call time.
+
+    The function also respects ``app.dependency_overrides`` so that tests
+    which override ``get_db`` also affect auth dependencies.
     """
-    from ..api.app import get_db as _gdb
-    yield from _gdb()
+    from ..api.app import app, get_db as _gdb
+    fn = app.dependency_overrides.get(_gdb, _gdb)
+    yield from fn()
 
 
 def get_current_user(

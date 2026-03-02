@@ -193,6 +193,14 @@ async def requests_list_page() -> None:
                 value="MEDIUM",
             ).classes("w-full")
 
+        f_product_type = ui.select(
+            label="Product Type (optional)",
+            options=["", "Payment", "Telco"],
+            value="",
+            with_input=True,
+            clearable=True,
+        ).classes("w-full")
+
         with ui.grid(columns=2).classes("w-full q-gutter-sm"):
             f_requested_delivery_date = ui.date(
                 value=None,
@@ -241,6 +249,8 @@ async def requests_list_page() -> None:
                 payload["requested_delivery_date"] = f_requested_delivery_date.value
             if f_received_date.value:
                 payload["received_date"] = f_received_date.value
+            if f_product_type.value:
+                payload["product_type"] = f_product_type.value
 
             try:
                 await api_post("/requests", json=payload)
