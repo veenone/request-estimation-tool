@@ -111,21 +111,75 @@ def _load_edit_estimation() -> None:
         st.session_state["s1_project_name"] = est.project_name
         st.session_state["s1_project_type"] = est.project_type
         st.session_state["s1_request_id"] = est.request_id
-        st.session_state["s2_selected_feature_ids"] = inputs.get("feature_ids", [])
-        st.session_state["s2_new_feature_ids"] = inputs.get("new_feature_ids", [])
-        st.session_state["s3_reference_project_ids"] = inputs.get("reference_project_ids", [])
-        st.session_state["s4_selected_dut_ids"] = inputs.get("dut_ids", [])
-        st.session_state["s4_selected_profile_ids"] = inputs.get("profile_ids", [])
-        st.session_state["s4_combinations"] = inputs.get("dut_profile_matrix", [])
+        feature_ids = inputs.get("feature_ids", [])
+        new_feature_ids = inputs.get("new_feature_ids", [])
+        reference_project_ids = inputs.get("reference_project_ids", [])
+        dut_ids = inputs.get("dut_ids", [])
+        profile_ids = inputs.get("profile_ids", [])
+        combinations = inputs.get("dut_profile_matrix", [])
         pr = inputs.get("pr_fixes", {})
-        st.session_state["s5_pr_simple"] = pr.get("simple", 0)
-        st.session_state["s5_pr_medium"] = pr.get("medium", 0)
-        st.session_state["s5_pr_complex"] = pr.get("complex", 0)
-        st.session_state["s6_team_size"] = inputs.get("team_size", 2)
-        st.session_state["s6_has_leader"] = inputs.get("has_leader", False)
-        st.session_state["s6_working_days"] = inputs.get("working_days", 20)
+        pr_simple = pr.get("simple", 0)
+        pr_medium = pr.get("medium", 0)
+        pr_complex = pr.get("complex", 0)
+        team_size = inputs.get("team_size", 2)
+        has_leader = inputs.get("has_leader", False)
+        working_days = inputs.get("working_days", 20)
+
+        # ── Set list-level state keys ──────────────────────────────────────────
+        st.session_state["s2_selected_feature_ids"] = feature_ids
+        st.session_state["s2_new_feature_ids"] = new_feature_ids
+        st.session_state["s3_reference_project_ids"] = reference_project_ids
+        st.session_state["s4_selected_dut_ids"] = dut_ids
+        st.session_state["s4_selected_profile_ids"] = profile_ids
+        st.session_state["s4_combinations"] = combinations
+        st.session_state["s5_pr_simple"] = pr_simple
+        st.session_state["s5_pr_medium"] = pr_medium
+        st.session_state["s5_pr_complex"] = pr_complex
+        st.session_state["s6_team_size"] = team_size
+        st.session_state["s6_has_leader"] = has_leader
+        st.session_state["s6_working_days"] = working_days
         if est.expected_delivery:
             st.session_state["s6_delivery_date"] = est.expected_delivery
+
+        # ── Step 1: set mode based on whether there is a linked request ────────
+        st.session_state["s1_mode"] = "link" if est.request_id else "create"
+
+        # ── Clear stale individual widget keys from any previous wizard run ────
+        stale_prefixes = ("s2_feat_", "s2_new_", "s3_ref_", "s4_dut_", "s4_prof_", "s4_combo_")
+        stale_keys = [k for k in list(st.session_state.keys()) if k.startswith(stale_prefixes)]
+        for k in stale_keys:
+            del st.session_state[k]
+
+        # ── Step 2: sync feature checkbox widget keys ──────────────────────────
+        for fid in feature_ids:
+            st.session_state[f"s2_feat_{fid}"] = True
+        for fid in new_feature_ids:
+            st.session_state[f"s2_new_{fid}"] = True
+
+        # ── Step 3: sync reference project checkbox widget keys ────────────────
+        for rid in reference_project_ids:
+            st.session_state[f"s3_ref_{rid}"] = True
+
+        # ── Step 4: sync DUT, profile, and combination checkbox widget keys ────
+        for did in dut_ids:
+            st.session_state[f"s4_dut_{did}"] = True
+        for pid in profile_ids:
+            st.session_state[f"s4_prof_{pid}"] = True
+        for combo in combinations:
+            if isinstance(combo, (list, tuple)) and len(combo) == 2:
+                st.session_state[f"s4_combo_{combo[0]}_{combo[1]}"] = True
+
+        # ── Step 5: sync number input widget keys ──────────────────────────────
+        st.session_state["s5_simple_input"] = pr_simple
+        st.session_state["s5_medium_input"] = pr_medium
+        st.session_state["s5_complex_input"] = pr_complex
+
+        # ── Step 6: sync team / schedule widget keys ───────────────────────────
+        st.session_state["s6_team_size_input"] = team_size
+        st.session_state["s6_working_days_input"] = working_days
+        st.session_state["s6_has_leader_toggle"] = has_leader
+        if est.expected_delivery:
+            st.session_state["s6_delivery_date_input"] = est.expected_delivery
 
         # Store edit context so save can revise instead of create
         st.session_state["_edit_estimation_id"] = edit_id

@@ -11,6 +11,8 @@ import asyncio
 import json as _json
 from typing import Any
 
+import httpx
+
 from nicegui import ui
 
 from frontend_nicegui.app import (
@@ -248,10 +250,23 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "calc_result": None,
     }
 
-    # Pre-load catalog data in parallel so later steps can render immediately
+    # Pre-load catalog data in parallel so later steps can render immediately.
+    # Auth headers are captured BEFORE asyncio.gather to avoid context-propagation
+    # issues: each coroutine spawned by gather gets a copy of the current context,
+    # but NiceGUI's app.storage.user relies on request_contextvar which may not
+    # survive the copy correctly in all environments.  By pre-capturing the headers
+    # here (in the original request context) and closing over them in _safe_get we
+    # guarantee every API call is authenticated.
+    _catalog_headers = auth_headers()
+
     async def _safe_get(path: str) -> list[dict]:
         try:
-            return await api_get(path)
+            async with httpx.AsyncClient() as _client:
+                _r = await _client.get(
+                    f"{API_URL}{path}", headers=_catalog_headers
+                )
+                _r.raise_for_status()
+                return _r.json()
         except Exception:
             return []
 
@@ -1268,10 +1283,19 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 "You can re-enter the inputs below."
             ).classes("text-warning q-mb-md")
 
-        # Pre-load catalog data in parallel
+        # Pre-load catalog data in parallel.
+        # Auth headers are captured BEFORE asyncio.gather to avoid context-propagation
+        # issues (see new_estimation_page for a full explanation).
+        _catalog_headers = auth_headers()
+
         async def _safe_get(path: str) -> list[dict]:
             try:
-                return await api_get(path)
+                async with httpx.AsyncClient() as _client:
+                    _r = await _client.get(
+                        f"{API_URL}{path}", headers=_catalog_headers
+                    )
+                    _r.raise_for_status()
+                    return _r.json()
             except Exception:
                 return []
 
