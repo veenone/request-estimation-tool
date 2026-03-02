@@ -155,16 +155,30 @@ def show_error_page(exc: Exception) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _safe_storage() -> dict:
+    """Return app.storage.user or an empty dict if the storage is unavailable.
+
+    NiceGUI raises AssertionError when the session cookie exists but the
+    server-side storage was lost (e.g. after a server restart).  Returning
+    an empty dict causes ``is_authenticated()`` to return False, which
+    redirects the user to the login page where storage is re-initialized.
+    """
+    try:
+        return app.storage.user
+    except (AssertionError, RuntimeError):
+        return {}
+
+
 def is_authenticated() -> bool:
-    return app.storage.user.get("token") is not None
+    return _safe_storage().get("token") is not None
 
 
 def current_user() -> dict | None:
-    return app.storage.user.get("user")
+    return _safe_storage().get("user")
 
 
 def auth_headers() -> dict[str, str]:
-    token = app.storage.user.get("token")
+    token = _safe_storage().get("token")
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -307,12 +321,12 @@ def sidebar():
         ui.space()
 
         # Restore persisted dark/light preference (default: dark)
-        is_dark = app.storage.user.get("dark_mode", True)
+        is_dark = _safe_storage().get("dark_mode", True)
         dark = ui.dark_mode(is_dark)
 
         def toggle_theme():
             dark.toggle()
-            app.storage.user["dark_mode"] = dark.value
+            _safe_storage()["dark_mode"] = dark.value
 
         ui.button(icon="brightness_6", on_click=toggle_theme).props("flat round").classes("q-ma-md")
 

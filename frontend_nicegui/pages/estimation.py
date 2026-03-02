@@ -11,7 +11,7 @@ import asyncio
 import json as _json
 from typing import Any
 
-from nicegui import app, ui
+from nicegui import ui
 
 from frontend_nicegui.app import (
     API_URL,
@@ -19,6 +19,7 @@ from frontend_nicegui.app import (
     api_post,
     api_put,
     auth_headers,
+    current_user,
     is_authenticated,
     show_error_page,
     sidebar,
@@ -894,7 +895,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         ui.notify("Run Calculate first.", type="warning")
                         return
 
-                    user = app.storage.user.get("user") or {}
+                    user = current_user() or {}
                     payload: dict[str, Any] = {
                         "project_name": state["project_name"],
                         "project_type": state["project_type"],
@@ -953,7 +954,8 @@ async def estimation_detail_page(estimation_id: int) -> None:
 
     sidebar()
 
-    token: str = app.storage.user.get("token") or ""
+    hdrs = auth_headers()
+    token: str = hdrs.get("Authorization", "").removeprefix("Bearer ") if hdrs else ""
 
     with ui.column().classes("q-pa-lg w-full"):
 
