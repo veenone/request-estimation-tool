@@ -28,6 +28,7 @@ from frontend_nicegui.app import (
     api_put,
     current_user,
     is_authenticated,
+    show_error_page,
     sidebar,
 )
 
@@ -169,8 +170,7 @@ async def rbac_page() -> None:
                     raw_matrix_value = item.get("value")
                     break
         except Exception as exc:
-            ui.notify(f"Failed to load configuration: {exc}", type="negative")
-            ui.label(f"Error loading RBAC matrix: {exc}").classes("text-negative")
+            show_error_page(exc)
             return
 
         # Active matrix state — dict[role -> set of permission keys]

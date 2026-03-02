@@ -28,7 +28,11 @@ COPY data/seed_data.json ./data/
 # Ensure the runtime data directory exists (SQLite file is written here).
 RUN mkdir -p /app/data
 
+# Copy Streamlit config
+COPY .streamlit/ ./.streamlit/
+
 # Entrypoint: starts FastAPI backend and Streamlit frontend concurrently.
+# SSL/TLS is enabled when SSL_CERTFILE and SSL_KEYFILE env vars are set.
 # The script uses "wait -n" to exit as soon as either process dies, which
 # allows Docker to detect failures and restart the container when
 # restart: unless-stopped is configured.
@@ -38,9 +42,18 @@ RUN printf '%s\n' \
     '' \
     'echo "Starting Test Effort Estimation Tool..."' \
     '' \
+    '# Build SSL args if cert files are provided' \
+    'UVICORN_SSL_ARGS=""' \
+    'STREAMLIT_SSL_ARGS=""' \
+    'if [ -n "$SSL_CERTFILE" ] && [ -n "$SSL_KEYFILE" ]; then' \
+    '    echo "TLS enabled: $SSL_CERTFILE / $SSL_KEYFILE"' \
+    '    UVICORN_SSL_ARGS="--ssl-certfile $SSL_CERTFILE --ssl-keyfile $SSL_KEYFILE"' \
+    '    STREAMLIT_SSL_ARGS="--server.sslCertFile $SSL_CERTFILE --server.sslKeyFile $SSL_KEYFILE"' \
+    'fi' \
+    '' \
     '# Start FastAPI backend' \
     'cd /app/backend' \
-    'uvicorn src.api.app:app --host 0.0.0.0 --port 8000 &' \
+    'uvicorn src.api.app:app --host 0.0.0.0 --port 8000 $UVICORN_SSL_ARGS &' \
     'BACKEND_PID=$!' \
     '' \
     '# Start Streamlit frontend' \
@@ -49,7 +62,8 @@ RUN printf '%s\n' \
     '    --server.port 8501 \' \
     '    --server.address 0.0.0.0 \' \
     '    --server.headless true \' \
-    '    --browser.gatherUsageStats false &' \
+    '    --browser.gatherUsageStats false \' \
+    '    $STREAMLIT_SSL_ARGS &' \
     'FRONTEND_PID=$!' \
     '' \
     '# Exit when either process terminates' \

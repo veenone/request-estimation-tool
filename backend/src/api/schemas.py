@@ -304,6 +304,8 @@ class EstimationOut(BaseModel):
     grand_total_days: float
     feasibility_status: str
     status: str
+    version: int = 1
+    wizard_inputs_json: str = "{}"
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
     approved_by: Optional[str] = None
@@ -330,6 +332,23 @@ class EstimationUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class EstimationRevise(BaseModel):
+    """Payload for revising an estimation — same wizard inputs as create, minus request/author."""
+    project_name: str
+    project_type: str
+    feature_ids: list[int] = []
+    new_feature_ids: list[int] = []
+    reference_project_ids: list[int] = []
+    dut_ids: list[int] = []
+    profile_ids: list[int] = []
+    dut_profile_matrix: list[list[int]] = []
+    pr_fixes: PRFixInput = Field(default_factory=PRFixInput)
+    team_size: int = 1
+    has_leader: bool = False
+    expected_delivery: Optional[date] = None
+    working_days: int = 20
+
+
 class EstimationStatusUpdate(BaseModel):
     status: str  # DRAFT, FINAL, APPROVED, REVISED
     approved_by: Optional[str] = None
@@ -349,6 +368,7 @@ class RecentEstimationOut(BaseModel):
     grand_total_hours: float = 0
     feasibility_status: str = ""
     status: str = ""
+    version: int = 1
     created_at: Optional[str] = None
 
 class RecentRequestOut(BaseModel):

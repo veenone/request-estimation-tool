@@ -5,8 +5,20 @@ API used:
     PUT  /configuration/{key}    -> {key, value, description}  (ADMIN only)
 """
 
+import json
+
 from nicegui import ui
-from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, sidebar
+from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
+
+# ---------------------------------------------------------------------------
+# Role mapping constants
+# ---------------------------------------------------------------------------
+
+_APP_ROLES: list[str] = ["ADMIN", "APPROVER", "ESTIMATOR", "VIEWER"]
+
+# Config keys that should be rendered as role-mapping matrix tables
+# instead of plain text inputs.
+_ROLE_MAPPING_KEYS: set[str] = {"ldap_group_mapping_json", "oidc_role_mapping_json"}
 
 # ---------------------------------------------------------------------------
 # Section grouping
@@ -19,6 +31,13 @@ SECTION_KEYS: dict[str, list[str]] = {
         "working_hours_per_day",
         "buffer_percentage",
         "pr_fix_base_hours",
+        "estimation_number_prefix",
+    ],
+    "Workflow Automation": [
+        "outline_auto_export_states",
+    ],
+    "Data Management": [
+        "dut_categories",
     ],
     "Email / SMTP": [],   # dynamic: keys starting with "smtp_"
     "LDAP": [],           # dynamic: keys starting with "ldap_"
@@ -35,9 +54,9 @@ _PREFIX_MAP: dict[str, str] = {
 
 def _classify(key: str) -> str:
     """Return the section name for a configuration key."""
-    for k in SECTION_KEYS["Estimation Parameters"]:
-        if key == k:
-            return "Estimation Parameters"
+    for section_name, keys in SECTION_KEYS.items():
+        if key in keys:
+            return section_name
     for prefix, section in _PREFIX_MAP.items():
         if key.startswith(prefix):
             return section
@@ -63,7 +82,7 @@ async def settings_page():
         try:
             config_list: list[dict] = await api_get("/configuration")
         except Exception as exc:
-            ui.label(f"Error loading configuration: {exc}").classes("text-negative")
+            show_error_page(exc)
             return
 
         if not config_list:
@@ -83,16 +102,24 @@ async def settings_page():
             section = _classify(item["key"])
             sections[section].append(item)
 
+        # ---- collect role mapping config items ------------------------------------
+        role_mapping_items: dict[str, dict] = {}
+        for item in config_list:
+            if item["key"] in _ROLE_MAPPING_KEYS:
+                role_mapping_items[item["key"]] = item
+
         # ---- render sections -----------------------------------------------------
         for section_name, items in sections.items():
-            if not items:
+            # Filter out role-mapping keys — they get a dedicated matrix UI below
+            filtered = [i for i in items if i["key"] not in _ROLE_MAPPING_KEYS]
+            if not filtered:
                 continue
 
             with ui.expansion(section_name, icon="settings").classes(
                 "w-full q-mb-sm border rounded"
             ).props("default-opened"):
                 with ui.column().classes("q-pa-sm w-full gap-2"):
-                    for item in items:
+                    for item in filtered:
                         key: str = item["key"]
                         value: str = item.get("value") or ""
                         description: str = item.get("description") or ""
@@ -107,6 +134,70 @@ async def settings_page():
                                     "text-caption text-grey q-mt-none q-mb-xs"
                                 )
                         inputs[key] = inp
+
+        # ---- role mapping matrix tables ------------------------------------------
+        mapping_inputs: dict[str, dict[str, ui.input]] = {}  # config_key -> {role -> input}
+
+        _MAPPING_META: dict[str, tuple[str, str, str]] = {
+            "ldap_group_mapping_json": (
+                "LDAP Group Mapping",
+                "domain",
+                "Map application roles to Active Directory / LDAP group DNs. "
+                "Example: CN=EstimationAdmins,OU=Groups,DC=example,DC=com",
+            ),
+            "oidc_role_mapping_json": (
+                "OIDC Role Mapping",
+                "vpn_key",
+                "Map application roles to OIDC claim values. "
+                "Enter the value from the configured role claim (e.g. estimation-admin).",
+            ),
+        }
+
+        for cfg_key, (title, icon, help_text) in _MAPPING_META.items():
+            item = role_mapping_items.get(cfg_key)
+            raw_value = (item.get("value") or "{}") if item else "{}"
+
+            try:
+                mapping = json.loads(raw_value) if raw_value else {}
+                if not isinstance(mapping, dict):
+                    mapping = {}
+            except (json.JSONDecodeError, TypeError):
+                mapping = {}
+
+            mapping_inputs[cfg_key] = {}
+
+            with ui.expansion(title, icon=icon).classes(
+                "w-full q-mb-sm border rounded"
+            ).props("default-opened" if any(mapping.values()) else ""):
+                ui.label(help_text).classes("text-caption text-grey q-mb-sm")
+
+                with ui.card().classes("w-full q-pa-none"):
+                    # Header row
+                    with ui.row().classes(
+                        "w-full items-center q-px-md q-py-sm bg-dark-page"
+                    ):
+                        ui.label("Application Role").classes(
+                            "text-subtitle2 text-bold"
+                        ).style("min-width: 160px; width: 160px;")
+                        ui.label("External Group / Claim Value").classes(
+                            "text-subtitle2 text-bold"
+                        ).style("flex: 1;")
+
+                    ui.separator()
+
+                    for idx, app_role in enumerate(_APP_ROLES):
+                        row_bg = "bg-grey-10" if idx % 2 == 0 else ""
+                        with ui.row().classes(
+                            f"w-full items-center q-px-md q-py-xs {row_bg}"
+                        ):
+                            ui.label(app_role).classes("text-body2 text-bold").style(
+                                "min-width: 160px; width: 160px;"
+                            )
+                            role_input = ui.input(
+                                value=mapping.get(app_role, ""),
+                                placeholder=f"Enter value for {app_role}",
+                            ).classes("flex-grow")
+                            mapping_inputs[cfg_key][app_role] = role_input
 
         # ---- action buttons ------------------------------------------------------
         status_label = ui.label("").classes("text-caption q-mt-sm")
@@ -126,6 +217,23 @@ async def settings_page():
                     changed.append(key)
                 except Exception as exc:
                     errors.append(f"{key}: {exc}")
+
+            # Save role mapping matrices
+            for cfg_key, role_inputs in mapping_inputs.items():
+                new_mapping = {}
+                for role, inp in role_inputs.items():
+                    val = (inp.value or "").strip()
+                    if val:
+                        new_mapping[role] = val
+                new_json = json.dumps(new_mapping, separators=(",", ":"))
+                old_json = original_values.get(cfg_key, "{}")
+                if new_json != old_json:
+                    try:
+                        await api_put(f"/configuration/{cfg_key}", json={"value": new_json})
+                        original_values[cfg_key] = new_json
+                        changed.append(cfg_key)
+                    except Exception as exc:
+                        errors.append(f"{cfg_key}: {exc}")
 
             if errors:
                 ui.notify(

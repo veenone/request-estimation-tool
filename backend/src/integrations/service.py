@@ -211,6 +211,7 @@ def _estimation_to_export_dict(est: "Estimation") -> dict:
         "pr_fix_count": est.pr_fix_count,
         "created_at": str(est.created_at) if est.created_at else "",
         "assigned_to_name": (est.assigned_to.display_name or est.assigned_to.username) if est.assigned_to else None,
+        "version": getattr(est, "version", 1) or 1,
         "tasks": tasks_data,
     }
 

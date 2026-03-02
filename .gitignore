@@ -9,6 +9,11 @@ __pycache__/
 .python-version
 *.egg-info/
 
+# TLS / SSL certificates (keep .gitkeep)
+certs/*.pem
+certs/*.key
+certs/*.crt
+
 # Database
 data/estimation.db
 data/estimation.db-shm

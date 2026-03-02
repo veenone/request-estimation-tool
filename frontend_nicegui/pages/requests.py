@@ -21,6 +21,7 @@ from frontend_nicegui.app import (
     auth_headers,
     current_user,
     is_authenticated,
+    show_error_page,
     sidebar,
 )
 
@@ -299,7 +300,7 @@ async def request_detail_page(request_id: int) -> None:
         try:
             req = await api_get(f"/requests/{request_id}/detail")
         except Exception as exc:
-            ui.label(f"Failed to load request: {exc}").classes("text-negative")
+            show_error_page(exc)
             return
 
         try:

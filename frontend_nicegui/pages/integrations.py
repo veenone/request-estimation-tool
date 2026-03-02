@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 
 from nicegui import ui
-from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, sidebar
+from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
 
 SYSTEMS: list[str] = ["REDMINE", "JIRA", "EMAIL", "OUTLINE"]
 
@@ -712,7 +712,7 @@ async def integrations_page() -> None:
         try:
             raw_list: list[dict] = await api_get("/integrations")
         except Exception as exc:
-            ui.label(f"Error loading integrations: {exc}").classes("text-negative")
+            show_error_page(exc)
             return
 
         # Index by system_name for easy lookup; provide empty defaults if absent

@@ -45,6 +45,7 @@ from .schemas import (
     DutTypeUpdate,
     EstimationCreate,
     EstimationOut,
+    EstimationRevise,
     EstimationStatusUpdate,
     EstimationUpdate,
     FeatureCreate,
@@ -521,6 +522,13 @@ def list_configuration(user: User = Depends(get_current_user), db: Session = Dep
     return db.query(Configuration).all()
 
 
+@router.get("/dut-categories", response_model=list[str])
+def get_dut_categories(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return the configured DUT categories as a list of strings."""
+    raw = _get_config_value(db, "dut_categories", "SIM,eSIM,UICC,IoT Device,Mobile Device,Other")
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 @router.put("/configuration/{key}", response_model=ConfigurationOut)
 def update_configuration(key: str, data: ConfigurationUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     cfg = db.get(Configuration, key)
@@ -713,6 +721,24 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
     # Generate estimation number
     est_number = _generate_number(db, "estimation_number_prefix", Estimation, "estimation_number")
 
+    # Serialize wizard inputs for later revision
+    wizard_inputs = {
+        "feature_ids": data.feature_ids,
+        "new_feature_ids": data.new_feature_ids,
+        "reference_project_ids": data.reference_project_ids,
+        "dut_ids": data.dut_ids,
+        "profile_ids": data.profile_ids,
+        "dut_profile_matrix": data.dut_profile_matrix,
+        "pr_fixes": {
+            "simple": data.pr_fixes.simple,
+            "medium": data.pr_fixes.medium,
+            "complex": data.pr_fixes.complex_,
+        },
+        "team_size": data.team_size,
+        "has_leader": data.has_leader,
+        "working_days": data.working_days,
+    }
+
     # Save estimation
     estimation = Estimation(
         request_id=data.request_id,
@@ -732,6 +758,8 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         feasibility_status=result.feasibility_status,
         status="DRAFT",
         created_by=data.created_by,
+        version=1,
+        wizard_inputs_json=json.dumps(wizard_inputs),
     )
     db.add(estimation)
     db.flush()
@@ -1211,6 +1239,9 @@ def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, u
     if target in ("FINAL", "APPROVED") and estimation.request_id:
         _try_export_estimation(estimation, db)
 
+    # Auto-export to Outline wiki if configured for this status
+    _try_outline_auto_export(estimation, target, db)
+
     return estimation
 
 
@@ -1233,6 +1264,171 @@ def _try_export_estimation(estimation: "Estimation", db: Session) -> None:
     except Exception:
         # Export failure should not block the status transition
         pass
+
+
+def _try_outline_auto_export(estimation: "Estimation", new_status: str, db: Session) -> None:
+    """Export to Outline wiki if the new status matches the configured auto-export states."""
+    try:
+        auto_states_raw = _get_config_value(db, "outline_auto_export_states", "")
+        if not auto_states_raw.strip():
+            return
+        auto_states = [s.strip().upper() for s in auto_states_raw.split(",") if s.strip()]
+        if new_status.upper() not in auto_states:
+            return
+
+        from ..integrations.service import get_adapter, _estimation_to_export_dict
+        adapter = get_adapter("OUTLINE", db)
+        if not adapter:
+            return
+
+        est_data = _estimation_to_export_dict(estimation)
+        adapter.export_estimation(est_data)
+    except Exception:
+        # Auto-export failure must NOT block the status transition
+        pass
+
+
+@router.put("/estimations/{estimation_id}/revise", response_model=EstimationOut)
+def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    """Revise an estimation: re-run calculation with new inputs, bump version, reset to DRAFT."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if estimation.status != "REVISED":
+        raise HTTPException(400, f"Estimation must be in REVISED status to revise (current: {estimation.status})")
+
+    # Resolve config
+    leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
+    study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
+    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+
+    # Resolve features and their task templates
+    if data.feature_ids:
+        features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
+        templates = db.query(TaskTemplate).filter(
+            (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
+        ).all()
+    else:
+        features = []
+        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
+
+    # Build task inputs
+    task_inputs: list[TaskInput] = []
+    for tmpl in templates:
+        feature = next((f for f in features if f.id == tmpl.feature_id), None)
+        cw = feature.complexity_weight if feature else 1.0
+        is_study = tmpl.id is not None and tmpl.feature_id is not None and tmpl.feature_id in data.new_feature_ids
+        task_inputs.append(TaskInput(
+            name=tmpl.name,
+            task_type=tmpl.task_type,
+            base_effort_hours=tmpl.base_effort_hours,
+            scales_with_dut=tmpl.scales_with_dut,
+            scales_with_profile=tmpl.scales_with_profile,
+            complexity_weight=cw,
+            is_new_feature_study=is_study,
+            template_id=tmpl.id,
+        ))
+
+    dut_count = len(data.dut_ids) if data.dut_ids else 1
+    profile_count = len(data.profile_ids) if data.profile_ids else 1
+    combinations = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
+    new_feature_count = len(data.new_feature_ids)
+    pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+
+    # Run calculation
+    calc_input = EstimationInput(
+        project_type=data.project_type,
+        tasks=task_inputs,
+        dut_count=dut_count,
+        profile_count=profile_count,
+        pr_fixes=CalcPRFixInput(
+            simple=data.pr_fixes.simple,
+            medium=data.pr_fixes.medium,
+            complex=data.pr_fixes.complex_,
+        ),
+        new_feature_count=new_feature_count,
+        team_size=data.team_size,
+        has_leader=data.has_leader,
+        working_days=data.working_days,
+        leader_effort_ratio=leader_ratio,
+        new_feature_study_hours=study_hours_cfg,
+        working_hours_per_day=hours_per_day,
+        buffer_percentage=buffer_pct,
+    )
+    result = calculate_estimation(calc_input)
+
+    # Serialize wizard inputs
+    wizard_inputs = {
+        "feature_ids": data.feature_ids,
+        "new_feature_ids": data.new_feature_ids,
+        "reference_project_ids": data.reference_project_ids,
+        "dut_ids": data.dut_ids,
+        "profile_ids": data.profile_ids,
+        "dut_profile_matrix": data.dut_profile_matrix,
+        "pr_fixes": {
+            "simple": data.pr_fixes.simple,
+            "medium": data.pr_fixes.medium,
+            "complex": data.pr_fixes.complex_,
+        },
+        "team_size": data.team_size,
+        "has_leader": data.has_leader,
+        "working_days": data.working_days,
+    }
+
+    # Update estimation in-place
+    estimation.project_name = data.project_name
+    estimation.project_type = data.project_type
+    estimation.reference_project_ids = json.dumps(data.reference_project_ids)
+    estimation.dut_count = dut_count
+    estimation.profile_count = profile_count
+    estimation.dut_profile_combinations = combinations
+    estimation.pr_fix_count = pr_total
+    estimation.expected_delivery = data.expected_delivery
+    estimation.total_tester_hours = result.total_tester_hours
+    estimation.total_leader_hours = result.total_leader_hours
+    estimation.grand_total_hours = result.grand_total_hours
+    estimation.grand_total_days = result.grand_total_days
+    estimation.feasibility_status = result.feasibility_status
+    estimation.status = "DRAFT"
+    estimation.version = (estimation.version or 1) + 1
+    estimation.wizard_inputs_json = json.dumps(wizard_inputs)
+    estimation.approved_by = None
+    estimation.approved_at = None
+
+    # Delete old tasks, create new ones
+    db.query(EstimationTask).filter(EstimationTask.estimation_id == estimation_id).delete()
+    for task in result.tasks:
+        et = EstimationTask(
+            estimation_id=estimation.id,
+            task_template_id=task.template_id,
+            task_name=task.name,
+            task_type=task.task_type,
+            base_hours=task.base_hours,
+            calculated_hours=task.calculated_hours,
+            assigned_testers=1,
+            has_leader_support=data.has_leader,
+            leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
+            is_new_feature_study=task.is_new_feature_study,
+        )
+        db.add(et)
+
+    # Audit log
+    try:
+        audit = AuditLog(
+            user_id=user.id,
+            action="REVISE_ESTIMATION",
+            resource_type="estimation",
+            resource_id=estimation.id,
+            details_json=json.dumps({"new_version": estimation.version}),
+        )
+        db.add(audit)
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(estimation)
+    return estimation
 
 
 @router.post("/estimations/{estimation_id}/export")
@@ -1404,6 +1600,7 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
             grand_total_hours=round(e.grand_total_hours, 1),
             feasibility_status=e.feasibility_status,
             status=e.status,
+            version=getattr(e, "version", 1) or 1,
             created_at=e.created_at.strftime("%Y-%m-%d %H:%M") if e.created_at else None,
         )
         for e in recent_est

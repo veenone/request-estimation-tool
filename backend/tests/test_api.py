@@ -235,3 +235,114 @@ class TestReportEndpoints:
         assert resp.status_code == 200
         assert "pdf" in resp.headers["content-type"]
         assert resp.content[:4] == b"%PDF"
+
+
+class TestEstimationVersioning:
+    """Tests for estimation versioning and revision workflow."""
+
+    def _create_estimation(self, client, auth_headers) -> dict:
+        features_resp = client.get("/api/features", headers=auth_headers)
+        feature_ids = [f["id"] for f in features_resp.json()[:2]]
+        resp = client.post("/api/estimations", headers=auth_headers, json={
+            "project_name": "Versioning Test",
+            "project_type": "EVOLUTION",
+            "feature_ids": feature_ids,
+            "new_feature_ids": [],
+            "dut_ids": [1, 2],
+            "profile_ids": [1],
+            "dut_profile_matrix": [[1, 1], [2, 1]],
+            "pr_fixes": {"simple": 1, "medium": 0, "complex": 0},
+            "team_size": 2,
+            "has_leader": True,
+            "working_days": 20,
+        })
+        assert resp.status_code == 201
+        return resp.json()
+
+    def test_create_stores_wizard_inputs_and_version(self, client, auth_headers):
+        """Creating an estimation should set version=1 and populate wizard_inputs_json."""
+        import json
+        est = self._create_estimation(client, auth_headers)
+        assert est["version"] == 1
+        inputs = json.loads(est["wizard_inputs_json"])
+        assert inputs["team_size"] == 2
+        assert inputs["has_leader"] is True
+        assert len(inputs["feature_ids"]) == 2
+        assert inputs["pr_fixes"]["simple"] == 1
+
+    def test_revise_bumps_version(self, client, auth_headers):
+        """Full revision flow: create -> REVISED -> revise -> version=2, status=DRAFT."""
+        import json
+        est = self._create_estimation(client, auth_headers)
+        est_id = est["id"]
+
+        # Move to REVISED (DRAFT -> REVISED is a valid transition)
+        resp = client.post(
+            f"/api/estimations/{est_id}/status",
+            headers=auth_headers,
+            json={"status": "REVISED"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "REVISED"
+
+        # Revise with different inputs
+        features_resp = client.get("/api/features", headers=auth_headers)
+        all_feature_ids = [f["id"] for f in features_resp.json()[:3]]
+        revise_resp = client.put(
+            f"/api/estimations/{est_id}/revise",
+            headers=auth_headers,
+            json={
+                "project_name": "Versioning Test (Revised)",
+                "project_type": "EVOLUTION",
+                "feature_ids": all_feature_ids,
+                "new_feature_ids": [],
+                "dut_ids": [1, 2],
+                "profile_ids": [1],
+                "dut_profile_matrix": [[1, 1], [2, 1]],
+                "pr_fixes": {"simple": 2, "medium": 1, "complex": 0},
+                "team_size": 3,
+                "has_leader": True,
+                "working_days": 25,
+            },
+        )
+        assert revise_resp.status_code == 200
+        revised = revise_resp.json()
+        assert revised["version"] == 2
+        assert revised["status"] == "DRAFT"
+        assert revised["project_name"] == "Versioning Test (Revised)"
+        assert revised["grand_total_hours"] > 0
+
+        # Verify wizard inputs updated
+        inputs = json.loads(revised["wizard_inputs_json"])
+        assert inputs["team_size"] == 3
+        assert inputs["working_days"] == 25
+        assert len(inputs["feature_ids"]) == 3
+
+    def test_revise_requires_revised_status(self, client, auth_headers):
+        """Revising a non-REVISED estimation should return 400."""
+        est = self._create_estimation(client, auth_headers)
+        est_id = est["id"]
+
+        # Estimation is in DRAFT — revise should fail
+        resp = client.put(
+            f"/api/estimations/{est_id}/revise",
+            headers=auth_headers,
+            json={
+                "project_name": "Should Fail",
+                "project_type": "EVOLUTION",
+                "feature_ids": [1],
+                "dut_ids": [1],
+                "profile_ids": [1],
+                "team_size": 1,
+                "working_days": 10,
+            },
+        )
+        assert resp.status_code == 400
+        assert "REVISED" in resp.json()["detail"]
+
+    def test_outline_auto_export_config(self, client, auth_headers):
+        """Verify outline_auto_export_states config key exists after migration."""
+        resp = client.get("/api/configuration", headers=auth_headers)
+        assert resp.status_code == 200
+        keys = {item["key"] for item in resp.json()}
+        assert "outline_auto_export_states" in keys

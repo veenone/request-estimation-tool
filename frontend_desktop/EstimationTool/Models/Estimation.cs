@@ -29,6 +29,8 @@ public class Estimation
     [JsonPropertyName("approved_at")] public string? ApprovedAt { get; set; }
     [JsonPropertyName("assigned_to_id")] public int? AssignedToId { get; set; }
     [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
+    [JsonPropertyName("version")] public int Version { get; set; } = 1;
+    [JsonPropertyName("wizard_inputs_json")] public string WizardInputsJson { get; set; } = "{}";
     [JsonPropertyName("tasks")] public List<EstimationTask> Tasks { get; set; } = new();
 }
 

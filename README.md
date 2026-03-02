@@ -2,7 +2,7 @@
 
 A structured, data-driven application for producing professional test effort estimations for new product launches, product evolutions, and ongoing support projects. The tool combines a 7-step estimation wizard, historical project calibration, intelligent task catalogs, and automated report generation to deliver defensible estimates in minutes.
 
-**Status:** Version 2.0.0 — Production Ready
+**Status:** Version 3.0.0 — Production Ready
 
 ---
 
@@ -50,7 +50,19 @@ The tool assumes a matrix-based testing model where testing effort is a function
 
 ---
 
-## What's New in v2.0
+## What's New in v3.0
+
+| Feature | Description |
+|---------|-------------|
+| **Estimation Versioning** | Version tracking with `PUT /revise` endpoint, wizard inputs preserved per version |
+| **Configurable DUT Categories** | DUT type categories stored in configuration table, editable from Settings |
+| **HTTPS/TLS Support** | Backend, NiceGUI, and Streamlit all support SSL via `SSL_CERTFILE`/`SSL_KEYFILE` env vars |
+| **NiceGUI Sidebar Redesign** | Category-grouped sidebar with Material icons matching Streamlit layout |
+| **RBAC Matrix UI** | LDAP/OIDC role mapping displayed as interactive matrix tables in Settings |
+| **Outline Auto-Export** | Automatic wiki export on estimation status change (configurable states) |
+| **267 Tests** | Up from 263; added versioning and config coverage |
+
+### What's New in v2.0
 
 | Feature | Description |
 |---------|-------------|
@@ -137,7 +149,7 @@ Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + Study_Effort 
 | **Reports** | openpyxl, python-docx, ReportLab | Professional multi-format output |
 | **External APIs** | httpx, requests | HTTP clients for Redmine, Jira, SMTP, Outline |
 | **Container** | Docker, docker-compose | Containerized deployment |
-| **Testing** | pytest | 263 tests across 9 test modules |
+| **Testing** | pytest | 267 tests across 9 test modules |
 
 ---
 
@@ -205,7 +217,7 @@ request-estimation-tool/
 │   │   └── cli/                        # Command-line interface
 │   │       └── ipc_handler.py         # JSON IPC for C# desktop app
 │   │
-│   └── tests/                          # 263 tests across 9 modules
+│   └── tests/                          # 267 tests across 9 modules
 │       ├── test_calculator.py          # Estimation formula tests
 │       ├── test_feasibility.py        # Feasibility checking tests
 │       ├── test_calibration.py        # Historical accuracy tests
@@ -332,7 +344,7 @@ docker-compose down         # Stop all services
 ```bash
 # Health check (no auth required)
 curl http://localhost:8501/api/healthcheck
-# → {"status":"ok","version":"2.0.0"}
+# → {"status":"ok","version":"3.0.0"}
 
 # Login and get a token
 curl -X POST http://localhost:8501/api/auth/login \
@@ -509,7 +521,7 @@ Authorization: Bearer <access_token>
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"2.0.0"}` |
+| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"3.0.0"}` |
 | GET | `/api/host-config` | Runtime config for frontends (API version, auth providers) |
 
 ### Authentication
@@ -544,6 +556,7 @@ Authorization: Bearer <access_token>
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/dut-categories` | List configured DUT categories |
 | GET | `/api/dut-types` | List all DUT types |
 | POST | `/api/dut-types` | Create DUT type |
 | PUT | `/api/dut-types/{id}` | Update DUT type |
@@ -675,6 +688,8 @@ Global settings are stored in the `configuration` table and editable via the Set
 | `buffer_percentage` | 10 | Buffer percentage on total effort |
 | `pr_fix_base_hours` | 4.0 | Base hours for PR fix validation |
 | `rbac_matrix` | (JSON) | Role-permission matrix (managed via RBAC page) |
+| `dut_categories` | `SIM,eSIM,UICC,...` | Comma-separated DUT type categories |
+| `outline_auto_export_states` | `FINAL,APPROVED` | Estimation states that trigger Outline export |
 
 ---
 
@@ -692,6 +707,9 @@ Global settings are stored in the `configuration` table and editable via the Set
 | `OIDC_ISSUER` | | OIDC provider URL |
 | `OIDC_CLIENT_ID` | | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | | OIDC client secret |
+| `SSL_CERTFILE` | | Path to TLS certificate PEM file (enables HTTPS) |
+| `SSL_KEYFILE` | | Path to TLS private key PEM file (enables HTTPS) |
+| `NICEGUI_PORT` | `8502` | NiceGUI frontend port |
 
 ---
 
@@ -759,7 +777,7 @@ python -m pytest tests/ -m "not slow"
 | `test_auth.py` | ~25 | Authentication, JWT, RBAC |
 | `test_phase6_api.py` | ~35 | Integration/Request API tests |
 | `test_integrations.py` | ~40 | Redmine, Jira, Email, Outline connectors |
-| **Total** | **263** | |
+| **Total** | **267** | |
 
 ### Admin Script
 
@@ -809,7 +827,8 @@ For production deployments:
 - Set `CORS_ORIGINS` to your frontend domain(s)
 - Use MySQL (`DB_URL=mysql+pymysql://user:pass@host/dbname`) for multi-user access
 - Configure LDAP/OIDC for enterprise authentication
-- Place behind a reverse proxy (nginx/Caddy) with TLS
+- Enable TLS directly: set `SSL_CERTFILE` and `SSL_KEYFILE` env vars pointing to PEM files
+- Or place behind a reverse proxy (nginx/Caddy) with TLS
 
 ---
 
@@ -875,6 +894,6 @@ For major changes, please open an issue first to discuss the approach.
 
 ---
 
-**Version**: 2.0.0
+**Version**: 3.0.0
 **Last Updated**: March 2026
 **Status**: Production Ready

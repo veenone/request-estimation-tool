@@ -30,6 +30,9 @@ frontend_desktop/
 !SPEC.md
 SPEC.docx
 
+# TLS certificates (mounted at runtime, not baked into image)
+certs/
+
 # Environment files (never bake secrets into the image)
 .env
 .env.*

@@ -138,6 +138,8 @@ class Estimation(Base):
     approved_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    wizard_inputs_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     request: Mapped[Optional["Request"]] = relationship(back_populates="estimations")
     tasks: Mapped[list["EstimationTask"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")

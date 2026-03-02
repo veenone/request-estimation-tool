@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS estimations (
     created_by TEXT,
     approved_by TEXT,
     approved_at DATETIME,
+    version INTEGER NOT NULL DEFAULT 1,
+    wizard_inputs_json TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE SET NULL
 );
 

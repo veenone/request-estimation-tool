@@ -88,6 +88,56 @@ for key, default in WIZARD_DEFAULTS.items():
         st.session_state[key] = default
 
 
+# ── Edit-mode: pre-fill wizard from an existing REVISED estimation ────────────
+def _load_edit_estimation() -> None:
+    """If redirected from detail page with edit_estimation_id, pre-fill the wizard."""
+    edit_id = st.session_state.pop("edit_estimation_id", None)
+    if edit_id is None:
+        return
+
+    engine = get_engine()
+    with Session(engine) as session:
+        est = session.get(Estimation, edit_id)
+        if not est or est.status != "REVISED":
+            return
+
+        # Parse wizard_inputs_json (use getattr for DBs not yet migrated to v3)
+        raw = getattr(est, "wizard_inputs_json", None) or "{}"
+        try:
+            inputs = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            inputs = {}
+
+        st.session_state["s1_project_name"] = est.project_name
+        st.session_state["s1_project_type"] = est.project_type
+        st.session_state["s1_request_id"] = est.request_id
+        st.session_state["s2_selected_feature_ids"] = inputs.get("feature_ids", [])
+        st.session_state["s2_new_feature_ids"] = inputs.get("new_feature_ids", [])
+        st.session_state["s3_reference_project_ids"] = inputs.get("reference_project_ids", [])
+        st.session_state["s4_selected_dut_ids"] = inputs.get("dut_ids", [])
+        st.session_state["s4_selected_profile_ids"] = inputs.get("profile_ids", [])
+        st.session_state["s4_combinations"] = inputs.get("dut_profile_matrix", [])
+        pr = inputs.get("pr_fixes", {})
+        st.session_state["s5_pr_simple"] = pr.get("simple", 0)
+        st.session_state["s5_pr_medium"] = pr.get("medium", 0)
+        st.session_state["s5_pr_complex"] = pr.get("complex", 0)
+        st.session_state["s6_team_size"] = inputs.get("team_size", 2)
+        st.session_state["s6_has_leader"] = inputs.get("has_leader", False)
+        st.session_state["s6_working_days"] = inputs.get("working_days", 20)
+        if est.expected_delivery:
+            st.session_state["s6_delivery_date"] = est.expected_delivery
+
+        # Store edit context so save can revise instead of create
+        st.session_state["_edit_estimation_id"] = edit_id
+        st.session_state["_edit_estimation_version"] = getattr(est, "version", 1) or 1
+
+        st.session_state["calc_result"] = None
+        st.session_state["saved_estimation_id"] = None
+
+
+_load_edit_estimation()
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 @st.cache_resource
 def _engine():
@@ -335,6 +385,26 @@ def _run_calculation() -> None:
     st.session_state["risk_result"] = risk
 
 
+def _build_wizard_inputs_json() -> str:
+    """Serialize current wizard inputs to JSON for storage."""
+    return json.dumps({
+        "feature_ids": st.session_state["s2_selected_feature_ids"],
+        "new_feature_ids": st.session_state["s2_new_feature_ids"],
+        "reference_project_ids": st.session_state["s3_reference_project_ids"],
+        "dut_ids": st.session_state["s4_selected_dut_ids"],
+        "profile_ids": st.session_state["s4_selected_profile_ids"],
+        "dut_profile_matrix": st.session_state["s4_combinations"],
+        "pr_fixes": {
+            "simple": st.session_state["s5_pr_simple"],
+            "medium": st.session_state["s5_pr_medium"],
+            "complex": st.session_state["s5_pr_complex"],
+        },
+        "team_size": st.session_state["s6_team_size"],
+        "has_leader": st.session_state["s6_has_leader"],
+        "working_days": st.session_state["s6_working_days"],
+    })
+
+
 def _save_to_database() -> int:
     """Persist the estimation and its tasks to the database. Returns estimation id."""
     result = st.session_state["calc_result"]
@@ -356,7 +426,16 @@ def _save_to_database() -> int:
         + st.session_state["s5_pr_medium"]
         + st.session_state["s5_pr_complex"]
     )
+    wizard_inputs = _build_wizard_inputs_json()
 
+    # ── Revision mode: update existing estimation ──
+    edit_id = st.session_state.get("_edit_estimation_id")
+    if edit_id:
+        return _revise_estimation(edit_id, result, project_name, project_type,
+                                  ref_ids, dut_count, profile_count,
+                                  dut_profile_combinations, pr_total, wizard_inputs)
+
+    # ── Normal mode: create new estimation ──
     with _session() as session:
         # Generate estimation number
         count = session.query(Estimation).count()
@@ -379,6 +458,8 @@ def _save_to_database() -> int:
             grand_total_days=round(result.grand_total_days, 1),
             feasibility_status=result.feasibility_status,
             status="DRAFT",
+            version=1,
+            wizard_inputs_json=wizard_inputs,
         )
         session.add(estimation)
         session.flush()
@@ -389,27 +470,80 @@ def _save_to_database() -> int:
             if req and req.status == "NEW":
                 req.status = "IN_ESTIMATION"
 
-        for task_result in result.tasks:
-            session.add(
-                EstimationTask(
-                    estimation_id=estimation.id,
-                    task_template_id=task_result.template_id,
-                    task_name=task_result.name,
-                    task_type=task_result.task_type,
-                    base_hours=round(task_result.base_hours, 2),
-                    calculated_hours=round(task_result.calculated_hours, 2),
-                    assigned_testers=st.session_state["s6_team_size"],
-                    has_leader_support=st.session_state["s6_has_leader"],
-                    leader_hours=round(result.total_leader_hours / len(result.tasks), 2)
-                    if result.tasks else 0,
-                    is_new_feature_study=task_result.is_new_feature_study,
-                )
-            )
+        _create_estimation_tasks(session, estimation.id, result)
 
         session.commit()
         saved_id = estimation.id
         st.session_state["saved_estimation_id"] = saved_id
         return saved_id
+
+
+def _revise_estimation(edit_id, result, project_name, project_type,
+                       ref_ids, dut_count, profile_count,
+                       dut_profile_combinations, pr_total, wizard_inputs) -> int:
+    """Update an existing REVISED estimation in-place, bumping the version."""
+    with _session() as session:
+        estimation = session.get(Estimation, edit_id)
+        if not estimation:
+            raise ValueError(f"Estimation {edit_id} not found.")
+
+        old_version = st.session_state.get("_edit_estimation_version", 1)
+
+        estimation.project_name = project_name
+        estimation.project_type = project_type
+        estimation.reference_project_ids = json.dumps(ref_ids)
+        estimation.dut_count = dut_count
+        estimation.profile_count = profile_count
+        estimation.dut_profile_combinations = dut_profile_combinations
+        estimation.pr_fix_count = pr_total
+        estimation.expected_delivery = st.session_state["s6_delivery_date"]
+        estimation.total_tester_hours = round(result.total_tester_hours, 2)
+        estimation.total_leader_hours = round(result.total_leader_hours, 2)
+        estimation.grand_total_hours = round(result.grand_total_hours, 2)
+        estimation.grand_total_days = round(result.grand_total_days, 1)
+        estimation.feasibility_status = result.feasibility_status
+        estimation.status = "DRAFT"
+        estimation.version = old_version + 1
+        estimation.wizard_inputs_json = wizard_inputs
+
+        # Clear approval fields
+        estimation.approved_by = None
+        estimation.approved_at = None
+
+        # Delete old tasks and create new ones
+        session.query(EstimationTask).filter(
+            EstimationTask.estimation_id == edit_id
+        ).delete()
+
+        _create_estimation_tasks(session, edit_id, result)
+
+        session.commit()
+
+        # Clear edit mode
+        st.session_state.pop("_edit_estimation_id", None)
+        st.session_state.pop("_edit_estimation_version", None)
+        st.session_state["saved_estimation_id"] = edit_id
+        return edit_id
+
+
+def _create_estimation_tasks(session, estimation_id: int, result) -> None:
+    """Create EstimationTask rows from a calculation result."""
+    for task_result in result.tasks:
+        session.add(
+            EstimationTask(
+                estimation_id=estimation_id,
+                task_template_id=task_result.template_id,
+                task_name=task_result.name,
+                task_type=task_result.task_type,
+                base_hours=round(task_result.base_hours, 2),
+                calculated_hours=round(task_result.calculated_hours, 2),
+                assigned_testers=st.session_state["s6_team_size"],
+                has_leader_support=st.session_state["s6_has_leader"],
+                leader_hours=round(result.total_leader_hours / len(result.tasks), 2)
+                if result.tasks else 0,
+                is_new_feature_study=task_result.is_new_feature_study,
+            )
+        )
 
 
 def _build_report_data() -> ExcelReportData:
@@ -691,6 +825,33 @@ def render_step2() -> None:
     )
     filter_term = search.lower().strip()
 
+    # -- "Select all" across every category -----------------------------------
+    all_visible_ids = [
+        f["id"] for f in features
+        if not filter_term or filter_term in f["name"].lower() or filter_term in f["category"].lower()
+    ]
+    all_selected = len(all_visible_ids) > 0 and all(fid in selected_ids for fid in all_visible_ids)
+
+    def _on_select_all():
+        toggled = st.session_state["s2_select_all"]
+        sel = list(st.session_state["s2_selected_feature_ids"])
+        for fid in all_visible_ids:
+            if toggled and fid not in sel:
+                sel.append(fid)
+            elif not toggled and fid in sel:
+                sel.remove(fid)
+        st.session_state["s2_selected_feature_ids"] = sel
+        # Sync individual checkbox widget states
+        for fid in all_visible_ids:
+            st.session_state[f"s2_feat_{fid}"] = toggled
+
+    st.checkbox(
+        f"Select all ({len(all_visible_ids)} features)",
+        value=all_selected,
+        key="s2_select_all",
+        on_change=_on_select_all,
+    )
+
     changed = False
     for cat in categories:
         cat_features = [
@@ -705,20 +866,26 @@ def render_step2() -> None:
         with st.expander(f"{cat} ({len([f for f in cat_features if f['id'] in selected_ids])} / {len(cat_features)} selected)", expanded=True):
             # "Select all in category" shortcut
             cat_all_selected = all(f["id"] in selected_ids for f in cat_features)
-            if st.checkbox(
+
+            def _on_cat_toggle(cat_name=cat, feats=cat_features):
+                toggled = st.session_state[f"s2_cat_all_{cat_name}"]
+                sel = list(st.session_state["s2_selected_feature_ids"])
+                for f in feats:
+                    if toggled and f["id"] not in sel:
+                        sel.append(f["id"])
+                    elif not toggled and f["id"] in sel:
+                        sel.remove(f["id"])
+                st.session_state["s2_selected_feature_ids"] = sel
+                # Sync individual checkbox widget states
+                for f in feats:
+                    st.session_state[f"s2_feat_{f['id']}"] = toggled
+
+            st.checkbox(
                 f"Select all in {cat}",
                 value=cat_all_selected,
                 key=f"s2_cat_all_{cat}",
-            ):
-                for f in cat_features:
-                    if f["id"] not in selected_ids:
-                        selected_ids.append(f["id"])
-                        changed = True
-            else:
-                for f in cat_features:
-                    if f["id"] in selected_ids and cat_all_selected:
-                        selected_ids.remove(f["id"])
-                        changed = True
+                on_change=_on_cat_toggle,
+            )
 
             for feat in cat_features:
                 cols = st.columns([0.05, 0.4, 0.15, 0.15, 0.25])
@@ -1321,8 +1488,14 @@ STEP_RENDERERS = [
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 
-st.title("New Estimation")
-st.markdown("Complete the 7 steps below to build a test effort estimation. All inputs are preserved as you move between steps.")
+_is_edit_mode = "_edit_estimation_id" in st.session_state
+if _is_edit_mode:
+    _edit_ver = st.session_state.get("_edit_estimation_version", 1)
+    st.title(f"Edit Estimation (v{_edit_ver} → v{_edit_ver + 1})")
+    st.markdown("Revise the inputs below. Saving will create a new version and reset status to DRAFT.")
+else:
+    st.title("New Estimation")
+    st.markdown("Complete the 7 steps below to build a test effort estimation. All inputs are preserved as you move between steps.")
 
 # Reset button in sidebar
 with st.sidebar:
@@ -1331,6 +1504,9 @@ with st.sidebar:
     if st.button("Reset wizard", help="Clear all wizard inputs and start fresh"):
         for key in list(WIZARD_DEFAULTS.keys()):
             st.session_state[key] = WIZARD_DEFAULTS[key]
+        # Clear edit mode if active
+        st.session_state.pop("_edit_estimation_id", None)
+        st.session_state.pop("_edit_estimation_version", None)
         # Also clear caches so DB reload happens
         load_features.clear()
         load_dut_types.clear()

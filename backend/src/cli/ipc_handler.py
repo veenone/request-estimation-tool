@@ -1000,6 +1000,11 @@ def handle_get_configuration(session: Session, payload: dict) -> dict:
     return {key_val.key: key_val.value for key_val in configs}
 
 
+def handle_get_dut_categories(session: Session, payload: dict) -> dict:
+    raw = _get_config(session, "dut_categories", "SIM,eSIM,UICC,IoT Device,Mobile Device,Other")
+    return {"categories": [c.strip() for c in raw.split(",") if c.strip()]}
+
+
 def handle_set_configuration(session: Session, payload: dict) -> dict:
     key = payload["key"]
     value = payload["value"]
@@ -1604,6 +1609,7 @@ COMMANDS: dict[str, callable] = {
     # Configuration
     "get_configuration": handle_get_configuration,
     "set_configuration": handle_set_configuration,
+    "get_dut_categories": handle_get_dut_categories,
     # Integrations
     "get_integrations": handle_get_integrations,
     "update_integration": handle_update_integration,

@@ -4,9 +4,18 @@
 #   docker-compose up -d                    # SQLite mode (default)
 #   docker-compose --profile mysql up -d    # With MySQL backend
 #
+# HTTPS / TLS:
+#   1. Place cert.pem and key.pem in a ./certs/ directory
+#   2. Set environment variables:
+#        SSL_CERTFILE=/app/certs/cert.pem
+#        SSL_KEYFILE=/app/certs/key.pem
+#   3. Rebuild / restart
+#
 # Environment variables (override via .env or shell exports):
 #   DB_TYPE                  sqlite | mysql  (default: sqlite)
 #   DB_URL                   SQLAlchemy URL  (default: sqlite:////app/data/estimation.db)
+#   SSL_CERTFILE             Path to PEM certificate (inside container)
+#   SSL_KEYFILE              Path to PEM private key (inside container)
 #   MYSQL_ROOT_PASSWORD      (default: estimation_secret)
 #   MYSQL_DATABASE           (default: estimation)
 #   MYSQL_USER               (default: estimation)
@@ -21,8 +30,11 @@ services:
     environment:
       - DB_TYPE=${DB_TYPE:-sqlite}
       - DB_URL=${DB_URL:-sqlite:////app/data/estimation.db}
+      - SSL_CERTFILE=${SSL_CERTFILE:-}
+      - SSL_KEYFILE=${SSL_KEYFILE:-}
     volumes:
       - app_data:/app/data
+      - ${SSL_CERT_DIR:-./certs}:/app/certs:ro
     restart: unless-stopped
     depends_on:
       mysql:

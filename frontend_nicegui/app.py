@@ -25,6 +25,131 @@ from nicegui import app, ui
 
 API_URL = os.environ.get("API_URL", "http://localhost:8501/api")
 
+
+# ---------------------------------------------------------------------------
+# Friendly error pages
+# ---------------------------------------------------------------------------
+
+_ERROR_PAGES: dict[int, dict[str, str]] = {
+    401: {
+        "icon": "lock",
+        "title": "Session Expired",
+        "message": "Your session has expired or you are not logged in.",
+        "action_label": "Go to Login",
+        "action_url": "/login",
+        "color": "warning",
+    },
+    403: {
+        "icon": "block",
+        "title": "Access Denied",
+        "message": "You don't have permission to view this page. Contact your administrator if you believe this is an error.",
+        "action_label": "Back to Dashboard",
+        "action_url": "/",
+        "color": "negative",
+    },
+    404: {
+        "icon": "search_off",
+        "title": "Not Found",
+        "message": "The resource you're looking for doesn't exist or has been moved.",
+        "action_label": "Back to Dashboard",
+        "action_url": "/",
+        "color": "info",
+    },
+    500: {
+        "icon": "error_outline",
+        "title": "Server Error",
+        "message": "Something went wrong on the server. Please try again later or contact support.",
+        "action_label": "Retry",
+        "action_url": None,
+        "color": "negative",
+    },
+    502: {
+        "icon": "cloud_off",
+        "title": "Backend Unavailable",
+        "message": "The backend server is not responding. Make sure it is running on the configured address.",
+        "action_label": "Retry",
+        "action_url": None,
+        "color": "negative",
+    },
+    520: {
+        "icon": "warning_amber",
+        "title": "Unknown Error",
+        "message": "An unexpected error occurred. Please try again.",
+        "action_label": "Back to Dashboard",
+        "action_url": "/",
+        "color": "warning",
+    },
+}
+
+
+class ApiError(Exception):
+    """Raised by api_* helpers with a parsed HTTP status code."""
+
+    def __init__(self, status_code: int, detail: str = "") -> None:
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"HTTP {status_code}: {detail}")
+
+
+def show_error_page(exc: Exception) -> None:
+    """Render a full-page friendly error card.
+
+    Call this inside a ``ui.column`` or similar container when a page-level
+    API call fails.  It replaces the raw traceback with a user-friendly
+    message, icon, and action button.
+    """
+    # Determine status code from the exception
+    status = 520  # default "unknown"
+    detail = ""
+    if isinstance(exc, ApiError):
+        status = exc.status_code
+        detail = exc.detail
+    elif isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        detail = str(exc)
+    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        status = 502
+        detail = "Could not reach the backend server."
+    elif isinstance(exc, httpx.TimeoutException):
+        status = 504
+        detail = "The request timed out."
+
+    cfg = _ERROR_PAGES.get(status, _ERROR_PAGES[520])
+
+    with ui.card().classes("absolute-center w-[460px] q-pa-xl text-center"):
+        ui.icon(cfg["icon"], size="80px", color=cfg["color"]).classes("q-mb-md")
+        ui.label(f"{status}").classes(f"text-h2 text-{cfg['color']} q-mb-none")
+        ui.label(cfg["title"]).classes("text-h5 q-mb-sm")
+        ui.label(cfg["message"]).classes("text-body1 text-grey q-mb-md")
+        if detail:
+            with ui.expansion("Technical Details", icon="code").classes("w-full q-mb-md"):
+                ui.label(detail).classes("text-caption text-grey-6 break-all")
+
+        action_url = cfg["action_url"]
+        if status == 401:
+            # Clear stale auth state and redirect
+            def go_login():
+                app.storage.user.clear()
+                ui.navigate.to("/login")
+
+            ui.button(cfg["action_label"], icon="login", on_click=go_login).props(
+                f"color={cfg['color']} unelevated"
+            ).classes("q-mt-sm")
+        elif action_url:
+            ui.button(
+                cfg["action_label"],
+                icon="arrow_back",
+                on_click=lambda url=action_url: ui.navigate.to(url),
+            ).props(f"color={cfg['color']} unelevated").classes("q-mt-sm")
+        else:
+            # Retry = reload current page
+            ui.button(
+                cfg["action_label"],
+                icon="refresh",
+                on_click=lambda: ui.navigate.to(ui.context.client.page.path),
+            ).props(f"color={cfg['color']} unelevated").classes("q-mt-sm")
+
+
 # ---------------------------------------------------------------------------
 # Auth state stored in app.storage.user (per-browser-tab, cookie-backed)
 # ---------------------------------------------------------------------------
@@ -99,7 +224,9 @@ def login_page():
         ui.label("Test Effort Estimation Tool").classes("text-h5 text-center w-full")
         ui.label("Sign in to continue").classes("text-subtitle2 text-center w-full text-grey")
         username = ui.input("Username").classes("w-full")
+        username.on("keydown.enter", lambda: password.run_method("focus"))
         password = ui.input("Password", password=True, password_toggle_button=True).classes("w-full")
+        password.on("keydown.enter", try_login)
         ui.button("Login", on_click=try_login).classes("w-full mt-4")
 
 
@@ -120,6 +247,15 @@ async def auth_middleware(request, call_next):
 # Sidebar navigation
 # ---------------------------------------------------------------------------
 
+def _nav_item(label: str, icon_name: str, path: str) -> None:
+    """Render a sidebar navigation item with a Material icon."""
+    with ui.item(on_click=lambda p=path: ui.navigate.to(p)).classes("cursor-pointer"):
+        with ui.item_section().props("avatar"):
+            ui.icon(icon_name, color="white", size="24px")
+        with ui.item_section():
+            ui.item_label(label)
+
+
 def sidebar():
     user = current_user()
     role = user.get("role", "VIEWER") if user else "VIEWER"
@@ -132,23 +268,41 @@ def sidebar():
             ui.label(f"Role: {role}").classes("q-px-md text-caption text-grey")
             ui.separator()
 
-        ui.item("Dashboard", on_click=lambda: ui.navigate.to("/")).classes("cursor-pointer")
-        ui.item("New Estimation", on_click=lambda: ui.navigate.to("/estimation/new")).classes("cursor-pointer")
-        ui.item("Feature Catalog", on_click=lambda: ui.navigate.to("/features")).classes("cursor-pointer")
-        ui.item("DUT Registry", on_click=lambda: ui.navigate.to("/duts")).classes("cursor-pointer")
-        ui.item("Test Profiles", on_click=lambda: ui.navigate.to("/profiles")).classes("cursor-pointer")
-        ui.item("History", on_click=lambda: ui.navigate.to("/history")).classes("cursor-pointer")
-        ui.item("Team", on_click=lambda: ui.navigate.to("/team")).classes("cursor-pointer")
-        ui.item("Request Inbox", on_click=lambda: ui.navigate.to("/requests")).classes("cursor-pointer")
-        ui.item("Integrations", on_click=lambda: ui.navigate.to("/integrations")).classes("cursor-pointer")
-        ui.item("Settings", on_click=lambda: ui.navigate.to("/settings")).classes("cursor-pointer")
+        with ui.list().props("dense"):
 
-        if role == "ADMIN":
+            # -- Overview --
+            ui.item_label("OVERVIEW").props("header").classes("text-overline text-grey")
+            _nav_item("Dashboard",     "dashboard", "/")
+            _nav_item("Request Inbox", "inbox",     "/requests")
+
             ui.separator()
-            ui.label("ADMINISTRATION").classes("q-px-md text-overline text-grey")
-            ui.item("Users", on_click=lambda: ui.navigate.to("/users")).classes("cursor-pointer")
-            ui.item("RBAC", on_click=lambda: ui.navigate.to("/rbac")).classes("cursor-pointer")
-            ui.item("Audit Log", on_click=lambda: ui.navigate.to("/audit")).classes("cursor-pointer")
+
+            # -- Estimation --
+            ui.item_label("ESTIMATION").props("header").classes("text-overline text-grey")
+            _nav_item("Estimations",    "list_alt",   "/estimations")
+            _nav_item("New Estimation", "add_circle", "/estimation/new")
+
+            ui.separator()
+
+            # -- Data Management --
+            ui.item_label("DATA MANAGEMENT").props("header").classes("text-overline text-grey")
+            _nav_item("Feature Catalog",    "category", "/features")
+            _nav_item("DUT Registry",       "devices",  "/duts")
+            _nav_item("Test Profiles",      "tune",     "/profiles")
+            _nav_item("Historical Projects", "history", "/history")
+            _nav_item("Team Members",       "group",    "/team")
+
+            ui.separator()
+
+            # -- Administration --
+            ui.item_label("ADMINISTRATION").props("header").classes("text-overline text-grey")
+            _nav_item("Settings",     "settings",            "/settings")
+            _nav_item("Integrations", "sync",                "/integrations")
+
+            if role == "ADMIN":
+                _nav_item("Users",     "manage_accounts",      "/users")
+                _nav_item("RBAC",      "admin_panel_settings", "/rbac")
+                _nav_item("Audit Log", "receipt_long",         "/audit")
 
         ui.space()
 
@@ -246,7 +400,7 @@ async def dashboard_page():
                 ui.label("No requests yet.").classes("text-grey")
 
         except Exception as e:
-            ui.label(f"Error loading dashboard: {e}").classes("text-negative")
+            show_error_page(e)
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +427,29 @@ import frontend_nicegui.pages.rbac          # noqa: F401,E402
 # ---------------------------------------------------------------------------
 
 if __name__ in {"__main__", "__mp_main__"}:
+    import ssl as _ssl
+
+    _ssl_certfile = os.environ.get("SSL_CERTFILE", "") or None
+    _ssl_keyfile = os.environ.get("SSL_KEYFILE", "") or None
+
+    _ssl_kwargs: dict = {}
+    if _ssl_certfile and _ssl_keyfile:
+        ssl_ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(_ssl_certfile, _ssl_keyfile)
+        _ssl_kwargs["ssl_certfile"] = _ssl_certfile
+        _ssl_kwargs["ssl_keyfile"] = _ssl_keyfile
+        scheme = "https"
+    else:
+        scheme = "http"
+
+    _port = int(os.environ.get("NICEGUI_PORT", "8502"))
+    print(f"Starting NiceGUI on {scheme}://0.0.0.0:{_port}")
+
     ui.run(
         title="Test Effort Estimation Tool",
-        port=8502,
+        port=_port,
         storage_secret="estimation-tool-secret-change-me",
         favicon="🧪",
         dark=True,
+        **_ssl_kwargs,
     )

@@ -1,10 +1,14 @@
-"""Estimation pages — 7-step wizard and detail view.
+"""Estimation pages — list, 7-step wizard, detail view, and edit.
 
 Routes:
-  /estimation/new        — Wizard to create a new estimation
-  /estimation/{id}       — Read-only detail view with status controls and report downloads
+  /estimations            — Estimation list with search and filters
+  /estimation/new         — Wizard to create a new estimation
+  /estimation/{id}        — Read-only detail view with status controls and report downloads
+  /estimation/{id}/edit   — Edit wizard for REVISED estimations
 """
 
+import asyncio
+import json as _json
 from typing import Any
 
 from nicegui import app, ui
@@ -13,8 +17,10 @@ from frontend_nicegui.app import (
     API_URL,
     api_get,
     api_post,
+    api_put,
     auth_headers,
     is_authenticated,
+    show_error_page,
     sidebar,
 )
 
@@ -65,6 +71,138 @@ def _hours_card(label: str, value: float, icon: str = "schedule") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Route 0: /estimations  — Estimation list page
+# ---------------------------------------------------------------------------
+
+@ui.page("/estimations")
+async def estimations_list_page() -> None:
+    if not is_authenticated():
+        ui.navigate.to("/login")
+        return
+
+    sidebar()
+
+    with ui.column().classes("q-pa-lg w-full"):
+        with ui.row().classes("items-center q-gutter-md q-mb-md w-full"):
+            ui.label("Estimations").classes("text-h4")
+            ui.space()
+            ui.button(
+                "New Estimation",
+                icon="add",
+                on_click=lambda: ui.navigate.to("/estimation/new"),
+            ).props("color=primary")
+
+        # Load estimations
+        try:
+            estimations: list[dict] = await api_get("/estimations")
+        except Exception as exc:
+            show_error_page(exc)
+            return
+
+        if not estimations:
+            ui.label("No estimations found. Create your first estimation to get started.").classes("text-grey")
+            return
+
+        # Filters
+        search_input = ui.input("Search by project name", placeholder="Type to filter...").classes("w-64")
+        status_filter = ui.select(
+            options=["All", "DRAFT", "FINAL", "APPROVED", "REVISED"],
+            value="All",
+            label="Status",
+        ).classes("w-40")
+
+        # Table
+        def _version_label(est: dict) -> str:
+            v = est.get("version", 1) or 1
+            num = est.get("estimation_number") or f"EST-{est['id']}"
+            return f"{num} (v{v})" if v > 1 else num
+
+        table_container = ui.column().classes("w-full q-mt-md")
+
+        def _render_table() -> None:
+            table_container.clear()
+            query = (search_input.value or "").strip().lower()
+            status_val = status_filter.value
+
+            filtered = estimations
+            if query:
+                filtered = [e for e in filtered if query in (e.get("project_name") or "").lower()]
+            if status_val and status_val != "All":
+                filtered = [e for e in filtered if e.get("status") == status_val]
+
+            rows = []
+            for e in filtered:
+                rows.append({
+                    "id": e["id"],
+                    "number": _version_label(e),
+                    "project_name": e.get("project_name", ""),
+                    "project_type": e.get("project_type", ""),
+                    "grand_total_hours": round(e.get("grand_total_hours", 0), 1),
+                    "feasibility_status": e.get("feasibility_status", ""),
+                    "status": e.get("status", ""),
+                    "assigned_to_name": e.get("assigned_to_name") or "Unassigned",
+                    "created_at": (str(e.get("created_at") or ""))[:10],
+                })
+
+            cols = [
+                {"name": "number", "label": "#", "field": "number", "align": "left", "sortable": True},
+                {"name": "project_name", "label": "Project", "field": "project_name", "align": "left", "sortable": True},
+                {"name": "project_type", "label": "Type", "field": "project_type", "align": "left", "sortable": True},
+                {"name": "grand_total_hours", "label": "Total Hours", "field": "grand_total_hours", "align": "right", "sortable": True},
+                {"name": "feasibility_status", "label": "Feasibility", "field": "feasibility_status", "align": "center"},
+                {"name": "status", "label": "Status", "field": "status", "align": "center"},
+                {"name": "assigned_to_name", "label": "Assigned To", "field": "assigned_to_name", "align": "left"},
+                {"name": "created_at", "label": "Created", "field": "created_at", "align": "left", "sortable": True},
+            ]
+
+            with table_container:
+                if not rows:
+                    ui.label("No estimations match the current filters.").classes("text-grey")
+                    return
+
+                tbl = ui.table(
+                    columns=cols,
+                    rows=rows,
+                    row_key="id",
+                    pagination={"rowsPerPage": 20},
+                ).classes("w-full shadow-1")
+
+                # Feasibility badge slot
+                tbl.add_slot(
+                    "body-cell-feasibility_status",
+                    r"""
+                    <q-td :props="props">
+                        <q-badge
+                            :color="props.value === 'FEASIBLE' ? 'positive' : props.value === 'AT_RISK' ? 'warning' : 'negative'"
+                            :label="props.value"
+                            rounded
+                        />
+                    </q-td>
+                    """,
+                )
+
+                # Status badge slot
+                tbl.add_slot(
+                    "body-cell-status",
+                    r"""
+                    <q-td :props="props">
+                        <q-badge
+                            :color="props.value === 'DRAFT' ? 'grey' : props.value === 'FINAL' ? 'primary' : props.value === 'APPROVED' ? 'positive' : 'orange'"
+                            :label="props.value"
+                            rounded
+                        />
+                    </q-td>
+                    """,
+                )
+
+                tbl.on("rowClick", lambda e: ui.navigate.to(f"/estimation/{e.args[1]['id']}"))
+
+        search_input.on("update:model-value", lambda _: _render_table())
+        status_filter.on("update:model-value", lambda _: _render_table())
+        _render_table()
+
+
+# ---------------------------------------------------------------------------
 # Route 1: /estimation/new  — 7-step wizard
 # ---------------------------------------------------------------------------
 
@@ -109,26 +247,19 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "calc_result": None,
     }
 
-    # Pre-load catalog data so later steps can render immediately
-    try:
-        all_features: list[dict] = await api_get("/features")
-    except Exception:
-        all_features = []
+    # Pre-load catalog data in parallel so later steps can render immediately
+    async def _safe_get(path: str) -> list[dict]:
+        try:
+            return await api_get(path)
+        except Exception:
+            return []
 
-    try:
-        all_duts: list[dict] = await api_get("/dut-types")
-    except Exception:
-        all_duts = []
-
-    try:
-        all_profiles: list[dict] = await api_get("/profiles")
-    except Exception:
-        all_profiles = []
-
-    try:
-        all_hist: list[dict] = await api_get("/historical-projects")
-    except Exception:
-        all_hist = []
+    all_features, all_duts, all_profiles, all_hist = await asyncio.gather(
+        _safe_get("/features"),
+        _safe_get("/dut-types"),
+        _safe_get("/profiles"),
+        _safe_get("/historical-projects"),
+    )
 
     # ------------------------------------------------------------------ #
     # Page title                                                           #
@@ -205,8 +336,6 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 ).classes("text-body2 text-grey q-mb-md")
 
                 # Group features by category
-                from itertools import groupby
-
                 features_by_cat: dict[str, list[dict]] = {}
                 for feat in all_features:
                     cat = feat.get("category") or "Other"
@@ -221,35 +350,62 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "text-warning"
                     )
                 else:
+                    # -- Select All checkbox --
+                    all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
+                    select_all_cb = ui.checkbox(
+                        f"Select all ({len(all_features)} features)",
+                        value=all_pre_selected,
+                    ).classes("text-weight-bold q-mb-sm")
+
+                    def _toggle_select_all(e):
+                        checked = e.value
+                        for _fid, _cb in feature_checkbox_refs.items():
+                            _cb.value = checked
+                            if not checked and _fid in new_feat_checkbox_refs:
+                                new_feat_checkbox_refs[_fid].value = False
+
+                    select_all_cb.on("update:model-value", _toggle_select_all)
+
+                    ui.separator()
+
                     for cat_name, cat_features in features_by_cat.items():
                         ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
-                        with ui.grid(columns=1).classes("w-full q-pl-md"):
+
+                        # Column headers
+                        with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                            ui.label("Feature").classes("text-caption text-grey")
+                            ui.label("Complexity").classes("text-caption text-grey text-center")
+                            ui.label("New?").classes("text-caption text-grey text-center")
+
                             for feat in cat_features:
                                 fid = feat["id"]
                                 fname = feat.get("name", f"Feature {fid}")
                                 fweight = feat.get("complexity_weight", 1.0)
-                                with ui.row().classes("items-center q-gutter-sm"):
-                                    cb = ui.checkbox(
-                                        f"{fname}  (complexity {fweight})",
-                                        value=(fid in state["feature_ids"]),
-                                    )
-                                    feature_checkbox_refs[fid] = cb
+                                has_tests = feat.get("has_existing_tests", False)
 
-                                    new_cb = ui.checkbox(
-                                        "New",
-                                        value=(fid in state["new_feature_ids"]),
-                                    ).props("dense color=orange").classes("text-caption")
-                                    new_feat_checkbox_refs[fid] = new_cb
+                                cb = ui.checkbox(
+                                    fname,
+                                    value=(fid in state["feature_ids"]),
+                                )
+                                feature_checkbox_refs[fid] = cb
 
-                                    # Disable "New" toggle unless parent is checked
-                                    def _make_sync(f_id: int, n_cb: ui.checkbox):
-                                        def _sync(e) -> None:
-                                            if not feature_checkbox_refs[f_id].value:
-                                                n_cb.value = False
+                                ui.label(f"x{fweight:.1f}").classes("text-center")
 
-                                        return _sync
+                                new_cb = ui.checkbox(
+                                    "New",
+                                    value=(fid in state["new_feature_ids"]),
+                                ).props("dense color=orange").classes("text-caption")
+                                new_feat_checkbox_refs[fid] = new_cb
 
-                                    cb.on("update:model-value", _make_sync(fid, new_cb))
+                                # Disable "New" toggle unless parent is checked
+                                def _make_sync(f_id: int, n_cb: ui.checkbox):
+                                    def _sync(e) -> None:
+                                        if not feature_checkbox_refs[f_id].value:
+                                            n_cb.value = False
+
+                                    return _sync
+
+                                cb.on("update:model-value", _make_sync(fid, new_cb))
 
                 def _collect_features() -> None:
                     state["feature_ids"] = [
@@ -807,8 +963,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
         try:
             est: dict = await api_get(f"/estimations/{estimation_id}")
         except Exception as exc:
-            ui.label(f"Failed to load estimation: {exc}").classes("text-negative")
-            ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/")).props("flat")
+            show_error_page(exc)
             return
 
         # We need a mutable container for the current status so the status
@@ -822,14 +977,24 @@ async def estimation_detail_page(estimation_id: int) -> None:
             ui.label(est.get("project_name", f"Estimation {estimation_id}")).classes("text-h4")
             if est.get("estimation_number"):
                 ui.badge(est["estimation_number"], color="info").props("rounded")
+            version = est.get("version", 1) or 1
+            if version > 1:
+                ui.badge(f"v{version}", color="accent").props("rounded")
             _feasibility_badge(est.get("feasibility_status", ""))
             _status_badge(est.get("status", ""))
 
-        ui.button(
-            "Back",
-            icon="arrow_back",
-            on_click=lambda: ui.navigate.to("/"),
-        ).props("flat dense").classes("q-mb-md")
+        with ui.row().classes("q-gutter-sm q-mb-md"):
+            ui.button(
+                "Back",
+                icon="arrow_back",
+                on_click=lambda: ui.navigate.to("/estimations"),
+            ).props("flat dense")
+            if est.get("status") == "REVISED":
+                ui.button(
+                    "Edit Estimation",
+                    icon="edit",
+                    on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}/edit"),
+                ).props("color=orange outline dense")
 
         # ------------------------------------------------------------------ #
         # Info cards                                                           #
@@ -1057,3 +1222,481 @@ async def estimation_detail_page(estimation_id: int) -> None:
                     _download_js("pdf", f"estimation_{estimation_id}.pdf")
                 ),
             ).props("color=negative outline")
+
+
+# ---------------------------------------------------------------------------
+# Route 3: /estimation/{id}/edit  — Edit wizard for REVISED estimations
+# ---------------------------------------------------------------------------
+
+@ui.page("/estimation/{estimation_id}/edit")
+async def edit_estimation_page(estimation_id: int) -> None:
+    if not is_authenticated():
+        ui.navigate.to("/login")
+        return
+
+    sidebar()
+
+    with ui.column().classes("q-pa-lg w-full"):
+        # Load the estimation
+        try:
+            est: dict = await api_get(f"/estimations/{estimation_id}")
+        except Exception as exc:
+            show_error_page(exc)
+            return
+
+        if est.get("status") != "REVISED":
+            ui.label("This estimation is not in REVISED status and cannot be edited.").classes(
+                "text-warning text-h6"
+            )
+            ui.button("Back to Detail", on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}"))
+            return
+
+        # Parse wizard inputs
+        wizard_raw = est.get("wizard_inputs_json", "{}")
+        try:
+            saved_inputs: dict = _json.loads(wizard_raw) if wizard_raw else {}
+        except (_json.JSONDecodeError, TypeError):
+            saved_inputs = {}
+
+        has_saved_inputs = bool(saved_inputs.get("feature_ids"))
+
+        if not has_saved_inputs:
+            ui.label(
+                "This estimation was created before wizard input tracking was available. "
+                "You can re-enter the inputs below."
+            ).classes("text-warning q-mb-md")
+
+        # Pre-load catalog data in parallel
+        async def _safe_get(path: str) -> list[dict]:
+            try:
+                return await api_get(path)
+            except Exception:
+                return []
+
+        all_features, all_duts, all_profiles, all_hist = await asyncio.gather(
+            _safe_get("/features"),
+            _safe_get("/dut-types"),
+            _safe_get("/profiles"),
+            _safe_get("/historical-projects"),
+        )
+
+        # Pre-fill state from saved inputs
+        state: dict[str, Any] = {
+            "project_name": est.get("project_name", ""),
+            "project_type": est.get("project_type", "EVOLUTION"),
+            "description": "",
+            "feature_ids": saved_inputs.get("feature_ids", []),
+            "new_feature_ids": saved_inputs.get("new_feature_ids", []),
+            "reference_project_ids": saved_inputs.get("reference_project_ids", []),
+            "dut_ids": saved_inputs.get("dut_ids", []),
+            "profile_ids": saved_inputs.get("profile_ids", []),
+            "dut_profile_matrix": saved_inputs.get("dut_profile_matrix", []),
+            "pr_simple": saved_inputs.get("pr_fixes", {}).get("simple", 0),
+            "pr_medium": saved_inputs.get("pr_fixes", {}).get("medium", 0),
+            "pr_complex": saved_inputs.get("pr_fixes", {}).get("complex", 0),
+            "delivery_date": str(est.get("expected_delivery") or "") or None,
+            "working_days": saved_inputs.get("working_days", 20),
+            "team_size": saved_inputs.get("team_size", 1),
+            "has_leader": saved_inputs.get("has_leader", False),
+            "calc_result": None,
+        }
+
+        version = est.get("version", 1) or 1
+        ui.label(f"Edit Estimation — {est.get('estimation_number', '')} (v{version})").classes("text-h4 q-mb-md")
+
+        # ---- Wizard (same 7 steps as new, but pre-filled) ---- #
+        with ui.stepper().props("vertical=false animated").classes("w-full") as stepper:
+
+            # Step 1 — Project Info
+            with ui.step("Project Info"):
+                ui.label("Edit the basic project details.").classes("text-body2 text-grey q-mb-md")
+                name_input = ui.input("Project Name *", value=state["project_name"]).classes("w-full")
+                name_input.on("update:model-value", lambda e: state.update({"project_name": e.args}))
+                type_select = ui.select(
+                    options=["NEW", "EVOLUTION", "SUPPORT"],
+                    label="Project Type",
+                    value=state["project_type"],
+                ).classes("w-full q-mt-sm")
+                type_select.on("update:model-value", lambda e: state.update({"project_type": e.args}))
+
+                with ui.stepper_navigation():
+                    def _go_s2():
+                        state["project_name"] = name_input.value or ""
+                        state["project_type"] = type_select.value or "EVOLUTION"
+                        if not state["project_name"].strip():
+                            ui.notify("Project Name is required.", type="warning")
+                            return
+                        stepper.next()
+                    ui.button("Next", on_click=_go_s2).props("color=primary icon-right=arrow_forward")
+
+            # Step 2 — Features
+            with ui.step("Features"):
+                ui.label("Select features under test.").classes("text-body2 text-grey q-mb-md")
+
+                features_by_cat: dict[str, list[dict]] = {}
+                for feat in all_features:
+                    cat = feat.get("category") or "Other"
+                    features_by_cat.setdefault(cat, []).append(feat)
+
+                feature_checkbox_refs: dict[int, ui.checkbox] = {}
+                new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
+
+                if not all_features:
+                    ui.label("No features found.").classes("text-warning")
+                else:
+                    # -- Select All checkbox --
+                    all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
+                    select_all_cb = ui.checkbox(
+                        f"Select all ({len(all_features)} features)",
+                        value=all_pre_selected,
+                    ).classes("text-weight-bold q-mb-sm")
+
+                    def _toggle_select_all(e):
+                        checked = e.value
+                        for _fid, _cb in feature_checkbox_refs.items():
+                            _cb.value = checked
+                            if not checked and _fid in new_feat_checkbox_refs:
+                                new_feat_checkbox_refs[_fid].value = False
+
+                    select_all_cb.on("update:model-value", _toggle_select_all)
+
+                    ui.separator()
+
+                    for cat_name, cat_features in features_by_cat.items():
+                        ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
+
+                        with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                            ui.label("Feature").classes("text-caption text-grey")
+                            ui.label("Complexity").classes("text-caption text-grey text-center")
+                            ui.label("New?").classes("text-caption text-grey text-center")
+
+                            for feat in cat_features:
+                                fid = feat["id"]
+                                fname = feat.get("name", f"Feature {fid}")
+                                fweight = feat.get("complexity_weight", 1.0)
+
+                                cb = ui.checkbox(
+                                    fname,
+                                    value=(fid in state["feature_ids"]),
+                                )
+                                feature_checkbox_refs[fid] = cb
+
+                                ui.label(f"x{fweight:.1f}").classes("text-center")
+
+                                new_cb = ui.checkbox(
+                                    "New",
+                                    value=(fid in state["new_feature_ids"]),
+                                ).props("dense color=orange").classes("text-caption")
+                                new_feat_checkbox_refs[fid] = new_cb
+
+                                def _make_sync(f_id: int, n_cb: ui.checkbox):
+                                    def _sync(e):
+                                        if not feature_checkbox_refs[f_id].value:
+                                            n_cb.value = False
+                                    return _sync
+                                cb.on("update:model-value", _make_sync(fid, new_cb))
+
+                def _collect_features():
+                    state["feature_ids"] = [fid for fid, cb in feature_checkbox_refs.items() if cb.value]
+                    state["new_feature_ids"] = [
+                        fid for fid, cb in new_feat_checkbox_refs.items()
+                        if cb.value and feature_checkbox_refs[fid].value
+                    ]
+
+                with ui.stepper_navigation():
+                    def _back_s2():
+                        _collect_features()
+                        stepper.previous()
+                    def _next_s2():
+                        _collect_features()
+                        if not state["feature_ids"]:
+                            ui.notify("Select at least one feature.", type="warning")
+                            return
+                        stepper.next()
+                    ui.button("Back", on_click=_back_s2).props("flat")
+                    ui.button("Next", on_click=_next_s2).props("color=primary icon-right=arrow_forward")
+
+            # Step 3 — Reference Projects
+            with ui.step("Reference Projects"):
+                ui.label("Pick historical projects for calibration (optional).").classes("text-body2 text-grey q-mb-md")
+                ref_checkbox_refs: dict[int, ui.checkbox] = {}
+                if not all_hist:
+                    ui.label("No historical projects available.").classes("text-grey")
+                else:
+                    with ui.grid(columns=1).classes("w-full"):
+                        for proj in all_hist:
+                            pid = proj["id"]
+                            pname = proj.get("project_name", f"Project {pid}")
+                            est_h = proj.get("estimated_hours") or 0
+                            act_h = proj.get("actual_hours") or 0
+                            accuracy = (act_h / est_h) if est_h else None
+                            acc_txt = f"  accuracy ratio: {accuracy:.2f}" if accuracy is not None else "  (no accuracy data)"
+                            label = f"{pname}  [{proj.get('project_type', '')}]{acc_txt}"
+                            cb = ui.checkbox(label, value=(pid in state["reference_project_ids"]))
+                            ref_checkbox_refs[pid] = cb
+
+                def _collect_refs():
+                    state["reference_project_ids"] = [pid for pid, cb in ref_checkbox_refs.items() if cb.value]
+
+                with ui.stepper_navigation():
+                    def _back_s3():
+                        _collect_refs()
+                        stepper.previous()
+                    def _next_s3():
+                        _collect_refs()
+                        stepper.next()
+                    ui.button("Back", on_click=_back_s3).props("flat")
+                    ui.button("Next", on_click=_next_s3).props("color=primary icon-right=arrow_forward")
+
+            # Step 4 — DUT x Profile Matrix
+            with ui.step("DUT x Profile Matrix"):
+                ui.label("Select DUTs and Profiles, then tick the combinations.").classes("text-body2 text-grey q-mb-md")
+                dut_cb_refs: dict[int, ui.checkbox] = {}
+                prof_cb_refs: dict[int, ui.checkbox] = {}
+                matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
+                matrix_container = ui.column().classes("w-full q-mt-md")
+
+                def _rebuild_matrix():
+                    matrix_container.clear()
+                    sel_duts = [d for d in all_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value]
+                    sel_profs = [p for p in all_profiles if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value]
+                    matrix_cb_refs.clear()
+                    if not sel_duts or not sel_profs:
+                        with matrix_container:
+                            ui.label("Select at least one DUT and one Profile.").classes("text-grey text-caption")
+                        return
+                    with matrix_container:
+                        ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
+                        with ui.row().classes("items-center q-gutter-sm"):
+                            ui.label("DUT \\ Profile").classes("text-caption text-grey").style("min-width:140px")
+                            for prof in sel_profs:
+                                ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center").style("min-width:100px")
+                        for dut in sel_duts:
+                            with ui.row().classes("items-center q-gutter-sm"):
+                                ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption").style("min-width:140px")
+                                for prof in sel_profs:
+                                    key = (dut["id"], prof["id"])
+                                    pre_checked = key in [tuple(pair) for pair in state["dut_profile_matrix"]]
+                                    cb = ui.checkbox("", value=pre_checked).props("dense")
+                                    matrix_cb_refs[key] = cb
+
+                if not all_duts:
+                    ui.label("No DUT types found.").classes("text-grey")
+                else:
+                    ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
+                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                        for dut in all_duts:
+                            did = dut["id"]
+                            cb = ui.checkbox(dut.get("name", f"DUT {did}"), value=(did in state["dut_ids"]))
+                            dut_cb_refs[did] = cb
+                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                if not all_profiles:
+                    ui.label("No profiles found.").classes("text-grey")
+                else:
+                    ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
+                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                        for prof in all_profiles:
+                            pid = prof["id"]
+                            cb = ui.checkbox(prof.get("name", f"Profile {pid}"), value=(pid in state["profile_ids"]))
+                            prof_cb_refs[pid] = cb
+                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                _rebuild_matrix()
+
+                def _collect_matrix():
+                    state["dut_ids"] = [did for did, cb in dut_cb_refs.items() if cb.value]
+                    state["profile_ids"] = [pid for pid, cb in prof_cb_refs.items() if cb.value]
+                    state["dut_profile_matrix"] = [list(pair) for pair, cb in matrix_cb_refs.items() if cb.value]
+
+                with ui.stepper_navigation():
+                    def _back_s4():
+                        _collect_matrix()
+                        stepper.previous()
+                    def _next_s4():
+                        _collect_matrix()
+                        if not state["dut_ids"]:
+                            ui.notify("Select at least one DUT.", type="warning")
+                            return
+                        if not state["profile_ids"]:
+                            ui.notify("Select at least one Profile.", type="warning")
+                            return
+                        if not state["dut_profile_matrix"]:
+                            ui.notify("Tick at least one DUT×Profile combination.", type="warning")
+                            return
+                        stepper.next()
+                    ui.button("Back", on_click=_back_s4).props("flat")
+                    ui.button("Next", on_click=_next_s4).props("color=primary icon-right=arrow_forward")
+
+            # Step 5 — PR Fixes
+            with ui.step("PR Fixes"):
+                ui.label("Enter the expected PR fixes.").classes("text-body2 text-grey q-mb-md")
+                pr_simple_input = ui.number("Simple PRs (2 h each)", value=state["pr_simple"], min=0, step=1, precision=0).classes("w-full")
+                pr_medium_input = ui.number("Medium PRs (4 h each)", value=state["pr_medium"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
+                pr_complex_input = ui.number("Complex PRs (8 h each)", value=state["pr_complex"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
+
+                def _collect_prs():
+                    state["pr_simple"] = int(pr_simple_input.value or 0)
+                    state["pr_medium"] = int(pr_medium_input.value or 0)
+                    state["pr_complex"] = int(pr_complex_input.value or 0)
+
+                with ui.stepper_navigation():
+                    def _back_s5():
+                        _collect_prs()
+                        stepper.previous()
+                    def _next_s5():
+                        _collect_prs()
+                        stepper.next()
+                    ui.button("Back", on_click=_back_s5).props("flat")
+                    ui.button("Next", on_click=_next_s5).props("color=primary icon-right=arrow_forward")
+
+            # Step 6 — Delivery & Team
+            with ui.step("Delivery & Team"):
+                ui.label("Specify deadline and team capacity.").classes("text-body2 text-grey q-mb-md")
+                delivery_input = ui.date(value=state["delivery_date"] or "").classes("w-full").props("label='Target Delivery Date (optional)'")
+                working_days_input = ui.number("Working Days Available", value=state["working_days"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
+                team_size_input = ui.number("Team Size (testers)", value=state["team_size"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
+                leader_toggle = ui.switch("Include Test Leader effort", value=state["has_leader"]).classes("q-mt-sm")
+
+                def _collect_delivery():
+                    raw = delivery_input.value
+                    state["delivery_date"] = raw if raw else None
+                    state["working_days"] = int(working_days_input.value or 20)
+                    state["team_size"] = int(team_size_input.value or 1)
+                    state["has_leader"] = bool(leader_toggle.value)
+
+                with ui.stepper_navigation():
+                    def _back_s6():
+                        _collect_delivery()
+                        stepper.previous()
+                    def _next_s6():
+                        _collect_delivery()
+                        if state["team_size"] < 1:
+                            ui.notify("Team size must be at least 1.", type="warning")
+                            return
+                        stepper.next()
+                    ui.button("Back", on_click=_back_s6).props("flat")
+                    ui.button("Next", on_click=_next_s6).props("color=primary icon-right=arrow_forward")
+
+            # Step 7 — Review & Save Revision
+            with ui.step("Review & Save"):
+                ui.label("Review, recalculate, and save the revised estimation.").classes("text-body2 text-grey q-mb-md")
+
+                summary_container = ui.column().classes("w-full q-mb-md")
+                result_container = ui.column().classes("w-full")
+
+                def _render_summary():
+                    summary_container.clear()
+                    with summary_container:
+                        ui.label("Summary").classes("text-subtitle1 q-mb-xs")
+                        with ui.grid(columns=2).classes("w-full q-gutter-sm"):
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("Project").classes("text-caption text-grey")
+                                ui.label(state["project_name"]).classes("text-body2")
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("Type").classes("text-caption text-grey")
+                                ui.label(state["project_type"]).classes("text-body2")
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("Features").classes("text-caption text-grey")
+                                ui.label(f"{len(state['feature_ids'])} selected, {len(state['new_feature_ids'])} new").classes("text-body2")
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("DUTs x Profiles").classes("text-caption text-grey")
+                                ui.label(f"{len(state['dut_ids'])} DUTs, {len(state['profile_ids'])} profiles, {len(state['dut_profile_matrix'])} combinations").classes("text-body2")
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("PR Fixes").classes("text-caption text-grey")
+                                ui.label(f"{state['pr_simple']}s / {state['pr_medium']}m / {state['pr_complex']}c").classes("text-body2")
+                            with ui.card().classes("q-pa-sm"):
+                                ui.label("Team").classes("text-caption text-grey")
+                                ui.label(f"{state['team_size']} tester(s)" + (" + leader" if state["has_leader"] else "")).classes("text-body2")
+
+                def _render_result(res: dict):
+                    result_container.clear()
+                    with result_container:
+                        ui.separator()
+                        ui.label("Calculation Results").classes("text-subtitle1 q-mt-md q-mb-sm")
+                        fs = res.get("feasibility_status", "")
+                        with ui.row().classes("items-center q-gutter-sm q-mb-sm"):
+                            ui.label("Feasibility:").classes("text-body2")
+                            _feasibility_badge(fs)
+                            util = res.get("utilization_pct", 0)
+                            ui.label(f"({util:.1f}% utilization)").classes("text-caption text-grey")
+                        with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                            _hours_card("Tester Hours", res.get("total_tester_hours", 0), "person")
+                            _hours_card("Leader Hours", res.get("total_leader_hours", 0), "manage_accounts")
+                            _hours_card("PR Fix Hours", res.get("pr_fix_hours", 0), "bug_report")
+                            _hours_card("Study Hours", res.get("study_hours", 0), "school")
+                            _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
+                            _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
+                            _hours_card("Grand Total Days", res.get("grand_total_days", 0), "calendar_today")
+                        flags = res.get("risk_flags", [])
+                        if flags:
+                            ui.label("Risk Flags").classes("text-subtitle2 q-mt-sm q-mb-xs")
+                            with ui.row().classes("flex-wrap q-gutter-xs"):
+                                for flag in flags:
+                                    ui.chip(flag.replace("_", " ").title(), icon="warning").props("color=negative outline dense")
+
+                async def run_calculate():
+                    _render_summary()
+                    payload: dict[str, Any] = {
+                        "project_type": state["project_type"],
+                        "feature_ids": state["feature_ids"],
+                        "new_feature_ids": state["new_feature_ids"],
+                        "reference_project_ids": state["reference_project_ids"],
+                        "dut_ids": state["dut_ids"],
+                        "profile_ids": state["profile_ids"],
+                        "dut_profile_matrix": state["dut_profile_matrix"],
+                        "pr_fixes": {
+                            "simple": state["pr_simple"],
+                            "medium": state["pr_medium"],
+                            "complex": state["pr_complex"],
+                        },
+                        "team_size": state["team_size"],
+                        "has_leader": state["has_leader"],
+                        "working_days": state["working_days"],
+                        "delivery_date": state["delivery_date"],
+                    }
+                    try:
+                        result = await api_post("/estimations/calculate", json=payload)
+                        state["calc_result"] = result
+                        _render_result(result)
+                        ui.notify("Calculation complete.", type="positive")
+                    except Exception as exc:
+                        ui.notify(f"Calculation failed: {exc}", type="negative")
+
+                async def save_revision():
+                    if state["calc_result"] is None:
+                        ui.notify("Run Calculate first.", type="warning")
+                        return
+                    payload: dict[str, Any] = {
+                        "project_name": state["project_name"],
+                        "project_type": state["project_type"],
+                        "feature_ids": state["feature_ids"],
+                        "new_feature_ids": state["new_feature_ids"],
+                        "reference_project_ids": state["reference_project_ids"],
+                        "dut_ids": state["dut_ids"],
+                        "profile_ids": state["profile_ids"],
+                        "dut_profile_matrix": state["dut_profile_matrix"],
+                        "pr_fixes": {
+                            "simple": state["pr_simple"],
+                            "medium": state["pr_medium"],
+                            "complex": state["pr_complex"],
+                        },
+                        "team_size": state["team_size"],
+                        "has_leader": state["has_leader"],
+                        "working_days": state["working_days"],
+                        "expected_delivery": state["delivery_date"],
+                    }
+                    try:
+                        saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
+                        new_ver = saved.get("version", "?")
+                        ui.notify(f"Revision saved (v{new_ver}).", type="positive")
+                        ui.navigate.to(f"/estimation/{estimation_id}")
+                    except Exception as exc:
+                        ui.notify(f"Save failed: {exc}", type="negative")
+
+                _render_summary()
+
+                with ui.stepper_navigation():
+                    ui.button("Back", on_click=lambda: stepper.previous()).props("flat")
+                    ui.button("Calculate", icon="calculate", on_click=run_calculate).props("color=secondary")
+                    ui.button("Save Revision", icon="save", on_click=save_revision).props("color=primary")

@@ -2,7 +2,7 @@
 
 from nicegui import ui
 
-from frontend_nicegui.app import api_get, is_authenticated, sidebar
+from frontend_nicegui.app import api_get, is_authenticated, show_error_page, sidebar
 
 
 @ui.page("/")
@@ -72,4 +72,4 @@ async def dashboard_page():
                 ui.label("No requests yet.").classes("text-grey")
 
         except Exception as e:
-            ui.label(f"Error loading dashboard: {e}").classes("text-negative")
+            show_error_page(e)

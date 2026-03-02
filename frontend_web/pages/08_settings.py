@@ -65,7 +65,15 @@ DEFAULT_CONFIG = {
         "type": "string",
         "default": "EST",
     },
+    "dut_categories": {
+        "description": "Comma-separated list of DUT type categories for dropdown menus",
+        "type": "string",
+        "default": "SIM,eSIM,UICC,IoT Device,Mobile Device,Other",
+    },
 }
+
+# Application roles used for LDAP/OIDC mapping
+_APP_ROLES = ["ADMIN", "APPROVER", "ESTIMATOR", "VIEWER"]
 
 
 @st.cache_data(ttl=60)
@@ -243,7 +251,7 @@ with st.form("settings_form"):
         updates["buffer_percentage"] = str(buffer)
 
     st.divider()
-    st.write("**Naming Prefixes**")
+    st.write("**Naming Prefixes & Data Management**")
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -253,6 +261,14 @@ with st.form("settings_form"):
             help=config_items["estimation_number_prefix"]["description"],
         )
         updates["estimation_number_prefix"] = est_prefix
+
+    with col_b:
+        dut_cats = st.text_input(
+            "DUT Categories",
+            value=config_items["dut_categories"]["value"],
+            help=config_items["dut_categories"]["description"],
+        )
+        updates["dut_categories"] = dut_cats
 
     st.divider()
 
@@ -363,6 +379,92 @@ with theme_col2:
             '<b>Light Theme</b><br>Background: #FFFFFF, Accent: #2F5496</div>',
             unsafe_allow_html=True,
         )
+
+# LDAP / OIDC Role Mapping section
+st.divider()
+st.subheader("Role Mapping")
+st.markdown(
+    "Map application roles to external identity provider groups/claims. "
+    "Each row represents an application role; enter the corresponding "
+    "AD group DN (for LDAP) or claim value (for OIDC)."
+)
+
+
+def _load_mapping_json(config_key: str) -> dict[str, str]:
+    """Load a role mapping JSON from the configuration table."""
+    import json as _json
+    with Session(engine) as session:
+        cfg = session.query(Configuration).filter(
+            Configuration.key == config_key
+        ).first()
+        if cfg and cfg.value:
+            try:
+                parsed = _json.loads(cfg.value)
+                if isinstance(parsed, dict):
+                    return {r: parsed.get(r, "") for r in _APP_ROLES}
+            except (_json.JSONDecodeError, TypeError):
+                pass
+    return {r: "" for r in _APP_ROLES}
+
+
+def _save_mapping_json(config_key: str, mapping: dict[str, str]) -> bool:
+    """Save role mapping as JSON to the configuration table."""
+    import json as _json
+    # Only keep non-empty values
+    clean = {k: v for k, v in mapping.items() if v.strip()}
+    json_str = _json.dumps(clean)
+    return update_config({config_key: json_str})
+
+
+tab_ldap, tab_oidc = st.tabs(["LDAP Group Mapping", "OIDC Role Mapping"])
+
+with tab_ldap:
+    st.markdown(
+        "Map application roles to **Active Directory / LDAP group DNs**. "
+        "Example: `CN=EstimationAdmins,OU=Groups,DC=example,DC=com`"
+    )
+    ldap_mapping = _load_mapping_json("ldap_group_mapping_json")
+
+    with st.form("ldap_mapping_form"):
+        ldap_updates: dict[str, str] = {}
+        for role in _APP_ROLES:
+            ldap_updates[role] = st.text_input(
+                f"{role}",
+                value=ldap_mapping.get(role, ""),
+                placeholder=f"AD group DN for {role} role",
+                key=f"ldap_{role}",
+            )
+
+        if st.form_submit_button("Save LDAP Mapping", type="primary"):
+            if _save_mapping_json("ldap_group_mapping_json", ldap_updates):
+                st.success("LDAP group mapping saved!")
+                st.cache_data.clear()
+                st.rerun()
+
+with tab_oidc:
+    st.markdown(
+        "Map application roles to **OIDC claim values**. "
+        "Enter the value from the configured role claim "
+        "(e.g. `estimation-admin`)."
+    )
+    oidc_mapping = _load_mapping_json("oidc_role_mapping_json")
+
+    with st.form("oidc_mapping_form"):
+        oidc_updates: dict[str, str] = {}
+        for role in _APP_ROLES:
+            oidc_updates[role] = st.text_input(
+                f"{role}",
+                value=oidc_mapping.get(role, ""),
+                placeholder=f"OIDC claim value for {role} role",
+                key=f"oidc_{role}",
+            )
+
+        if st.form_submit_button("Save OIDC Mapping", type="primary"):
+            if _save_mapping_json("oidc_role_mapping_json", oidc_updates):
+                st.success("OIDC role mapping saved!")
+                st.cache_data.clear()
+                st.rerun()
+
 
 # Import/Export section
 st.divider()

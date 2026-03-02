@@ -360,6 +360,7 @@ class OutlineAdapter(BaseAdapter):
             f"# {data.get('estimation_number', 'N/A')} — {data.get('project_name', 'Unnamed')}",
             "",
             f"**Status:** {data.get('status', 'DRAFT')}  ",
+            f"**Version:** {data.get('version', 1)}  ",
             f"**Feasibility:** [{status_icon}] {feasibility}  ",
             f"**Project Type:** {data.get('project_type', 'N/A')}  ",
             f"**Assigned To:** {data.get('assigned_to_name') or 'Unassigned'}  ",

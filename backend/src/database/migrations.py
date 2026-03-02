@@ -21,7 +21,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 2  # v2.0 adds users, sessions, audit_log, assignment columns
+SCHEMA_VERSION = 3  # v3 adds version, wizard_inputs_json, outline auto-export config
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -125,6 +125,44 @@ def _migrate_v1_to_v2(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v2_to_v3(engine, session: Session) -> None:
+    """Migrate from v2 to v3 (version tracking, wizard inputs, outline auto-export)."""
+    if _table_exists(engine, "estimations"):
+        for col_name, col_def in [
+            ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ("wizard_inputs_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]:
+            if not _column_exists(engine, "estimations", col_name):
+                session.execute(text(
+                    f"ALTER TABLE estimations ADD COLUMN {col_name} {col_def}"
+                ))
+
+    # Add outline auto-export config key
+    existing = session.query(Configuration).filter(
+        Configuration.key == "outline_auto_export_states"
+    ).first()
+    if not existing:
+        session.add(Configuration(
+            key="outline_auto_export_states",
+            value="",
+            description="Comma-separated statuses that trigger auto-export to Outline wiki (e.g. FINAL,APPROVED)",
+        ))
+
+    # Add DUT categories config key
+    existing_dut_cat = session.query(Configuration).filter(
+        Configuration.key == "dut_categories"
+    ).first()
+    if not existing_dut_cat:
+        session.add(Configuration(
+            key="dut_categories",
+            value="SIM,eSIM,UICC,IoT Device,Mobile Device,Other",
+            description="Comma-separated list of DUT type categories for dropdown menus",
+        ))
+
+    _set_schema_version(session, 3)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -142,6 +180,11 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
         current_version = _get_schema_version(session)
         if current_version < 2:
             _migrate_v1_to_v2(engine, session)
+        if current_version < 3:
+            _migrate_v2_to_v3(engine, session)
+
+        # Ensure config keys added after initial schema version exist
+        _ensure_config_keys(session)
 
         # Ensure default admin user exists
         user_count = session.query(User).count()
@@ -149,6 +192,21 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _create_default_admin(session)
 
         session.commit()
+
+
+def _ensure_config_keys(session: Session) -> None:
+    """Ensure configuration keys exist that may have been added after initial migrations."""
+    _keys = {
+        "dut_categories": (
+            "SIM,eSIM,UICC,IoT Device,Mobile Device,Other",
+            "Comma-separated list of DUT type categories for dropdown menus",
+        ),
+    }
+    for key, (value, desc) in _keys.items():
+        existing = session.query(Configuration).filter(Configuration.key == key).first()
+        if not existing:
+            session.add(Configuration(key=key, value=value, description=desc))
+    session.flush()
 
 
 def _create_default_admin(session: Session) -> None:

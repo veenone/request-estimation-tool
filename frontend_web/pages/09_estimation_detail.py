@@ -124,6 +124,7 @@ def load_estimation_detail(estimation_id: int):
             "grand_total_days": estimation.grand_total_days,
             "feasibility_status": estimation.feasibility_status,
             "status": estimation.status,
+            "version": getattr(estimation, "version", 1) or 1,
             "created_at": estimation.created_at,
             "created_by": estimation.created_by or "Unknown",
             "approved_by": estimation.approved_by,
@@ -256,12 +257,14 @@ elif st.session_state.last_selected_id != selected_estimation_id:
 
 st.subheader("Overview")
 
-col1, col2, col3, col4 = st.columns(4)
+version = est.get("version", 1) or 1
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
+    est_num = est["estimation_number"] or f"EST-{est['id']}"
     st.metric(
         "Estimation #",
-        est["estimation_number"] or f"EST-{est['id']}"
+        f"{est_num} (v{version})" if version > 1 else est_num,
     )
 
 with col2:
@@ -280,6 +283,12 @@ with col4:
     st.metric(
         "Status",
         est["status"],
+    )
+
+with col5:
+    st.metric(
+        "Version",
+        version,
     )
 
 # Project parameters row
@@ -447,7 +456,7 @@ st.markdown(
 )
 
 # Status transition buttons
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     if est["status"] == "DRAFT":
@@ -463,10 +472,25 @@ with col2:
             st.session_state.show_approval_dialog = True
 
 with col3:
+    if est["status"] in ["DRAFT", "FINAL", "APPROVED"]:
+        if st.button("Request Revision", type="secondary", use_container_width=True):
+            update_estimation_status(est["id"], "REVISED")
+            st.cache_data.clear()
+            st.success("Estimation marked as REVISED — ready for editing")
+            st.rerun()
+
+with col4:
     if est["status"] == "APPROVED":
         st.write("Approved by: " + (est["approved_by"] or "N/A"))
         if est["approved_at"]:
             st.write(f"Approved at: {est['approved_at'].strftime('%Y-%m-%d %H:%M')}")
+
+# Edit button for REVISED estimations
+if est["status"] == "REVISED":
+    st.info("This estimation is in REVISED status. You can edit and recalculate it.")
+    if st.button("Edit Estimation", type="primary", use_container_width=True, icon=":material/edit:"):
+        st.session_state["edit_estimation_id"] = est["id"]
+        st.switch_page("pages/02_new_estimation.py")
 
 # Approval dialog
 if st.session_state.get("show_approval_dialog"):

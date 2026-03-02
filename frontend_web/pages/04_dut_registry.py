@@ -16,15 +16,31 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 from src.database.migrations import get_engine
-from src.database.models import DutType
+from src.database.models import Configuration, DutType
 
 st.title("📱 DUT Registry")
 st.markdown("Manage Device Under Test (DUT) types and configurations")
 
 engine = get_engine()
 
-# DUT categories
-DUT_CATEGORIES = ["SIM", "eSIM", "UICC", "IoT Device", "Mobile Device", "Other"]
+
+def _get_dut_categories() -> list[str]:
+    """Fetch DUT categories from the configuration table."""
+    default = ["SIM", "eSIM", "UICC", "IoT Device", "Mobile Device", "Other"]
+    try:
+        with Session(engine) as session:
+            cfg = session.query(Configuration).filter(
+                Configuration.key == "dut_categories"
+            ).first()
+            if cfg and cfg.value:
+                cats = [c.strip() for c in cfg.value.split(",") if c.strip()]
+                return cats if cats else default
+            return default
+    except Exception:
+        return default
+
+
+DUT_CATEGORIES = _get_dut_categories()
 
 
 @st.cache_data(ttl=60)

@@ -27,6 +27,17 @@ public partial class DutRegistryPanel : UserControl
     private readonly BackendApiService _ipc;
 
     private List<DutType> _dutTypes = new();
+    private string[] _categories = Array.Empty<string>();
+
+    // -------------------------------------------------------------------------
+    // IPC response wrapper for categories
+    // -------------------------------------------------------------------------
+
+    private class DutCategoriesResponse
+    {
+        [JsonPropertyName("categories")]
+        public List<string> Categories { get; set; } = new();
+    }
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -59,6 +70,17 @@ public partial class DutRegistryPanel : UserControl
     {
         try
         {
+            // Fetch configurable categories
+            try
+            {
+                var catResponse = await _ipc.SendCommandAsync<DutCategoriesResponse>("get_dut_categories");
+                _categories = catResponse.Categories.ToArray();
+            }
+            catch
+            {
+                _categories = new[] { "SIM", "eSIM", "UICC", "IoT Device", "Mobile Device", "Other" };
+            }
+
             var response = await _ipc.SendCommandAsync<DutTypesResponse>("get_dut_types");
             _dutTypes = response.DutTypes;
 
@@ -88,7 +110,7 @@ public partial class DutRegistryPanel : UserControl
 
     private async void BtnAdd_Click(object? sender, EventArgs e)
     {
-        using var dialog = new DutDialog("Add DUT Type");
+        using var dialog = new DutDialog("Add DUT Type", categories: _categories);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         try
@@ -129,7 +151,7 @@ public partial class DutRegistryPanel : UserControl
     {
         if (dut is null) return;
 
-        using var dialog = new DutDialog("Edit DUT Type", dut);
+        using var dialog = new DutDialog("Edit DUT Type", dut, _categories);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         _ = SaveEditAsync(dut.Id, dialog);
@@ -213,14 +235,14 @@ sealed class DutDialog : Form
 {
     // Outputs
     public string DutName              => _txtName.Text.Trim();
-    public string Category             => _txtCategory.Text.Trim();
+    public string Category             => _cboCategory.Text.Trim();
     public double ComplexityMultiplier => (double)_nudMultiplier.Value;
 
     private readonly TextBox       _txtName;
-    private readonly TextBox       _txtCategory;
+    private readonly ComboBox      _cboCategory;
     private readonly NumericUpDown _nudMultiplier;
 
-    public DutDialog(string title, DutType? existing = null)
+    public DutDialog(string title, DutType? existing = null, string[]? categories = null)
     {
         Text            = title;
         Size            = new Size(400, 260);
@@ -250,9 +272,17 @@ sealed class DutDialog : Form
 
         // Category
         layout.Controls.Add(MakeLabel("Category"), 0, 1);
-        _txtCategory = new TextBox { Dock = DockStyle.Fill };
-        ThemeHelper.StyleTextBox(_txtCategory);
-        layout.Controls.Add(_txtCategory, 1, 1);
+        _cboCategory = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+        };
+        if (categories is { Length: > 0 })
+            _cboCategory.Items.AddRange(categories);
+        else
+            _cboCategory.Items.AddRange(new object[] { "SIM", "eSIM", "UICC", "IoT Device", "Mobile Device", "Other" });
+        ThemeHelper.ApplyTheme(_cboCategory);
+        layout.Controls.Add(_cboCategory, 1, 1);
 
         // Complexity multiplier
         layout.Controls.Add(MakeLabel("Complexity Multiplier"), 0, 2);
@@ -298,7 +328,7 @@ sealed class DutDialog : Form
         if (existing is not null)
         {
             _txtName.Text        = existing.Name;
-            _txtCategory.Text    = existing.Category ?? "";
+            _cboCategory.Text    = existing.Category ?? "";
             _nudMultiplier.Value = (decimal)Math.Clamp(existing.ComplexityMultiplier, 0.1, 5.0);
         }
 

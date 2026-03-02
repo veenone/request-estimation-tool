@@ -25,6 +25,7 @@ public class RecentEstimation
     [JsonPropertyName("grand_total_hours")] public double GrandTotalHours { get; set; }
     [JsonPropertyName("feasibility_status")] public string FeasibilityStatus { get; set; } = "";
     [JsonPropertyName("status")] public string Status { get; set; } = "";
+    [JsonPropertyName("version")] public int Version { get; set; } = 1;
     [JsonPropertyName("created_at")] public string? CreatedAt { get; set; }
     [JsonPropertyName("assigned_to_name")] public string? AssignedToName { get; set; }
 }

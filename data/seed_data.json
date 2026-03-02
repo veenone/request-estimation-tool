@@ -183,7 +183,8 @@
     "working_hours_per_day": {"value": "7.0", "description": "Productive hours per working day"},
     "buffer_percentage": {"value": "10", "description": "Additional percentage buffer for unknowns"},
     "estimation_number_prefix": {"value": "EST", "description": "Prefix for auto-generated estimation numbers"},
-    "request_number_prefix": {"value": "REQ", "description": "Prefix for auto-generated request numbers"}
+    "request_number_prefix": {"value": "REQ", "description": "Prefix for auto-generated request numbers"},
+    "dut_categories": {"value": "SIM,eSIM,UICC,IoT Device,Mobile Device,Other", "description": "Comma-separated list of DUT type categories for dropdown menus"}
   },
   "pr_complexity_hours": {
     "simple": 2,

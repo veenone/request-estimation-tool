@@ -102,8 +102,10 @@ public sealed partial class DashboardPanel : UserControl
             _dgvEstimations.Rows.Clear();
             foreach (var e in _estimationRows)
             {
+                var estNum = e.EstimationNumber ?? e.Id.ToString();
+                var displayNum = e.Version > 1 ? $"{estNum} (v{e.Version})" : estNum;
                 _dgvEstimations.Rows.Add(
-                    e.EstimationNumber ?? e.Id.ToString(),
+                    displayNum,
                     e.ProjectName,
                     e.GrandTotalHours.ToString("F1"),
                     e.FeasibilityStatus,

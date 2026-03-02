@@ -18,7 +18,7 @@ from frontend_nicegui.app import (
     sidebar,
 )
 
-CATEGORIES = ["SIM", "eSIM", "Device", "Module", "Other"]
+_DEFAULT_CATEGORIES = ["SIM", "eSIM", "UICC", "IoT Device", "Mobile Device", "Other"]
 
 _COLUMNS = [
     {"name": "id",                    "label": "ID",          "field": "id",                    "align": "left", "sortable": True},
@@ -69,6 +69,14 @@ async def duts_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
+        # Fetch configurable categories                                          #
+        # ------------------------------------------------------------------ #
+        try:
+            categories: list[str] = await api_get("/dut-categories")
+        except Exception:
+            categories = _DEFAULT_CATEGORIES
+
+        # ------------------------------------------------------------------ #
         # Refresh helper                                                        #
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
@@ -88,9 +96,9 @@ async def duts_page() -> None:
 
                 name_input = ui.input("Name *").classes("w-full")
                 category_select = ui.select(
-                    CATEGORIES,
+                    categories,
                     label="Category",
-                    value=CATEGORIES[0],
+                    value=categories[0] if categories else "Other",
                 ).classes("w-full")
                 multiplier_input = ui.number(
                     "Complexity Multiplier",
@@ -135,9 +143,9 @@ async def duts_page() -> None:
 
                 name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
                 category_select = ui.select(
-                    CATEGORIES,
+                    categories,
                     label="Category",
-                    value=row.get("category", CATEGORIES[0]),
+                    value=row.get("category", categories[0] if categories else "Other"),
                 ).classes("w-full")
                 multiplier_input = ui.number(
                     "Complexity Multiplier",

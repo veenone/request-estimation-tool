@@ -41,9 +41,11 @@ def get_estimations_data():
                 req = session.get(Request, e.request_id)
                 if req:
                     req_num = req.request_number
+            version = getattr(e, "version", 1) or 1
+            est_num = e.estimation_number or f"EST-{e.id}"
             results.append({
                 "ID": e.id,
-                "Estimation #": e.estimation_number or f"EST-{e.id}",
+                "Estimation #": f"{est_num} (v{version})" if version > 1 else est_num,
                 "Project Name": e.project_name,
                 "Project Type": e.project_type,
                 "Request #": req_num,
@@ -51,6 +53,7 @@ def get_estimations_data():
                 "Total Days": round(e.grand_total_days, 1),
                 "Feasibility": e.feasibility_status,
                 "Status": e.status,
+                "Version": version,
                 "Created": e.created_at.strftime("%Y-%m-%d") if e.created_at else "",
                 "Created By": e.created_by or "N/A",
             })

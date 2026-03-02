@@ -3,8 +3,9 @@
 Run with: streamlit run frontend_web/app.py
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
+import os
 import sys
 from pathlib import Path
 
@@ -32,7 +33,7 @@ st.set_page_config(
 # Constants
 # ---------------------------------------------------------------------------
 
-API_BASE = "http://localhost:8501/api"
+API_BASE = os.environ.get("API_URL", "http://localhost:8501/api")
 
 ROLE_LABELS = {
     "ADMIN": "Administrator",

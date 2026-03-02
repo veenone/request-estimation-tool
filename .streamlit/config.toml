@@ -1,0 +1,11 @@
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+
+# HTTPS / TLS — uncomment and set paths to enable SSL.
+# sslCertFile = "certs/cert.pem"
+# sslKeyFile  = "certs/key.pem"
+
+[browser]
+gatherUsageStats = false

@@ -246,6 +246,9 @@ public partial class MainForm : Form
             {
                 _statusLabel.Text = "Backend disconnected — some features unavailable";
                 _statusLabel.ForeColor = ThemeHelper.FeasibilityAmber;
+                // Continue without login — app stays open with limited functionality
+                NavigateTo("Dashboard");
+                return;
             }
         }
 
