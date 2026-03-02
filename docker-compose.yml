@@ -1,21 +1,17 @@
 # Test Effort Estimation Tool — Docker Compose
 #
 # Usage:
-#   docker-compose up -d                    # SQLite mode (default)
-#   docker-compose --profile mysql up -d    # With MySQL backend
+#   docker-compose up -d                         # SQLite mode (default)
+#   docker-compose --profile mysql up -d         # With MySQL backend
 #
-# HTTPS / TLS:
-#   1. Place cert.pem and key.pem in a ./certs/ directory
-#   2. Set environment variables:
-#        SSL_CERTFILE=/app/certs/cert.pem
-#        SSL_KEYFILE=/app/certs/key.pem
-#   3. Rebuild / restart
+# HTTPS access (via nginx reverse proxy):
+#   https://<hostname>:8444  → Streamlit UI
+#   https://<hostname>:8445  → NiceGUI UI (recommended)
+#   Both ports also proxy /api/* to the FastAPI backend.
 #
 # Environment variables (override via .env or shell exports):
 #   DB_TYPE                  sqlite | mysql  (default: sqlite)
 #   DB_URL                   SQLAlchemy URL  (default: sqlite:////app/data/estimation.db)
-#   SSL_CERTFILE             Path to PEM certificate (inside container)
-#   SSL_KEYFILE              Path to PEM private key (inside container)
 #   MYSQL_ROOT_PASSWORD      (default: estimation_secret)
 #   MYSQL_DATABASE           (default: estimation)
 #   MYSQL_USER               (default: estimation)
@@ -24,22 +20,34 @@
 services:
   app:
     build: .
-    ports:
-      - "8000:8000"   # FastAPI REST API
-      - "8501:8501"   # Streamlit web UI
     environment:
       - DB_TYPE=${DB_TYPE:-sqlite}
       - DB_URL=${DB_URL:-sqlite:////app/data/estimation.db}
-      - SSL_CERTFILE=${SSL_CERTFILE:-}
-      - SSL_KEYFILE=${SSL_KEYFILE:-}
+      - API_URL=http://localhost:8000/api
+      - no_proxy=localhost,127.0.0.1,.corp.idemia.com
+      - NO_PROXY=localhost,127.0.0.1,.corp.idemia.com
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
     volumes:
       - app_data:/app/data
-      - ${SSL_CERT_DIR:-./certs}:/app/certs:ro
+      - /data/certs/i2j6xxx2v000x-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+    entrypoint: ["/bin/bash", "-c", "update-ca-certificates 2>/dev/null; exec /app/entrypoint.sh"]
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
         required: false
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8444:8444"   # Streamlit UI
+      - "8445:8445"   # NiceGUI UI (recommended)
+    volumes:
+      - /data/certs:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app
+    restart: unless-stopped
 
   mysql:
     image: mysql:8.0

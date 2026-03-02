@@ -51,6 +51,7 @@ class OutlineAdapter(BaseAdapter):
         super().__init__(config)
         self.base_url = self.base_url.rstrip("/")
         raw_collection = self.additional_config.get("collection_id", "")
+        self.parent_document_id: str = ""
         self.collection_id: str = self._resolve_collection_id(raw_collection)
         self.timeout: int = int(self.additional_config.get("timeout", 30))
 
@@ -99,13 +100,28 @@ class OutlineAdapter(BaseAdapter):
                         None,
                     )
                     if matched:
+                        perm = matched.get("permission")
                         msg += f" Target collection: {matched.get('name')!r}."
                         details["resolved_collection"] = {
                             "id": self.collection_id,
                             "name": matched.get("name"),
+                            "permission": perm,
                         }
+                        if perm not in ("read_write",):
+                            msg += (
+                                f" WARNING: Your API key has '{perm or 'no'}'"
+                                f" permission on this collection — sync will"
+                                f" fail. Grant read_write access in Outline or"
+                                f" choose a different collection."
+                            )
+                            return ConnectionTestResult(
+                                success=False, message=msg, details=details,
+                            )
                     else:
                         msg += f" Warning: collection_id {self.collection_id!r} not found."
+                if self.parent_document_id:
+                    msg += f" Documents will be created as children of parent document {self.parent_document_id[:8]}…"
+                    details["parent_document_id"] = self.parent_document_id
                 return ConnectionTestResult(
                     success=True,
                     message=msg,
@@ -181,6 +197,8 @@ class OutlineAdapter(BaseAdapter):
                 payload: dict = {"title": title, "text": markdown, "publish": True}
                 if self.collection_id:
                     payload["collectionId"] = self.collection_id
+                if self.parent_document_id:
+                    payload["parentDocumentId"] = self.parent_document_id
                 resp = requests.post(
                     f"{self.base_url}/api/documents.create",
                     headers=self._headers,
@@ -271,10 +289,13 @@ class OutlineAdapter(BaseAdapter):
         - A UUID string (returned as-is).
         - A full Outline URL, e.g.
           ``http://outline.example.com/collection/my-col-spa7ozNOXi``.
+        - A document URL, e.g.
+          ``http://outline.example.com/doc/estimations-g0FaMvrXBz``
+          (the document's parent collection ID is resolved via the API).
         - A bare slug, e.g. ``my-col-spa7ozNOXi``.
 
-        For URL / slug forms the method calls ``collections.list`` to match
-        the slug against the ``url`` field of each collection.
+        For URL / slug forms the method calls the Outline API to resolve
+        the identifier to a collection UUID.
 
         Returns:
             The UUID string if resolved, otherwise the original value
@@ -287,6 +308,31 @@ class OutlineAdapter(BaseAdapter):
 
         # Already a UUID — nothing to do.
         if self._UUID_RE.match(raw):
+            return raw
+
+        # Handle document URLs (/doc/<slug>) — look up the document and
+        # use it as the parent document for new estimations.
+        doc_match = re.search(r"/doc/([^/?#]+)", raw)
+        if doc_match:
+            doc_slug = doc_match.group(1)
+            try:
+                resp = requests.post(
+                    f"{self.base_url}/api/documents.search",
+                    headers=self._headers,
+                    json={"query": doc_slug.rsplit("-", 1)[0].replace("-", " "), "limit": 10},
+                    timeout=int(self.additional_config.get("timeout", 30)),
+                )
+                if resp.status_code == 200:
+                    for item in resp.json().get("data", []):
+                        doc = item.get("document", {})
+                        doc_url = doc.get("url", "")
+                        if doc_url.rstrip("/").endswith(doc_slug):
+                            self.parent_document_id = doc.get("id", "")
+                            collection_id = doc.get("collectionId", "")
+                            if collection_id:
+                                return collection_id
+            except requests.RequestException:
+                pass
             return raw
 
         # Extract the slug part.  Outline collection URLs look like

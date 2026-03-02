@@ -1199,13 +1199,18 @@ async def estimation_detail_page(estimation_id: int) -> None:
         ui.label("Download Reports").classes("text-h6 q-mb-sm")
 
         def _download_js(fmt: str, filename: str) -> str:
-            """Return JavaScript that fetches a report blob and triggers download."""
-            url = f"{API_URL}/estimations/{estimation_id}/report/{fmt}"
+            """Return JavaScript that fetches a report blob and triggers download.
+
+            Uses a relative /api/ path so the request goes through the same
+            origin the browser is connected to (nginx reverse proxy), instead
+            of the internal API_URL which is unreachable from the browser.
+            """
+            url = f"/api/estimations/{estimation_id}/report/{fmt}"
             return (
                 f'fetch("{url}", {{'
                 f'  headers: {{"Authorization": "Bearer {token}"}}'
                 f'}})'
-                f'.then(r => r.blob())'
+                f'.then(r => {{ if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); }})'
                 f'.then(b => {{'
                 f'  const a = document.createElement("a");'
                 f'  a.href = URL.createObjectURL(b);'
