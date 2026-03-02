@@ -18,7 +18,8 @@ WORKDIR /app
 # Copying only pyproject.toml first lets Docker cache this layer when only
 # application code changes.
 COPY backend/pyproject.toml backend/
-RUN pip install --no-cache-dir ./backend streamlit
+RUN mkdir -p backend/src && touch backend/src/__init__.py \
+    && pip install --no-cache-dir ./backend streamlit
 
 # Copy application source after dependencies are installed to maximise cache hits.
 COPY backend/ ./backend/
