@@ -720,6 +720,40 @@ Import issues, push estimation results to custom fields, upload reports.
 
 **Config fields:** Base URL, API Key, Project ID, Tracker ID, field mappings (effort, feasibility, estimation number)
 
+#### Webhook Setup
+
+The tool exposes a webhook endpoint that Redmine can call when issues are created or updated, enabling real-time sync instead of manual polling.
+
+**1. Install the Redmine Webhooks plugin:**
+```bash
+cd /path/to/redmine/plugins
+git clone https://github.com/suer/redmine_webhook.git
+bundle install
+# Restart Redmine
+```
+
+**2. Configure the webhook in Redmine:**
+- Go to **Project → Settings → Modules** and enable **Webhooks**
+- Go to **Project → Settings → Webhooks** tab
+- Add the URL:
+  ```
+  http://<backend-host>:<backend-port>/api/webhooks/redmine?token=<webhook-secret>
+  ```
+- The webhook secret is configured in the estimation tool's **Integrations** page under Redmine → "Webhook Secret"
+
+**3. Endpoint behavior:**
+- `POST /api/webhooks/redmine?token=<secret>` — no JWT auth required, uses shared secret
+- Validates the `?token=` query parameter against the stored webhook secret (timing-safe comparison)
+- Triggers a full re-sync of matching Redmine issues into the Request Inbox
+- Returns `{"status": "ok", "items_created": N, "items_updated": M}`
+
+**4. Supported events:** The plugin fires on issue create, issue update, and bulk edit.
+
+**5. Network note:** The webhook URL must use the **backend** host/port (where FastAPI runs), not the frontend. If Redmine runs in WSL and the backend runs on Windows, use the Windows host IP (typically the default gateway from WSL, e.g. `172.x.x.1`) instead of `127.0.0.1`. The backend must be bound to `0.0.0.0` (not `127.0.0.1`) to accept connections from WSL:
+```bash
+uvicorn src.api.app:app --host 0.0.0.0 --port 8501
+```
+
 ### Jira/Xray
 Import via JQL query, export to custom fields and X-Ray test plans.
 
