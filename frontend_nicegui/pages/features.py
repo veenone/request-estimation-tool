@@ -38,6 +38,12 @@ async def features_page() -> None:
 
     sidebar()
 
+    # Fetch product types from config
+    try:
+        product_types: list[str] = await api_get("/configuration/product_types")
+    except Exception:
+        product_types = ["Payment", "Telco"]
+
     with ui.column().classes("q-pa-lg w-full"):
         ui.label("Feature Catalog").classes("text-h4 q-mb-md")
 
@@ -126,7 +132,7 @@ async def features_page() -> None:
                 ).classes("w-full")
                 has_tests_toggle = ui.switch("Has Existing Tests", value=False)
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value="",
                     with_input=True,
@@ -188,7 +194,7 @@ async def features_page() -> None:
                     value=bool(row.get("has_existing_tests", False)),
                 )
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value=row.get("product_type") or "",
                     with_input=True,

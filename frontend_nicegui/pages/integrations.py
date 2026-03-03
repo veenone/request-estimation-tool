@@ -105,7 +105,7 @@ def _render_action_buttons(system: str, last_sync: str | None) -> None:
 # REDMINE panel
 # ---------------------------------------------------------------------------
 
-def _build_redmine_panel(data: dict) -> None:
+def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None, current_watchers: list[int] | None = None) -> None:
     """Per-system form for REDMINE with individual labeled fields."""
 
     has_api_key: bool = bool(data.get("has_api_key", False))
@@ -177,15 +177,49 @@ def _build_redmine_panel(data: dict) -> None:
                 "Set to 0 to disable auto-polling. Requires app restart to take effect."
             ).classes("text-caption text-grey")
 
-        webhook_secret_input = ui.input(
-            label="Webhook Secret",
-            value=extra.get("webhook_secret", ""),
-            placeholder="Shared secret for webhook validation",
-        ).classes("w-full")
+        with ui.row().classes("w-full items-end gap-2"):
+            webhook_secret_input = ui.input(
+                label="Webhook Secret",
+                value=extra.get("webhook_secret", ""),
+                placeholder="Shared secret for webhook validation",
+            ).classes("flex-1")
 
-        with ui.column().classes("q-mt-xs"):
+            def _generate_secret() -> None:
+                import secrets
+                webhook_secret_input.value = secrets.token_urlsafe(32)
+
+            ui.button(
+                "Generate", icon="casino", on_click=_generate_secret,
+            ).props("outline dense").tooltip("Generate a random secure secret")
+
+        with ui.column().classes("q-mt-xs gap-1"):
             ui.label("Webhook URL (configure in Redmine):").classes("text-caption text-grey")
             ui.label("/api/webhooks/redmine").classes("text-body2 text-primary")
+            ui.label(
+                "Complete URL example: "
+                "https://<your-server>:8000/api/webhooks/redmine?token=<webhook_secret>"
+            ).classes("text-caption text-grey")
+            ui.label(
+                "Replace <your-server> with your hostname or IP, and <webhook_secret> "
+                "with the secret configured above. Port 8000 is the dedicated API port "
+                "exposed via HTTPS through the nginx reverse proxy."
+            ).classes("text-caption text-grey")
+
+        ui.separator()
+
+        # -- Webhook Notification Watchers -------------------------------------
+        ui.label("Webhook Notification Watchers").classes("text-subtitle1 text-weight-medium")
+        ui.label(
+            "Select users who should be notified when new requests are imported via webhook."
+        ).classes("text-caption text-grey")
+
+        user_options = {u["id"]: u.get("display_name") or u.get("username", f"User {u['id']}") for u in (assignable_users or [])}
+        watcher_select = ui.select(
+            label="Watchers",
+            options=user_options,
+            value=current_watchers or [],
+            multiple=True,
+        ).props("use-chips clearable").classes("w-full")
 
         ui.separator()
 
@@ -234,6 +268,7 @@ def _build_redmine_panel(data: dict) -> None:
             _est=estimation_field_input,
             _poll=poll_interval_input,
             _ws=webhook_secret_input,
+            _watchers=watcher_select,
         ) -> None:
             additional: dict = {
                 "project_id":               (_pid.value or "").strip(),
@@ -256,6 +291,9 @@ def _build_redmine_panel(data: dict) -> None:
 
             try:
                 await api_put("/integrations/REDMINE", json=payload)
+                # Save webhook watchers config
+                selected_ids = _watchers.value if _watchers.value else []
+                await api_put("/configuration/webhook_watchers", json={"value": json.dumps(selected_ids)})
                 ui.notify("Redmine configuration saved.", type="positive")
                 _key.value = ""
             except Exception as exc:
@@ -751,6 +789,22 @@ async def integrations_page() -> None:
             item["system_name"].upper(): item for item in raw_list
         }
 
+        # Fetch assignable users and current watchers for Redmine panel
+        assignable_users: list[dict] = []
+        current_watchers: list[int] = []
+        try:
+            assignable_users = await api_get("/users/assignable")
+        except Exception:
+            pass
+        try:
+            configs = await api_get("/configuration")
+            for cfg in configs:
+                if cfg.get("key") == "webhook_watchers":
+                    current_watchers = json.loads(cfg.get("value", "[]"))
+                    break
+        except Exception:
+            pass
+
         # ---- tabs ----------------------------------------------------------
         with ui.tabs().classes("w-full") as tabs:
             tab_refs: dict[str, ui.tab] = {}
@@ -762,4 +816,7 @@ async def integrations_page() -> None:
             for sys in SYSTEMS:
                 data = by_system.get(sys, {})
                 with ui.tab_panel(tab_refs[sys]):
-                    _PANEL_BUILDERS[sys](data)
+                    if sys == "REDMINE":
+                        _PANEL_BUILDERS[sys](data, assignable_users=assignable_users, current_watchers=current_watchers)
+                    else:
+                        _PANEL_BUILDERS[sys](data)

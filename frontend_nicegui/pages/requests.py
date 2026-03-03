@@ -81,6 +81,12 @@ async def requests_list_page() -> None:
 
     sidebar()
 
+    # Fetch product types from config
+    try:
+        product_types: list[str] = await api_get("/configuration/product_types")
+    except Exception:
+        product_types = ["Payment", "Telco"]
+
     # ── State ────────────────────────────────────────────────────────────────
     requests_data: list[dict] = []
     table_ref: ui.table | None = None
@@ -195,7 +201,7 @@ async def requests_list_page() -> None:
 
         f_product_type = ui.select(
             label="Product Type (optional)",
-            options=["", "Payment", "Telco"],
+            options=[""] + product_types,
             value="",
             with_input=True,
             clearable=True,
@@ -314,7 +320,7 @@ async def request_detail_page(request_id: int) -> None:
             return
 
         try:
-            users = await api_get("/users")
+            users = await api_get("/users/assignable")
         except Exception:
             users = []
 
@@ -441,6 +447,7 @@ async def request_detail_page(request_id: int) -> None:
                     label="Assign to",
                     options=user_options,
                     value=current_assigned_id,
+                    with_input=True,
                 ).classes("w-72")
 
                 async def do_assign() -> None:

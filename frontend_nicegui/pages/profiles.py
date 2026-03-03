@@ -23,6 +23,8 @@ _COLUMNS = [
     {"name": "name",             "label": "Name",         "field": "name",             "align": "left", "sortable": True},
     {"name": "description",      "label": "Description",  "field": "description",      "align": "left"},
     {"name": "effort_multiplier","label": "Multiplier",   "field": "effort_multiplier","align": "left", "sortable": True},
+    {"name": "product_type",     "label": "Product Type", "field": "product_type",     "align": "left", "sortable": True},
+    {"name": "is_active",        "label": "Active",       "field": "is_active",        "align": "center", "sortable": True},
     {"name": "actions",          "label": "Actions",      "field": "actions",          "align": "left"},
 ]
 
@@ -34,6 +36,12 @@ async def profiles_page() -> None:
         return
 
     sidebar()
+
+    # Fetch product types from config
+    try:
+        product_types: list[str] = await api_get("/configuration/product_types")
+    except Exception:
+        product_types = ["Payment", "Telco"]
 
     with ui.column().classes("q-pa-lg w-full"):
         ui.label("Test Profiles").classes("text-h4 q-mb-md")
@@ -56,6 +64,17 @@ async def profiles_page() -> None:
                 <span :title="props.value">
                     {{ props.value ? (props.value.length > 60 ? props.value.slice(0, 60) + '…' : props.value) : '—' }}
                 </span>
+            </q-td>
+            """,
+        )
+
+        # Active status column
+        table.add_slot(
+            "body-cell-is_active",
+            r"""
+            <q-td :props="props">
+                <q-icon :name="props.value === false ? 'cancel' : 'check_circle'"
+                        :color="props.value === false ? 'negative' : 'positive'" size="sm" />
             </q-td>
             """,
         )
@@ -107,7 +126,7 @@ async def profiles_page() -> None:
                     format="%.1f",
                 ).classes("w-full")
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value="",
                     with_input=True,
@@ -163,12 +182,16 @@ async def profiles_page() -> None:
                     format="%.1f",
                 ).classes("w-full")
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value=row.get("product_type") or "",
                     with_input=True,
                     clearable=True,
                 ).classes("w-full")
+                is_active_input = ui.switch(
+                    "Active",
+                    value=row.get("is_active", True) is not False,
+                )
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
@@ -180,6 +203,7 @@ async def profiles_page() -> None:
                             "description": str(description_input.value or "").strip(),
                             "effort_multiplier": float(multiplier_input.value or 1.0),
                             "product_type": product_type_input.value if product_type_input.value else None,
+                            "is_active": is_active_input.value,
                         }
                         await api_put(
                             f"/profiles/{row['id']}",

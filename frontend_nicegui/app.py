@@ -319,16 +319,159 @@ def sidebar():
         ui.label("Estimation Tool").classes("text-h6 q-pa-md")
 
         if user:
-            ui.label(f"{user.get('display_name', '')}").classes("q-px-md text-caption")
-            ui.label(f"Role: {role}").classes("q-px-md text-caption text-grey")
+            with ui.row().classes("q-px-md items-center w-full justify-between"):
+                with ui.column().classes("gap-0"):
+                    ui.label(f"{user.get('display_name', '')}").classes("text-caption")
+                    ui.label(f"Role: {role}").classes("text-caption text-grey")
+                # Notification bell
+                badge_label = ui.label("").classes("hidden")  # hidden state holder
+                with ui.button(icon="notifications", on_click=lambda: _open_notifications_dialog()).props("flat round dense color=white size=sm") as bell_btn:
+                    bell_badge = ui.badge("0", color="red").props("floating").classes("hidden")
+
+                async def _poll_unread() -> None:
+                    try:
+                        data = await api_get("/notifications/unread-count")
+                        count = data.get("unread_count", 0)
+                        bell_badge.set_text(str(count))
+                        if count > 0:
+                            bell_badge.classes(remove="hidden")
+                        else:
+                            bell_badge.classes(add="hidden")
+                    except Exception:
+                        pass
+
+                async def _open_notifications_dialog() -> None:
+                    try:
+                        notifs = await api_get("/notifications")
+                    except Exception:
+                        notifs = []
+
+                    with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[500px] max-h-[80vh]"):
+                        with ui.row().classes("w-full items-center justify-between q-mb-sm"):
+                            ui.label("Notifications").classes("text-h6")
+
+                            async def _mark_all_read():
+                                try:
+                                    await api_post("/notifications/mark-all-read")
+                                    ui.notify("All notifications marked as read", type="positive")
+                                except Exception as exc:
+                                    ui.notify(f"Error: {exc}", type="negative")
+                                dlg.close()
+                                await _poll_unread()
+
+                            ui.button("Mark all read", icon="done_all", on_click=_mark_all_read).props("flat dense color=primary")
+
+                        if not notifs:
+                            ui.label("No notifications.").classes("text-grey q-pa-md")
+                        else:
+                            with ui.scroll_area().classes("w-full").style("max-height: 60vh"):
+                                for n in notifs:
+                                    is_read = n.get("is_read", False)
+                                    with ui.card().classes(f"w-full q-mb-sm {'bg-transparent' if is_read else ''}"):
+                                        with ui.row().classes("items-center gap-2"):
+                                            source = n.get("source", "REDMINE")
+                                            source_colors = {"REDMINE": "red", "JIRA": "blue", "EMAIL": "orange"}
+                                            ui.badge(source, color=source_colors.get(source, "grey")).props("dense")
+                                            title_cls = "text-weight-bold" if not is_read else ""
+                                            ui.label(n.get("title", "")).classes(title_cls)
+                                        if n.get("message"):
+                                            ui.label(n["message"]).classes("text-caption text-grey")
+                                        with ui.row().classes("items-center gap-2 q-mt-xs"):
+                                            ts = n.get("created_at", "")
+                                            if ts:
+                                                ui.label(str(ts)[:19]).classes("text-caption text-grey")
+                                            req_id = n.get("request_id")
+                                            if req_id:
+                                                ui.button(
+                                                    "View request",
+                                                    icon="open_in_new",
+                                                    on_click=lambda rid=req_id: (dlg.close(), ui.navigate.to(f"/requests/{rid}")),
+                                                ).props("flat dense size=sm color=primary")
+                                            if not is_read:
+                                                nid = n["id"]
+
+                                                async def _mark_one(nid=nid):
+                                                    try:
+                                                        await api_put(f"/notifications/{nid}/read")
+                                                    except Exception:
+                                                        pass
+                                                    dlg.close()
+                                                    await _poll_unread()
+
+                                                ui.button(icon="check", on_click=_mark_one).props("flat dense round size=sm color=positive").tooltip("Mark read")
+                    dlg.open()
+
+                # Poll every 30 seconds + initial load
+                ui.timer(30.0, _poll_unread)
+                ui.timer(0.5, _poll_unread, once=True)
+
             ui.separator()
+
+        # Notification banner (inside drawer, shown when unread > 0)
+        _banner_row = ui.row().classes("w-full bg-warning text-dark q-pa-sm items-center hidden")
+        with _banner_row:
+            ui.icon("notifications_active", size="sm")
+            _banner_label = ui.label("").classes("q-ml-sm text-caption")
+
+        async def _update_banner() -> None:
+            try:
+                data = await api_get("/notifications/unread-count")
+                count = data.get("unread_count", 0)
+                if count > 0:
+                    _banner_label.set_text(
+                        f"You have {count} unread notification{'s' if count > 1 else ''}"
+                    )
+                    _banner_row.classes(remove="hidden")
+                else:
+                    _banner_row.classes(add="hidden")
+            except Exception:
+                pass
+
+        ui.timer(30.0, _update_banner)
+        ui.timer(1.0, _update_banner, once=True)
+
+        # Load configuration list (cached in storage) for RBAC + theme
+        _cfg_list: list[dict] | None = None
+        try:
+            _cfg_list = _safe_storage().get("_rbac_cache")
+            if not _cfg_list:
+                import httpx as _hx
+                _r = _hx.get(f"{API_URL}/configuration", headers=auth_headers(), timeout=5)
+                if _r.status_code == 200:
+                    _cfg_list = _r.json()
+                    _safe_storage()["_rbac_cache"] = _cfg_list
+        except Exception:
+            pass
+
+        # Determine RBAC permissions for nav visibility
+        _rbac_perms: set[str] = set()
+        if role == "ADMIN":
+            _rbac_perms = {"__all__"}
+        else:
+            try:
+                _rbac_matrix_val = None
+                if _cfg_list:
+                    for _item in _cfg_list:
+                        if _item.get("key") == "rbac_matrix":
+                            _rbac_matrix_val = _item.get("value")
+                            break
+                if _rbac_matrix_val:
+                    import json as _json_mod
+                    _parsed = _json_mod.loads(_rbac_matrix_val)
+                    _rbac_perms = set(_parsed.get(role, []))
+            except Exception:
+                _rbac_perms = set()
+
+        def _has_perm(perm: str) -> bool:
+            return "__all__" in _rbac_perms or perm in _rbac_perms
 
         with ui.list().props("dense"):
 
             # -- Overview --
             ui.item_label("OVERVIEW").props("header").classes("text-overline text-grey")
             _nav_item("Dashboard",     "dashboard", "/")
-            _nav_item("Request Inbox", "inbox",     "/requests")
+            if _has_perm("view_requests") or _has_perm("manage_requests"):
+                _nav_item("Request Inbox", "inbox",     "/requests")
 
             ui.separator()
 
@@ -365,6 +508,18 @@ def sidebar():
         # Restore persisted dark/light preference (default: dark)
         is_dark = _safe_storage().get("dark_mode", True)
         dark = ui.dark_mode(is_dark)
+
+        # Task 14: Inject configurable table header background color
+        _hdr_light = "#E0E0E0"
+        _hdr_dark = "#424242"
+        if _cfg_list:
+            for _ci in _cfg_list:
+                if _ci.get("key") == "table_header_bg_light":
+                    _hdr_light = _ci.get("value") or _hdr_light
+                elif _ci.get("key") == "table_header_bg_dark":
+                    _hdr_dark = _ci.get("value") or _hdr_dark
+        _active_hdr = _hdr_dark if is_dark else _hdr_light
+        ui.add_css(f".q-table thead th {{ background-color: {_active_hdr} !important; }}")
 
         def toggle_theme():
             dark.toggle()

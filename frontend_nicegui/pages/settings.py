@@ -8,7 +8,7 @@ API used:
 import json
 
 from nicegui import ui
-from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
+from frontend_nicegui.app import _safe_storage, api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
 
 # ---------------------------------------------------------------------------
 # Role mapping constants
@@ -35,6 +35,11 @@ SECTION_KEYS: dict[str, list[str]] = {
     ],
     "Workflow Automation": [
         "outline_auto_export_states",
+        "auto_create_historical_project",
+    ],
+    "Appearance": [
+        "table_header_bg_light",
+        "table_header_bg_dark",
     ],
     "Data Management": [
         "dut_categories",
@@ -171,10 +176,14 @@ async def settings_page():
             ).props("default-opened" if any(mapping.values()) else ""):
                 ui.label(help_text).classes("text-caption text-grey q-mb-sm")
 
+                _is_dark = _safe_storage().get("dark_mode", True)
+                _s_header_bg = "bg-grey-10" if _is_dark else "bg-grey-3"
+                _s_row_bg = "bg-grey-9" if _is_dark else "bg-grey-2"
+
                 with ui.card().classes("w-full q-pa-none"):
                     # Header row
                     with ui.row().classes(
-                        "w-full items-center q-px-md q-py-sm bg-dark-page"
+                        f"w-full items-center q-px-md q-py-sm {_s_header_bg}"
                     ):
                         ui.label("Application Role").classes(
                             "text-subtitle2 text-bold"
@@ -186,7 +195,7 @@ async def settings_page():
                     ui.separator()
 
                     for idx, app_role in enumerate(_APP_ROLES):
-                        row_bg = "bg-grey-10" if idx % 2 == 0 else ""
+                        row_bg = _s_row_bg if idx % 2 == 0 else ""
                         with ui.row().classes(
                             f"w-full items-center q-px-md q-py-xs {row_bg}"
                         ):

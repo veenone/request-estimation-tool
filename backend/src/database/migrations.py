@@ -11,9 +11,13 @@ from .models import (
     Base,
     Configuration,
     DutType,
+    EstimationTeamAllocation,
     Feature,
+    TaskPreset,
     TaskTemplate,
+    Team,
     TestProfile,
+    WebhookNotification,
 )
 # Import auth models so they register with Base.metadata for create_all
 from ..auth.models import AuditLog, User, UserSession  # noqa: E402
@@ -21,7 +25,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 4  # v4 adds product_type, start_date, breakdown hours, estimation_id on history
+SCHEMA_VERSION = 7  # v7 adds task_presets, teams, test_profile.is_active, team_member.team_id, config keys
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -219,6 +223,111 @@ def _migrate_v3_to_v4(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v4_to_v5(engine, session: Session) -> None:
+    """Migrate from v4 to v5 (task_template.product_type, estimation_team_allocations, team_skills config)."""
+    # Add product_type to task_templates
+    if _table_exists(engine, "task_templates"):
+        if not _column_exists(engine, "task_templates", "product_type"):
+            session.execute(text(
+                "ALTER TABLE task_templates ADD COLUMN product_type VARCHAR"
+            ))
+
+    # Create estimation_team_allocations table
+    if not _table_exists(engine, "estimation_team_allocations"):
+        table = Base.metadata.tables.get("estimation_team_allocations")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Add team_skills config key
+    existing = session.query(Configuration).filter(
+        Configuration.key == "team_skills"
+    ).first()
+    if not existing:
+        session.add(Configuration(
+            key="team_skills",
+            value='["Test Execution","Test Design","Automation","Performance","Security","API Testing","Mobile Testing","Regression"]',
+            description="JSON array of available team member skills for selection",
+        ))
+
+    _set_schema_version(session, 5)
+    session.commit()
+
+
+def _migrate_v5_to_v6(engine, session: Session) -> None:
+    """Migrate from v5 to v6 (webhook_notifications table, webhook_watchers config)."""
+    # Create webhook_notifications table
+    if not _table_exists(engine, "webhook_notifications"):
+        table = Base.metadata.tables.get("webhook_notifications")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Add webhook_watchers config key
+    existing = session.query(Configuration).filter(
+        Configuration.key == "webhook_watchers"
+    ).first()
+    if not existing:
+        session.add(Configuration(
+            key="webhook_watchers",
+            value="[]",
+            description="JSON array of user IDs to notify on webhook imports",
+        ))
+
+    _set_schema_version(session, 6)
+    session.commit()
+
+
+def _migrate_v6_to_v7(engine, session: Session) -> None:
+    """Migrate from v6 to v7 (task_presets, teams, profile is_active, team_member.team_id, config keys)."""
+    # Task 4: Create task_presets table
+    if not _table_exists(engine, "task_presets"):
+        table = Base.metadata.tables.get("task_presets")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Task 7: Create teams table
+    if not _table_exists(engine, "teams"):
+        table = Base.metadata.tables.get("teams")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Task 7: Add team_id to team_members
+    if _table_exists(engine, "team_members"):
+        if not _column_exists(engine, "team_members", "team_id"):
+            session.execute(text(
+                "ALTER TABLE team_members ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL"
+            ))
+
+    # Task 6: Add is_active to test_profiles
+    if _table_exists(engine, "test_profiles"):
+        if not _column_exists(engine, "test_profiles", "is_active"):
+            session.execute(text(
+                "ALTER TABLE test_profiles ADD COLUMN is_active BOOLEAN DEFAULT 1"
+            ))
+
+    # Task 5: Add auto_create_historical_project config key
+    _ensure_key = lambda k, v, d: session.add(Configuration(key=k, value=v, description=d)) if not session.query(Configuration).filter(Configuration.key == k).first() else None
+    _ensure_key(
+        "auto_create_historical_project",
+        "manual",
+        "When to auto-create historical project from estimation: manual, on_approve, on_complete",
+    )
+
+    # Task 14: Add table header color config keys
+    _ensure_key(
+        "table_header_bg_light",
+        "#E0E0E0",
+        "Table header background color for light mode (hex)",
+    )
+    _ensure_key(
+        "table_header_bg_dark",
+        "#424242",
+        "Table header background color for dark mode (hex)",
+    )
+
+    _set_schema_version(session, 7)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -243,6 +352,12 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v2_to_v3(engine, session)
         if current_version < 4:
             _migrate_v3_to_v4(engine, session)
+        if current_version < 5:
+            _migrate_v4_to_v5(engine, session)
+        if current_version < 6:
+            _migrate_v5_to_v6(engine, session)
+        if current_version < 7:
+            _migrate_v6_to_v7(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)

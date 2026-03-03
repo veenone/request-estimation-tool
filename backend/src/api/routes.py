@@ -15,12 +15,16 @@ from ..database.models import (
     DutType,
     Estimation,
     EstimationTask,
+    EstimationTeamAllocation,
     Feature,
     HistoricalProject,
     Request,
+    TaskPreset,
     TaskTemplate,
+    Team,
     TeamMember,
     TestProfile,
+    WebhookNotification,
 )
 from ..engine.calculator import (
     EstimationInput,
@@ -57,15 +61,25 @@ from .schemas import (
     RequestDetailOut,
     RequestOut,
     RequestUpdate,
+    TaskPresetCreate,
+    TaskPresetOut,
+    TaskPresetUpdate,
     TaskTemplateCreate,
     TaskTemplateOut,
     TaskTemplateUpdate,
+    TeamAllocationItem,
+    TeamCreate,
+    TeamMembersUpdate,
     TeamMemberCreate,
     TeamMemberOut,
     TeamMemberUpdate,
+    TeamOut,
+    TeamUpdate,
     TestProfileCreate,
     TestProfileOut,
     TestProfileUpdate,
+    UnreadCountOut,
+    WebhookNotificationOut,
 )
 from ..auth.models import AuditLog, User
 from ..auth.schemas import (
@@ -202,7 +216,7 @@ def list_users(active_only: bool = False, user: User = Depends(RequireRole("ADMI
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
-def create_user(data: UserCreate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+def create_user(request: HTTPRequest, data: UserCreate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     auth_service = AuthService(db)
     existing = auth_service.get_user_by_username(data.username)
     if existing:
@@ -216,8 +230,23 @@ def create_user(data: UserCreate, user: User = Depends(RequireRole("ADMIN")), db
         auth_provider=data.auth_provider,
         team_member_id=data.team_member_id,
     )
-    auth_service.log_action(user.id, "CREATE", "user", new_user.id)
+    auth_service.log_action(user.id, "CREATE", "user", new_user.id, ip_address=getattr(request.state, "client_ip", None))
     return new_user
+
+
+class AssignableUserOut(BaseModel):
+    id: int
+    display_name: str
+    username: str
+    role: str
+    model_config = {"from_attributes": True}
+
+
+@router.get("/users/assignable", response_model=list[AssignableUserOut])
+def list_assignable_users(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return all active users for assignment dropdowns — any authenticated user."""
+    users = db.query(User).filter(User.is_active.is_(True)).all()
+    return users
 
 
 @router.get("/users/{user_id}", response_model=UserOut)
@@ -229,35 +258,35 @@ def get_user(user_id: int, user: User = Depends(RequireRole("ADMIN")), db: Sessi
 
 
 @router.put("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, data: UserUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+def update_user(user_id: int, request: HTTPRequest, data: UserUpdate, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     auth_service = AuthService(db)
     updated = auth_service.update_user(user_id, **data.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(404, "User not found")
-    auth_service.log_action(user.id, "UPDATE", "user", user_id)
+    auth_service.log_action(user.id, "UPDATE", "user", user_id, ip_address=getattr(request.state, "client_ip", None))
     return updated
 
 
 @router.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: int, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+def delete_user(user_id: int, request: HTTPRequest, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     if user_id == user.id:
         raise HTTPException(400, "Cannot delete your own account")
     auth_service = AuthService(db)
     if not auth_service.delete_user(user_id):
         raise HTTPException(404, "User not found")
-    auth_service.log_action(user.id, "DELETE", "user", user_id)
+    auth_service.log_action(user.id, "DELETE", "user", user_id, ip_address=getattr(request.state, "client_ip", None))
 
 
 # ── LDAP Sync (ADMIN only) ─────────────────────────────
 
 @router.post("/auth/ldap/sync")
-def ldap_sync(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+def ldap_sync(request: HTTPRequest, user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
     from ..auth.ldap_provider import LDAPProvider
     provider = LDAPProvider(db)
     if not provider.is_configured:
         raise HTTPException(400, "LDAP is not configured")
     result = provider.sync_users()
-    AuthService(db).log_action(user.id, "LDAP_SYNC", details=result)
+    AuthService(db).log_action(user.id, "LDAP_SYNC", details=result, ip_address=getattr(request.state, "client_ip", None))
     return result
 
 
@@ -342,10 +371,12 @@ def delete_feature(feature_id: int, user: User = Depends(RequireRole("APPROVER")
 # ── Task Templates ───────────────────────────────────────
 
 @router.get("/task-templates", response_model=list[TaskTemplateOut])
-def list_task_templates(feature_id: int | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_task_templates(feature_id: int | None = None, product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(TaskTemplate)
     if feature_id is not None:
         q = q.filter(TaskTemplate.feature_id == feature_id)
+    if product_type:
+        q = q.filter((TaskTemplate.product_type == product_type) | (TaskTemplate.product_type.is_(None)))
     return q.all()
 
 
@@ -533,7 +564,16 @@ def archive_estimation_to_history(estimation_id: int, user: User = Depends(Requi
 
 @router.get("/team-members", response_model=list[TeamMemberOut])
 def list_team_members(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(TeamMember).all()
+    members = db.query(TeamMember).all()
+    result = []
+    for m in members:
+        out = TeamMemberOut.model_validate(m)
+        linked_user = db.query(User).filter(User.team_member_id == m.id).first()
+        if linked_user:
+            out.linked_user_id = linked_user.id
+            out.linked_user_name = linked_user.display_name or linked_user.username
+        result.append(out)
+    return result
 
 
 @router.post("/team-members", response_model=TeamMemberOut, status_code=201)
@@ -624,6 +664,17 @@ def get_dut_categories(user: User = Depends(get_current_user), db: Session = Dep
 def get_product_types(db: Session = Depends(get_db)):
     """Return the configured product types as a list of strings."""
     raw = _get_config_value(db, "product_types", '["Payment", "Telco"]')
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+@router.get("/configuration/team_skills", response_model=list[str])
+def get_team_skills(db: Session = Depends(get_db)):
+    """Return the configured team skills as a list of strings."""
+    default = '["Test Execution","Test Design","Automation","Performance","Security","API Testing","Mobile Testing","Regression"]'
+    raw = _get_config_value(db, "team_skills", default)
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -890,6 +941,16 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             is_new_feature_study=task.is_new_feature_study,
         )
         db.add(et)
+
+    # Save team allocations
+    for alloc in data.team_allocations:
+        eta = EstimationTeamAllocation(
+            estimation_id=estimation.id,
+            team_member_id=alloc.team_member_id,
+            role=alloc.role,
+            allocated_hours=alloc.allocated_hours,
+        )
+        db.add(eta)
 
     # Update request status if linked
     if data.request_id:
@@ -1292,9 +1353,75 @@ def redmine_webhook(request: HTTPRequest, db: Session = Depends(get_db)):
     try:
         from ..integrations.service import sync_import
         result = sync_import("REDMINE", db)
+
+        # Create notifications for configured watchers
+        if result.items_created > 0:
+            try:
+                watchers_raw = _get_config_value(db, "webhook_watchers", "[]")
+                watcher_ids = json.loads(watchers_raw)
+                if isinstance(watcher_ids, list):
+                    for uid in watcher_ids:
+                        db.add(WebhookNotification(
+                            user_id=int(uid),
+                            title=f"{result.items_created} new request(s) imported",
+                            message=f"Redmine webhook imported {result.items_created} new request(s).",
+                            source="REDMINE",
+                        ))
+                    db.commit()
+            except Exception:
+                pass  # Don't break webhook response for notification failures
+
         return {"status": "ok", "items_created": result.items_created, "items_updated": result.items_updated}
     except Exception as e:
         raise HTTPException(500, f"Webhook processing failed: {str(e)}")
+
+
+# ── Webhook Notifications ────────────────────────────────
+
+@router.get("/notifications")
+def list_notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    """List notifications for the current user (unread first, newest first, limit 50)."""
+    notifs = (
+        db.query(WebhookNotification)
+        .filter(WebhookNotification.user_id == user.id)
+        .order_by(WebhookNotification.is_read.asc(), WebhookNotification.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return [WebhookNotificationOut.model_validate(n).model_dump() for n in notifs]
+
+
+@router.get("/notifications/unread-count")
+def unread_notification_count(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Return the count of unread notifications for badge polling."""
+    count = (
+        db.query(WebhookNotification)
+        .filter(WebhookNotification.user_id == user.id, WebhookNotification.is_read == False)  # noqa: E712
+        .count()
+    )
+    return UnreadCountOut(unread_count=count).model_dump()
+
+
+@router.put("/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Mark a single notification as read (ownership check)."""
+    notif = db.get(WebhookNotification, notification_id)
+    if not notif or notif.user_id != user.id:
+        raise HTTPException(404, "Notification not found")
+    notif.is_read = True
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/notifications/mark-all-read")
+def mark_all_notifications_read(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Mark all notifications as read for the current user."""
+    db.query(WebhookNotification).filter(
+        WebhookNotification.user_id == user.id,
+        WebhookNotification.is_read == False,  # noqa: E712
+    ).update({"is_read": True})
+    db.commit()
+    return {"ok": True}
 
 
 # ── Send report via email ────────────────────────────────
@@ -1416,6 +1543,29 @@ def update_estimation_status(estimation_id: int, data: EstimationStatusUpdate, u
     # Auto-export to Outline wiki if configured for this status
     _try_outline_auto_export(estimation, target, db)
 
+    # Auto-create historical project if configured (Task 5)
+    try:
+        auto_rule = _get_config_value(db, "auto_create_historical_project", "manual")
+        trigger_status = {"on_approve": "APPROVED", "on_complete": "FINAL"}.get(auto_rule)
+        if trigger_status and target == trigger_status:
+            existing_hp = db.query(HistoricalProject).filter(
+                HistoricalProject.estimation_id == estimation.id,
+            ).first()
+            if not existing_hp:
+                hp = HistoricalProject(
+                    project_name=estimation.project_name,
+                    project_type=estimation.project_type,
+                    estimated_hours=estimation.grand_total_hours,
+                    dut_count=estimation.dut_count,
+                    profile_count=estimation.profile_count,
+                    pr_count=estimation.pr_fix_count,
+                    estimation_id=estimation.id,
+                )
+                db.add(hp)
+                db.commit()
+    except Exception:
+        pass
+
     return estimation
 
 
@@ -1463,7 +1613,7 @@ def _try_outline_auto_export(estimation: "Estimation", new_status: str, db: Sess
 
 
 @router.put("/estimations/{estimation_id}/revise", response_model=EstimationOut)
-def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+def revise_estimation(estimation_id: int, request: HTTPRequest, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Revise an estimation: re-run calculation with new inputs, bump version, reset to DRAFT."""
     estimation = db.get(Estimation, estimation_id)
     if not estimation:
@@ -1595,6 +1745,17 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
         )
         db.add(et)
 
+    # Delete old team allocations, create new ones
+    db.query(EstimationTeamAllocation).filter(EstimationTeamAllocation.estimation_id == estimation_id).delete()
+    for alloc in data.team_allocations:
+        eta = EstimationTeamAllocation(
+            estimation_id=estimation.id,
+            team_member_id=alloc.team_member_id,
+            role=alloc.role,
+            allocated_hours=alloc.allocated_hours,
+        )
+        db.add(eta)
+
     # Audit log
     try:
         audit = AuditLog(
@@ -1603,6 +1764,7 @@ def revise_estimation(estimation_id: int, data: EstimationRevise, user: User = D
             resource_type="estimation",
             resource_id=estimation.id,
             details_json=json.dumps({"new_version": estimation.version}),
+            ip_address=getattr(request.state, "client_ip", None),
         )
         db.add(audit)
     except Exception:
@@ -1835,6 +1997,7 @@ async def preview_import_endpoint(
 @router.post("/import/{entity_type}")
 async def execute_import_endpoint(
     entity_type: str,
+    request: HTTPRequest,
     file: UploadFile = File(...),
     skip_duplicates: bool = True,
     user: User = Depends(RequireRole("APPROVER")),
@@ -1846,6 +2009,7 @@ async def execute_import_endpoint(
     AuthService(db).log_action(
         user.id, "IMPORT", entity_type,
         details={"imported": result["imported"], "skipped": result["skipped"]},
+        ip_address=getattr(request.state, "client_ip", None),
     )
     return result
 
@@ -1856,6 +2020,7 @@ async def execute_import_endpoint(
 def assign_estimation(
     estimation_id: int,
     assigned_to_id: int,
+    request: HTTPRequest,
     user: User = Depends(RequireRole("APPROVER")),
     db: Session = Depends(get_db),
 ):
@@ -1881,7 +2046,7 @@ def assign_estimation(
     except Exception:
         pass
 
-    AuthService(db).log_action(user.id, "ASSIGN", "estimation", estimation_id, details={"assigned_to_id": assigned_to_id})
+    AuthService(db).log_action(user.id, "ASSIGN", "estimation", estimation_id, details={"assigned_to_id": assigned_to_id}, ip_address=getattr(request.state, "client_ip", None))
     return {"status": "ok", "assigned_to_id": assigned_to_id}
 
 
@@ -1889,6 +2054,7 @@ def assign_estimation(
 def assign_request(
     request_id: int,
     assigned_to_id: int,
+    request: HTTPRequest,
     user: User = Depends(RequireRole("APPROVER")),
     db: Session = Depends(get_db),
 ):
@@ -1900,7 +2066,18 @@ def assign_request(
         raise HTTPException(404, "Target user not found")
     req.assigned_to_id = assigned_to_id
     db.commit()
-    AuthService(db).log_action(user.id, "ASSIGN", "request", request_id, details={"assigned_to_id": assigned_to_id})
+    AuthService(db).log_action(user.id, "ASSIGN", "request", request_id, details={"assigned_to_id": assigned_to_id}, ip_address=getattr(request.state, "client_ip", None))
+
+    # Task 10: Sync assignee to Redmine if request came from Redmine
+    if req.request_source == "REDMINE" and req.external_id:
+        try:
+            from ..integrations.service import get_adapter
+            adapter = get_adapter("REDMINE", db)
+            if adapter and hasattr(adapter, "update_assignee"):
+                adapter.update_assignee(req.external_id, target_user.username)
+        except Exception:
+            pass  # Don't break local assignment on Redmine sync failure
+
     return {"status": "ok", "assigned_to_id": assigned_to_id}
 
 
@@ -2074,3 +2251,156 @@ def search_outline(
     if not adapter:
         raise HTTPException(400, "Outline integration is not configured")
     return adapter.search_documents(query, limit)
+
+
+# ── Teams (Task 7) ─────────────────────────────────────────────
+
+@router.get("/teams", response_model=list[TeamOut])
+def list_teams(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    teams = db.query(Team).all()
+    result = []
+    for t in teams:
+        member_count = db.query(TeamMember).filter(TeamMember.team_id == t.id).count()
+        result.append(TeamOut(
+            id=t.id,
+            name=t.name,
+            description=t.description,
+            created_at=t.created_at,
+            member_count=member_count,
+        ))
+    return result
+
+
+@router.post("/teams", response_model=TeamOut, status_code=201)
+def create_team(data: TeamCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    existing = db.query(Team).filter(Team.name == data.name).first()
+    if existing:
+        raise HTTPException(400, f"Team '{data.name}' already exists")
+    team = Team(name=data.name, description=data.description)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    return TeamOut(id=team.id, name=team.name, description=team.description, created_at=team.created_at, member_count=0)
+
+
+@router.put("/teams/{team_id}", response_model=TeamOut)
+def update_team(team_id: int, data: TeamUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    team = db.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    if data.name is not None:
+        team.name = data.name
+    if data.description is not None:
+        team.description = data.description
+    db.commit()
+    db.refresh(team)
+    member_count = db.query(TeamMember).filter(TeamMember.team_id == team.id).count()
+    return TeamOut(id=team.id, name=team.name, description=team.description, created_at=team.created_at, member_count=member_count)
+
+
+@router.delete("/teams/{team_id}", status_code=204)
+def delete_team(team_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    team = db.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    # Unlink members
+    db.query(TeamMember).filter(TeamMember.team_id == team_id).update({"team_id": None})
+    db.delete(team)
+    db.commit()
+
+
+@router.put("/teams/{team_id}/members")
+def update_team_members(team_id: int, data: TeamMembersUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    team = db.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    # Remove current members from this team
+    db.query(TeamMember).filter(TeamMember.team_id == team_id).update({"team_id": None})
+    # Assign new members
+    for mid in data.member_ids:
+        member = db.get(TeamMember, mid)
+        if member:
+            member.team_id = team_id
+    db.commit()
+    return {"status": "ok", "team_id": team_id, "member_count": len(data.member_ids)}
+
+
+# ── Task Presets (Task 4) ──────────────────────────────────────
+
+@router.get("/task-presets", response_model=list[TaskPresetOut])
+def list_task_presets(product_type: Optional[str] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    q = db.query(TaskPreset)
+    if product_type:
+        q = q.filter(TaskPreset.product_type == product_type)
+    presets = q.all()
+    result = []
+    for p in presets:
+        ids = json.loads(p.task_template_ids_json) if p.task_template_ids_json else []
+        result.append(TaskPresetOut(
+            id=p.id,
+            name=p.name,
+            product_type=p.product_type,
+            description=p.description,
+            task_template_ids=ids,
+            created_at=p.created_at,
+        ))
+    return result
+
+
+@router.post("/task-presets", response_model=TaskPresetOut, status_code=201)
+def create_task_preset(data: TaskPresetCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    existing = db.query(TaskPreset).filter(TaskPreset.name == data.name).first()
+    if existing:
+        raise HTTPException(400, f"Preset '{data.name}' already exists")
+    preset = TaskPreset(
+        name=data.name,
+        product_type=data.product_type,
+        description=data.description,
+        task_template_ids_json=json.dumps(data.task_template_ids),
+    )
+    db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return TaskPresetOut(
+        id=preset.id,
+        name=preset.name,
+        product_type=preset.product_type,
+        description=preset.description,
+        task_template_ids=data.task_template_ids,
+        created_at=preset.created_at,
+    )
+
+
+@router.put("/task-presets/{preset_id}", response_model=TaskPresetOut)
+def update_task_preset(preset_id: int, data: TaskPresetUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    preset = db.get(TaskPreset, preset_id)
+    if not preset:
+        raise HTTPException(404, "Task preset not found")
+    if data.name is not None:
+        preset.name = data.name
+    if data.product_type is not None:
+        preset.product_type = data.product_type
+    if data.description is not None:
+        preset.description = data.description
+    if data.task_template_ids is not None:
+        preset.task_template_ids_json = json.dumps(data.task_template_ids)
+    db.commit()
+    db.refresh(preset)
+    ids = json.loads(preset.task_template_ids_json) if preset.task_template_ids_json else []
+    return TaskPresetOut(
+        id=preset.id,
+        name=preset.name,
+        product_type=preset.product_type,
+        description=preset.description,
+        task_template_ids=ids,
+        created_at=preset.created_at,
+    )
+
+
+@router.delete("/task-presets/{preset_id}", status_code=204)
+def delete_task_preset(preset_id: int, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    preset = db.get(TaskPreset, preset_id)
+    if not preset:
+        raise HTTPException(404, "Task preset not found")
+    db.delete(preset)
+    db.commit()

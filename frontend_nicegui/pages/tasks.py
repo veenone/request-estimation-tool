@@ -31,6 +31,12 @@ async def tasks_page():
             show_error_page(exc)
             return
 
+        # Fetch product types from config
+        try:
+            product_types: list[str] = await api_get("/configuration/product_types")
+        except Exception:
+            product_types = ["Payment", "Telco"]
+
         feature_map = {f["id"]: f["name"] for f in features}
         feature_options = {0: "(Global - no feature)"} | {f["id"]: f["name"] for f in features}
 
@@ -45,6 +51,7 @@ async def tasks_page():
             {"name": "base_effort_hours", "label": "Base Hours", "field": "base_effort_hours", "align": "right", "sortable": True},
             {"name": "scales_with_dut", "label": "Scales DUT", "field": "scales_with_dut", "align": "center"},
             {"name": "scales_with_profile", "label": "Scales Profile", "field": "scales_with_profile", "align": "center"},
+            {"name": "product_type", "label": "Product Type", "field": "product_type", "align": "left", "sortable": True},
             {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
         ]
 
@@ -84,6 +91,7 @@ async def tasks_page():
                     "scales_with_profile": "Yes" if t.get("scales_with_profile") else "No",
                     "is_parallelizable": t.get("is_parallelizable", False),
                     "description": t.get("description") or "",
+                    "product_type": t.get("product_type") or "",
                 })
             return rows
 
@@ -113,6 +121,13 @@ async def tasks_page():
                 dut_switch = ui.switch("Scales with DUT", value=False)
                 prof_switch = ui.switch("Scales with Profile", value=False)
                 para_switch = ui.switch("Is Parallelizable", value=False)
+                pt_select = ui.select(
+                    options=[""] + product_types,
+                    label="Product Type (optional)",
+                    value="",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
                 desc_input = ui.textarea("Description").classes("w-full")
 
                 async def _save():
@@ -128,6 +143,7 @@ async def tasks_page():
                         "scales_with_profile": prof_switch.value,
                         "is_parallelizable": para_switch.value,
                         "description": desc_input.value or None,
+                        "product_type": pt_select.value if pt_select.value else None,
                     }
                     try:
                         new_tmpl = await api_post("/task-templates", json=payload)
@@ -177,6 +193,13 @@ async def tasks_page():
                 dut_switch = ui.switch("Scales with DUT", value=bool(tmpl.get("scales_with_dut")))
                 prof_switch = ui.switch("Scales with Profile", value=bool(tmpl.get("scales_with_profile")))
                 para_switch = ui.switch("Is Parallelizable", value=bool(tmpl.get("is_parallelizable")))
+                pt_select = ui.select(
+                    options=[""] + product_types,
+                    label="Product Type (optional)",
+                    value=tmpl.get("product_type") or "",
+                    with_input=True,
+                    clearable=True,
+                ).classes("w-full")
                 desc_input = ui.textarea("Description", value=tmpl.get("description") or "").classes("w-full")
 
                 async def _save():
@@ -192,6 +215,7 @@ async def tasks_page():
                         "scales_with_profile": prof_switch.value,
                         "is_parallelizable": para_switch.value,
                         "description": desc_input.value or None,
+                        "product_type": pt_select.value if pt_select.value else None,
                     }
                     try:
                         updated = await api_put(f"/task-templates/{tmpl['id']}", json=payload)

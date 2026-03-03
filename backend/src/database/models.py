@@ -75,6 +75,7 @@ class TaskTemplate(Base):
     scales_with_profile: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_parallelizable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     feature: Mapped[Optional["Feature"]] = relationship(back_populates="task_templates")
 
@@ -97,6 +98,7 @@ class TestProfile(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     effort_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class HistoricalProject(Base):
@@ -152,6 +154,7 @@ class Estimation(Base):
 
     request: Mapped[Optional["Request"]] = relationship(back_populates="estimations")
     tasks: Mapped[list["EstimationTask"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
+    team_allocations: Mapped[list["EstimationTeamAllocation"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
     creator: Mapped[Optional["User"]] = relationship(foreign_keys=[created_by_id])
     approver: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
@@ -177,6 +180,30 @@ class EstimationTask(Base):
     task_template: Mapped[Optional["TaskTemplate"]] = relationship()
 
 
+class EstimationTeamAllocation(Base):
+    __tablename__ = "estimation_team_allocations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    estimation_id: Mapped[int] = mapped_column(Integer, ForeignKey("estimations.id", ondelete="CASCADE"), nullable=False)
+    team_member_id: Mapped[int] = mapped_column(Integer, ForeignKey("team_members.id", ondelete="CASCADE"), nullable=False)
+    role: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    allocated_hours: Mapped[float] = mapped_column(Float, default=0)
+
+    estimation: Mapped["Estimation"] = relationship(back_populates="team_allocations")
+    team_member: Mapped["TeamMember"] = relationship()
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    members: Mapped[list["TeamMember"]] = relationship(back_populates="team")
+
+
 class TeamMember(Base):
     __tablename__ = "team_members"
 
@@ -185,6 +212,20 @@ class TeamMember(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)
     available_hours_per_day: Mapped[float] = mapped_column(Float, nullable=False, default=7.0)
     skills_json: Mapped[str] = mapped_column(Text, default="[]")
+    team_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+
+    team: Mapped[Optional["Team"]] = relationship(back_populates="members")
+
+
+class TaskPreset(Base):
+    __tablename__ = "task_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    task_template_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class Configuration(Base):
@@ -193,6 +234,19 @@ class Configuration(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class WebhookNotification(Base):
+    __tablename__ = "webhook_notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String, default="REDMINE")
+    request_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("requests.id", ondelete="SET NULL"), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class IntegrationConfig(Base):

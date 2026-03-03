@@ -40,6 +40,7 @@ services:
   nginx:
     image: nginx:latest
     ports:
+      - "8000:8000"   # Backend API (webhooks / external integrations)
       - "8444:8444"   # Streamlit UI
       - "8445:8445"   # NiceGUI UI (recommended)
     volumes:

@@ -307,3 +307,61 @@ class RedmineAdapter(BaseAdapter):
                 status=SyncStatus.FAILED,
                 errors=[str(e)],
             )
+
+    def update_assignee(self, external_id: str, assignee_login: str) -> SyncResult:
+        """Update the assigned_to on a Redmine issue by resolving a username to a Redmine user ID."""
+        try:
+            # Resolve login to Redmine user ID
+            resp = http_requests.get(
+                self._url("/users.json"),
+                headers=self._headers(),
+                params={"name": assignee_login, "limit": 5},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            users = resp.json().get("users", [])
+
+            redmine_user_id = None
+            for u in users:
+                if u.get("login", "").lower() == assignee_login.lower():
+                    redmine_user_id = u["id"]
+                    break
+            if not redmine_user_id and users:
+                redmine_user_id = users[0]["id"]
+
+            if not redmine_user_id:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.FAILED,
+                    errors=[f"Redmine user not found for login '{assignee_login}'"],
+                )
+
+            # Update issue assignee
+            update_resp = http_requests.put(
+                self._url(f"/issues/{external_id}.json"),
+                headers=self._headers(),
+                json={"issue": {"assigned_to_id": redmine_user_id}},
+                timeout=self.timeout,
+            )
+            if update_resp.status_code in (200, 204):
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.SUCCESS,
+                    items_processed=1,
+                    items_updated=1,
+                )
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.FAILED,
+                errors=[f"HTTP {update_resp.status_code}: {update_resp.text[:200]}"],
+            )
+        except Exception as e:
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.FAILED,
+                errors=[str(e)],
+            )

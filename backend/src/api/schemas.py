@@ -37,6 +37,7 @@ class TaskTemplateOut(BaseModel):
     scales_with_profile: bool
     is_parallelizable: bool
     description: Optional[str] = None
+    product_type: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -59,6 +60,7 @@ class TaskTemplateCreate(BaseModel):
     scales_with_profile: bool = False
     is_parallelizable: bool = False
     description: Optional[str] = None
+    product_type: Optional[str] = None
 
 class TaskTemplateUpdate(BaseModel):
     name: Optional[str] = None
@@ -68,6 +70,7 @@ class TaskTemplateUpdate(BaseModel):
     scales_with_profile: Optional[bool] = None
     is_parallelizable: Optional[bool] = None
     description: Optional[str] = None
+    product_type: Optional[str] = None
 
 
 # ── DUT Types ─────────────────────────────────────────────
@@ -100,6 +103,7 @@ class TestProfileBase(BaseModel):
     description: Optional[str] = None
     effort_multiplier: float = 1.0
     product_type: Optional[str] = None
+    is_active: bool = True
 
 class TestProfileCreate(TestProfileBase):
     pass
@@ -109,6 +113,7 @@ class TestProfileUpdate(BaseModel):
     description: Optional[str] = None
     effort_multiplier: Optional[float] = None
     product_type: Optional[str] = None
+    is_active: Optional[bool] = None
 
 class TestProfileOut(TestProfileBase):
     id: int
@@ -159,6 +164,9 @@ class TeamMemberUpdate(BaseModel):
 
 class TeamMemberOut(TeamMemberBase):
     id: int
+    team_id: Optional[int] = None
+    linked_user_id: Optional[int] = None
+    linked_user_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -244,6 +252,15 @@ class PRDetailItem(BaseModel):
     complexity: str = "simple"
     status: str = "Open"
 
+class TeamAllocationItem(BaseModel):
+    team_member_id: int
+    role: Optional[str] = None
+    allocated_hours: float = 0
+    team_member_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class EstimationTaskOut(BaseModel):
     id: int
     task_template_id: Optional[int] = None
@@ -303,6 +320,7 @@ class EstimationCreate(BaseModel):
     expected_delivery: Optional[date] = None
     working_days: int = 20
     created_by: Optional[str] = None
+    team_allocations: list[TeamAllocationItem] = []
 
 class EstimationOut(BaseModel):
     id: int
@@ -335,6 +353,7 @@ class EstimationOut(BaseModel):
     assigned_to_id: Optional[int] = None
     assigned_to_name: Optional[str] = None
     tasks: list[EstimationTaskOut] = []
+    team_allocations: list[TeamAllocationItem] = []
 
     model_config = {"from_attributes": True}
 
@@ -345,6 +364,12 @@ class EstimationOut(BaseModel):
         obj = handler(data)
         if obj.assigned_to_name is None and hasattr(data, "assigned_to") and data.assigned_to is not None:
             obj.assigned_to_name = data.assigned_to.display_name or data.assigned_to.username
+        # Resolve team_member_name on each allocation
+        if hasattr(data, "team_allocations"):
+            for i, alloc in enumerate(data.team_allocations):
+                if i < len(obj.team_allocations) and obj.team_allocations[i].team_member_name is None:
+                    if hasattr(alloc, "team_member") and alloc.team_member is not None:
+                        obj.team_allocations[i].team_member_name = alloc.team_member.name
         return obj
 
 class EstimationUpdate(BaseModel):
@@ -371,6 +396,7 @@ class EstimationRevise(BaseModel):
     start_date: Optional[date] = None
     expected_delivery: Optional[date] = None
     working_days: int = 20
+    team_allocations: list[TeamAllocationItem] = []
 
 
 class EstimationStatusUpdate(BaseModel):
@@ -440,3 +466,70 @@ class CalculationResultOut(BaseModel):
     utilization_pct: float
     risk_flags: list[str] = []
     risk_messages: list[str] = []
+
+
+# ── Webhook Notifications ────────────────────────────────
+
+class WebhookNotificationOut(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    message: str = ""
+    source: str = "REDMINE"
+    request_id: Optional[int] = None
+    is_read: bool = False
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class UnreadCountOut(BaseModel):
+    unread_count: int
+
+
+# ── Teams ────────────────────────────────────────────────
+
+class TeamCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class TeamUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class TeamOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    member_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+class TeamMembersUpdate(BaseModel):
+    member_ids: list[int] = []
+
+
+# ── Task Presets ─────────────────────────────────────────
+
+class TaskPresetCreate(BaseModel):
+    name: str
+    product_type: Optional[str] = None
+    description: Optional[str] = None
+    task_template_ids: list[int] = []
+
+class TaskPresetUpdate(BaseModel):
+    name: Optional[str] = None
+    product_type: Optional[str] = None
+    description: Optional[str] = None
+    task_template_ids: Optional[list[int]] = None
+
+class TaskPresetOut(BaseModel):
+    id: int
+    name: str
+    product_type: Optional[str] = None
+    description: Optional[str] = None
+    task_template_ids: list[int] = []
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}

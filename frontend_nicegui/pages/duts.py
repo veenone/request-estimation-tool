@@ -25,6 +25,7 @@ _COLUMNS = [
     {"name": "name",                  "label": "Name",         "field": "name",                  "align": "left", "sortable": True},
     {"name": "category",              "label": "Category",     "field": "category",              "align": "left", "sortable": True},
     {"name": "complexity_multiplier", "label": "Multiplier",   "field": "complexity_multiplier", "align": "left", "sortable": True},
+    {"name": "product_type",          "label": "Product Type", "field": "product_type",          "align": "left", "sortable": True},
     {"name": "actions",               "label": "Actions",      "field": "actions",               "align": "left"},
 ]
 
@@ -69,12 +70,17 @@ async def duts_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
-        # Fetch configurable categories                                          #
+        # Fetch configurable categories and product types                        #
         # ------------------------------------------------------------------ #
         try:
             categories: list[str] = await api_get("/dut-categories")
         except Exception:
             categories = _DEFAULT_CATEGORIES
+
+        try:
+            product_types: list[str] = await api_get("/configuration/product_types")
+        except Exception:
+            product_types = ["Payment", "Telco"]
 
         # ------------------------------------------------------------------ #
         # Refresh helper                                                        #
@@ -109,7 +115,7 @@ async def duts_page() -> None:
                     format="%.1f",
                 ).classes("w-full")
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value="",
                     with_input=True,
@@ -166,7 +172,7 @@ async def duts_page() -> None:
                     format="%.1f",
                 ).classes("w-full")
                 product_type_input = ui.select(
-                    options=["", "Payment", "Telco"],
+                    options=[""] + product_types,
                     label="Product Type (optional)",
                     value=row.get("product_type") or "",
                     with_input=True,

@@ -248,6 +248,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "working_days": 20,
         "team_size": 1,
         "has_leader": False,
+        "team_allocations": [],
         # Step 7 (calculation result)
         "calc_result": None,
     }
@@ -272,11 +273,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         except Exception:
             return []
 
-    all_features, all_duts, all_profiles, all_hist = await asyncio.gather(
+    all_features, all_duts, all_profiles, all_hist, all_team_members = await asyncio.gather(
         _safe_get("/features"),
         _safe_get("/dut-types"),
         _safe_get("/profiles"),
         _safe_get("/historical-projects"),
+        _safe_get("/team-members"),
     )
 
     # ------------------------------------------------------------------ #
@@ -369,6 +371,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     )
                 else:
                     # -- Select All checkbox --
+                    _programmatic_select_all = [False]
                     all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
                     select_all_cb = ui.checkbox(
                         f"Select all ({len(all_features)} features)",
@@ -376,21 +379,23 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     ).classes("text-weight-bold q-mb-sm")
 
                     def _toggle_select_all(e):
+                        if _programmatic_select_all[0]:
+                            return
                         checked = e.value
                         for _fid, _cb in feature_checkbox_refs.items():
                             _cb.value = checked
                             if not checked and _fid in new_feat_checkbox_refs:
                                 new_feat_checkbox_refs[_fid].value = False
 
-                    select_all_cb.on("update:model-value", _toggle_select_all)
+                    select_all_cb.on_value_change(_toggle_select_all)
 
                     def _update_select_all_state() -> None:
                         """Sync Select All checkbox when an individual feature is toggled."""
                         all_checked = all(cb.value for cb in feature_checkbox_refs.values())
                         if select_all_cb.value != all_checked:
-                            select_all_cb._event_listeners.clear()
+                            _programmatic_select_all[0] = True
                             select_all_cb.value = all_checked
-                            select_all_cb.on("update:model-value", _toggle_select_all)
+                            _programmatic_select_all[0] = False
 
                     ui.separator()
 
@@ -548,30 +553,32 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                     with matrix_container:
                         ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
-                        # Header row
-                        with ui.row().classes("items-center q-gutter-sm"):
+                        n_cols = len(sel_profs) + 1
+                        with ui.grid(columns=n_cols).classes("w-full items-center"):
+                            # Header row
                             ui.label("DUT \\ Profile").classes(
-                                "text-caption text-grey"
-                            ).style("min-width:140px")
+                                "text-caption text-grey text-weight-bold"
+                            )
                             for prof in sel_profs:
                                 ui.label(prof.get("name", f"P{prof['id']}")).classes(
-                                    "text-caption text-center"
-                                ).style("min-width:100px")
+                                    "text-caption text-center text-weight-bold"
+                                )
 
-                        for dut in sel_duts:
-                            with ui.row().classes("items-center q-gutter-sm"):
+                            # Data rows
+                            for dut in sel_duts:
                                 ui.label(dut.get("name", f"D{dut['id']}")).classes(
                                     "text-caption"
-                                ).style("min-width:140px")
+                                )
                                 for prof in sel_profs:
                                     key = (dut["id"], prof["id"])
                                     pre_checked = key in [
                                         tuple(pair)
                                         for pair in state["dut_profile_matrix"]
                                     ]
-                                    cb = ui.checkbox("", value=pre_checked).props(
-                                        "dense"
-                                    )
+                                    with ui.column().classes("items-center justify-center"):
+                                        cb = ui.checkbox("", value=pre_checked).props(
+                                            "dense"
+                                        )
                                     matrix_cb_refs[key] = cb
 
                 # Render DUT checkboxes
@@ -779,13 +786,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     "Specify the start date, deadline, and team capacity for feasibility assessment."
                 ).classes("text-body2 text-grey q-mb-md")
 
-                start_date_input = ui.date(
-                    value=state.get("start_date") or "",
-                ).classes("w-full").props("label='Start Date (optional)'")
+                with ui.row().classes("w-full q-gutter-md"):
+                    start_date_input = ui.date(
+                        value=state.get("start_date") or "",
+                    ).classes("flex-1").props("label='Start Date (optional)'")
 
-                delivery_input = ui.date(
-                    value=state["delivery_date"] or "",
-                ).classes("w-full q-mt-sm").props("label='Deadline (optional)'")
+                    delivery_input = ui.date(
+                        value=state["delivery_date"] or "",
+                    ).classes("flex-1").props("label='Deadline (optional)'")
 
                 working_days_input = ui.number(
                     "Working Days Available",
@@ -843,6 +851,77 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     value=state["has_leader"],
                 ).classes("q-mt-sm")
 
+                # Team allocation picker
+                if all_team_members:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+                    ui.label(
+                        "Select team members and assign roles/hours."
+                    ).classes("text-body2 text-grey q-mb-sm")
+
+                    tm_options = {
+                        m["id"]: f"{m.get('name', '')} ({m.get('role', '')})"
+                        for m in all_team_members
+                    }
+                    alloc_container = ui.column().classes("w-full")
+                    alloc_rows: list[dict] = list(state.get("team_allocations", []))
+
+                    def _render_alloc() -> None:
+                        alloc_container.clear()
+                        with alloc_container:
+                            for idx, alloc in enumerate(alloc_rows):
+                                with ui.row().classes("items-center q-gutter-sm w-full"):
+                                    _tm = ui.select(
+                                        options=tm_options,
+                                        value=alloc.get("team_member_id"),
+                                        label="Member",
+                                    ).classes("flex-1")
+                                    _role = ui.select(
+                                        options=["TESTER", "LEADER"],
+                                        value=alloc.get("role", "TESTER"),
+                                        label="Role",
+                                    ).classes("w-28")
+                                    _hrs = ui.number(
+                                        "Hours",
+                                        value=alloc.get("allocated_hours", 0),
+                                        min=0,
+                                        step=1,
+                                    ).classes("w-24")
+
+                                    def _make_remove(i: int):
+                                        def _remove():
+                                            alloc_rows.pop(i)
+                                            _render_alloc()
+                                        return _remove
+
+                                    ui.button(icon="close", on_click=_make_remove(idx)).props(
+                                        "flat dense round color=negative size=sm"
+                                    )
+
+                                    def _make_updater(i: int, tm=_tm, r=_role, h=_hrs):
+                                        def _upd(_=None):
+                                            if i < len(alloc_rows):
+                                                alloc_rows[i] = {
+                                                    "team_member_id": tm.value,
+                                                    "role": r.value or "TESTER",
+                                                    "allocated_hours": float(h.value or 0),
+                                                }
+                                        return _upd
+
+                                    updater = _make_updater(idx)
+                                    _tm.on("update:model-value", updater)
+                                    _role.on("update:model-value", updater)
+                                    _hrs.on("update:model-value", updater)
+
+                    def _add_alloc() -> None:
+                        alloc_rows.append({"team_member_id": None, "role": "TESTER", "allocated_hours": 0})
+                        _render_alloc()
+
+                    ui.button("Add Team Member", icon="add", on_click=_add_alloc).props(
+                        "flat dense color=primary"
+                    )
+                    _render_alloc()
+
                 def _collect_delivery() -> None:
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
@@ -851,6 +930,10 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     state["working_days"] = int(working_days_input.value or 20)
                     state["team_size"] = int(team_size_input.value or 1)
                     state["has_leader"] = bool(leader_toggle.value)
+                    if all_team_members:
+                        state["team_allocations"] = [
+                            a for a in alloc_rows if a.get("team_member_id")
+                        ]
 
                 with ui.stepper_navigation():
                     def _back_step6() -> None:
@@ -1047,6 +1130,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "expected_delivery": state["delivery_date"],
                         "request_id": linked_request_id,
                         "created_by": user.get("username"),
+                        "team_allocations": state.get("team_allocations", []),
                     }
                     try:
                         saved = await api_post("/estimations", json=payload)
@@ -1271,6 +1355,23 @@ async def estimation_detail_page(estimation_id: int) -> None:
             ui.label("No task breakdown available.").classes("text-grey q-mb-md")
 
         # ------------------------------------------------------------------ #
+        # Team Allocation                                                      #
+        # ------------------------------------------------------------------ #
+        team_allocs = est.get("team_allocations") or []
+        if team_allocs:
+            ui.label("Team Allocation").classes("text-h6 q-mb-sm")
+            alloc_cols = [
+                {"name": "team_member_name", "label": "Member",  "field": "team_member_name", "align": "left"},
+                {"name": "role",             "label": "Role",    "field": "role",             "align": "left"},
+                {"name": "allocated_hours",  "label": "Hours",   "field": "allocated_hours",  "align": "right"},
+            ]
+            ui.table(
+                columns=alloc_cols,
+                rows=team_allocs,
+                row_key="team_member_id",
+            ).classes("w-full shadow-1 q-mb-md")
+
+        # ------------------------------------------------------------------ #
         # Status transition buttons                                            #
         # ------------------------------------------------------------------ #
         ui.label("Workflow Actions").classes("text-h6 q-mb-sm")
@@ -1445,14 +1546,19 @@ async def edit_estimation_page(estimation_id: int) -> None:
             except Exception:
                 return []
 
-        all_features, all_duts, all_profiles, all_hist = await asyncio.gather(
+        all_features, all_duts, all_profiles, all_hist, all_team_members = await asyncio.gather(
             _safe_get("/features"),
             _safe_get("/dut-types"),
             _safe_get("/profiles"),
             _safe_get("/historical-projects"),
+            _safe_get("/team-members"),
         )
 
         # Pre-fill state from saved inputs
+        existing_allocs = [
+            {"team_member_id": a.get("team_member_id"), "role": a.get("role", "TESTER"), "allocated_hours": a.get("allocated_hours", 0)}
+            for a in (est.get("team_allocations") or [])
+        ]
         state: dict[str, Any] = {
             "project_name": est.get("project_name", ""),
             "project_type": est.get("project_type", "EVOLUTION"),
@@ -1472,6 +1578,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "working_days": saved_inputs.get("working_days", 20),
             "team_size": saved_inputs.get("team_size", 1),
             "has_leader": saved_inputs.get("has_leader", False),
+            "team_allocations": existing_allocs,
             "calc_result": None,
         }
 
@@ -1519,6 +1626,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     ui.label("No features found.").classes("text-warning")
                 else:
                     # -- Select All checkbox --
+                    _programmatic_select_all = [False]
                     all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
                     select_all_cb = ui.checkbox(
                         f"Select all ({len(all_features)} features)",
@@ -1526,20 +1634,22 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     ).classes("text-weight-bold q-mb-sm")
 
                     def _toggle_select_all(e):
+                        if _programmatic_select_all[0]:
+                            return
                         checked = e.value
                         for _fid, _cb in feature_checkbox_refs.items():
                             _cb.value = checked
                             if not checked and _fid in new_feat_checkbox_refs:
                                 new_feat_checkbox_refs[_fid].value = False
 
-                    select_all_cb.on("update:model-value", _toggle_select_all)
+                    select_all_cb.on_value_change(_toggle_select_all)
 
                     def _update_select_all_state() -> None:
                         all_checked = all(cb.value for cb in feature_checkbox_refs.values())
                         if select_all_cb.value != all_checked:
-                            select_all_cb._event_listeners.clear()
+                            _programmatic_select_all[0] = True
                             select_all_cb.value = all_checked
-                            select_all_cb.on("update:model-value", _toggle_select_all)
+                            _programmatic_select_all[0] = False
 
                     ui.separator()
 
@@ -1649,13 +1759,15 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         return
                     with matrix_container:
                         ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
-                        with ui.row().classes("items-center q-gutter-sm"):
-                            ui.label("DUT \\ Profile").classes("text-caption text-grey").style("min-width:140px")
+                        n_cols = len(sel_profs) + 1
+                        with ui.grid(columns=n_cols).classes("w-full items-center"):
+                            # Header row
+                            ui.label("DUT \\ Profile").classes("text-caption text-grey text-weight-bold")
                             for prof in sel_profs:
-                                ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center").style("min-width:100px")
-                        for dut in sel_duts:
-                            with ui.row().classes("items-center q-gutter-sm"):
-                                ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption").style("min-width:140px")
+                                ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center text-weight-bold")
+                            # Data rows
+                            for dut in sel_duts:
+                                ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption")
                                 for prof in sel_profs:
                                     key = (dut["id"], prof["id"])
                                     pre_checked = key in [tuple(pair) for pair in state["dut_profile_matrix"]]
@@ -1809,6 +1921,48 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 team_size_input = ui.number("Team Size (testers)", value=state["team_size"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
                 leader_toggle = ui.switch("Include Test Leader effort", value=state["has_leader"]).classes("q-mt-sm")
 
+                # Team allocation picker
+                if all_team_members:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+                    tm_options = {
+                        m["id"]: f"{m.get('name', '')} ({m.get('role', '')})"
+                        for m in all_team_members
+                    }
+                    alloc_container = ui.column().classes("w-full")
+                    alloc_rows: list[dict] = list(state.get("team_allocations", []))
+
+                    def _render_alloc() -> None:
+                        alloc_container.clear()
+                        with alloc_container:
+                            for idx, alloc in enumerate(alloc_rows):
+                                with ui.row().classes("items-center q-gutter-sm w-full"):
+                                    _tm = ui.select(options=tm_options, value=alloc.get("team_member_id"), label="Member").classes("flex-1")
+                                    _role = ui.select(options=["TESTER", "LEADER"], value=alloc.get("role", "TESTER"), label="Role").classes("w-28")
+                                    _hrs = ui.number("Hours", value=alloc.get("allocated_hours", 0), min=0, step=1).classes("w-24")
+                                    def _make_remove(i: int):
+                                        def _remove():
+                                            alloc_rows.pop(i)
+                                            _render_alloc()
+                                        return _remove
+                                    ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+                                    def _make_updater(i: int, tm=_tm, r=_role, h=_hrs):
+                                        def _upd(_=None):
+                                            if i < len(alloc_rows):
+                                                alloc_rows[i] = {"team_member_id": tm.value, "role": r.value or "TESTER", "allocated_hours": float(h.value or 0)}
+                                        return _upd
+                                    updater = _make_updater(idx)
+                                    _tm.on("update:model-value", updater)
+                                    _role.on("update:model-value", updater)
+                                    _hrs.on("update:model-value", updater)
+
+                    def _add_alloc() -> None:
+                        alloc_rows.append({"team_member_id": None, "role": "TESTER", "allocated_hours": 0})
+                        _render_alloc()
+
+                    ui.button("Add Team Member", icon="add", on_click=_add_alloc).props("flat dense color=primary")
+                    _render_alloc()
+
                 def _collect_delivery():
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
@@ -1817,6 +1971,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     state["working_days"] = int(working_days_input.value or 20)
                     state["team_size"] = int(team_size_input.value or 1)
                     state["has_leader"] = bool(leader_toggle.value)
+                    if all_team_members:
+                        state["team_allocations"] = [a for a in alloc_rows if a.get("team_member_id")]
 
                 with ui.stepper_navigation():
                     def _back_s6():
@@ -1940,6 +2096,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "working_days": state["working_days"],
                         "start_date": state.get("start_date"),
                         "expected_delivery": state["delivery_date"],
+                        "team_allocations": state.get("team_allocations", []),
                     }
                     try:
                         saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)

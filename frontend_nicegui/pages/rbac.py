@@ -24,6 +24,7 @@ from typing import Any
 from nicegui import ui
 
 from frontend_nicegui.app import (
+    _safe_storage,
     api_get,
     api_put,
     current_user,
@@ -53,6 +54,7 @@ _PERMISSIONS: list[tuple[str, str]] = [
     ("Manage Integrations",  "manage_integrations"),
     ("Manage Settings",      "manage_settings"),
     ("View Audit Log",       "view_audit_log"),
+    ("View Requests",        "view_requests"),
     ("Manage Requests",      "manage_requests"),
     ("LDAP Sync",            "ldap_sync"),
 ]
@@ -71,6 +73,7 @@ _DEFAULT_MATRIX: dict[str, list[str]] = {
         "manage_features",
         "manage_duts",
         "manage_profiles",
+        "view_requests",
     ],
     "APPROVER": [
         "view_estimations",
@@ -82,6 +85,7 @@ _DEFAULT_MATRIX: dict[str, list[str]] = {
         "manage_duts",
         "manage_profiles",
         "view_audit_log",
+        "view_requests",
         "manage_requests",
     ],
     "ADMIN": [p for _, p in _PERMISSIONS],   # every permission
@@ -191,11 +195,15 @@ async def rbac_page() -> None:
                 ui.badge(r, color=colour).classes("text-caption")
 
         # ---- matrix card --------------------------------------------------------
+        is_dark = _safe_storage().get("dark_mode", True)
+        header_bg = "bg-grey-10" if is_dark else "bg-grey-3"
+        row_bg = "bg-grey-9" if is_dark else "bg-grey-2"
+
         with ui.card().classes("w-full q-pa-none"):
 
             # Column header row
             with ui.row().classes(
-                "w-full items-center q-px-md q-py-sm bg-dark-page"
+                f"w-full items-center q-px-md q-py-sm {header_bg}"
             ):
                 # Permission label column — fixed width
                 ui.label("Permission").classes(
@@ -213,7 +221,7 @@ async def rbac_page() -> None:
             for idx, (label, perm_key) in enumerate(_PERMISSIONS):
                 row_class = (
                     "w-full items-center q-px-md q-py-xs "
-                    + ("bg-grey-10" if idx % 2 == 0 else "")
+                    + (row_bg if idx % 2 == 0 else "")
                 )
                 with ui.row().classes(row_class):
 
