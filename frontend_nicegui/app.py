@@ -25,6 +25,17 @@ from nicegui import app, ui
 
 API_URL = os.environ.get("API_URL", "http://localhost:8501/api")
 
+# ---------------------------------------------------------------------------
+# Serve uploaded files (logo, etc.) directly from NiceGUI so the browser can
+# load them without going through the API/nginx proxy.
+# ---------------------------------------------------------------------------
+_UPLOADS_DIR = Path("/app/data/uploads")
+if not _UPLOADS_DIR.parent.exists():
+    # Local dev fallback
+    _UPLOADS_DIR = Path(_PROJECT_ROOT) / "backend" / "data" / "uploads"
+_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.add_static_files("/uploads", str(_UPLOADS_DIR))
+
 
 # ---------------------------------------------------------------------------
 # Friendly error pages
@@ -267,9 +278,33 @@ async def login_page():
         except Exception as e:
             ui.notify(f"Login error: {e}", type="negative")
 
+    # Fetch logo config for login page
+    _login_logo_url = ""
+    _login_logo_height = "50"
+    try:
+        async with httpx.AsyncClient() as client:
+            r_cfg = await client.get(f"{API_URL}/configuration")
+            if r_cfg.status_code == 200:
+                for ci in r_cfg.json():
+                    if ci.get("key") == "logo_url":
+                        _login_logo_url = ci.get("value") or ""
+                    elif ci.get("key") == "logo_height":
+                        _login_logo_height = ci.get("value") or "50"
+    except Exception:
+        pass
+    if _login_logo_url and "/api/static/uploads/" in _login_logo_url:
+        _login_logo_url = _login_logo_url.replace("/api/static/uploads/", "/uploads/")
+
     with ui.card().classes("absolute-center w-96"):
-        ui.label("Test Effort Estimation Tool").classes("text-h5 text-center w-full")
-        ui.label("Sign in to continue").classes("text-subtitle2 text-center w-full text-grey")
+        if _login_logo_url:
+            with ui.row().classes("w-full justify-center q-mb-sm"):
+                ui.html(
+                    f'<img src="{_login_logo_url}" alt="Logo" '
+                    f'style="max-height: {_login_logo_height}px; max-width: 200px; object-fit: contain;" '
+                    f'onerror="this.style.display=\'none\'" />'
+                )
+        ui.label("PRESTO").classes("text-h5 text-center w-full")
+        ui.label("Project Request Estimation Tool").classes("text-subtitle2 text-center w-full text-grey")
 
         if has_ldap:
             toggle = ui.toggle(
@@ -316,7 +351,33 @@ def sidebar():
     role = user.get("role", "VIEWER") if user else "VIEWER"
 
     with ui.left_drawer(value=True).classes("bg-dark text-white") as drawer:
-        ui.label("Estimation Tool").classes("text-h6 q-pa-md")
+        # Configurable logo (sync fetch to avoid async in non-async function)
+        _logo_url = ""
+        _logo_height = "40"
+        try:
+            import httpx as _hx_logo
+            _r_logo = _hx_logo.get(f"{API_URL}/configuration", headers=auth_headers(), timeout=5)
+            if _r_logo.status_code == 200:
+                for _ci_logo in _r_logo.json():
+                    if _ci_logo.get("key") == "logo_url":
+                        _logo_url = _ci_logo.get("value") or ""
+                    elif _ci_logo.get("key") == "logo_height":
+                        _logo_height = _ci_logo.get("value") or "40"
+        except Exception:
+            pass
+        # Rewrite API-served URL to NiceGUI-served URL for reliability
+        if _logo_url and "/api/static/uploads/" in _logo_url:
+            _logo_url = _logo_url.replace("/api/static/uploads/", "/uploads/")
+        if _logo_url:
+            with ui.row().classes("q-pa-md items-center gap-2"):
+                ui.html(
+                    f'<img src="{_logo_url}" alt="Logo" '
+                    f'style="max-height: {_logo_height}px; max-width: 160px; object-fit: contain;" '
+                    f'onerror="this.style.display=\'none\'" />'
+                )
+                ui.label("PRESTO").classes("text-h6")
+        else:
+            ui.label("PRESTO").classes("text-h6 q-pa-md")
 
         if user:
             with ui.row().classes("q-px-md items-center w-full justify-between"):
@@ -487,9 +548,14 @@ def sidebar():
             _nav_item("Feature Catalog",    "category",    "/features")
             _nav_item("Task Templates",    "assignment",  "/tasks")
             _nav_item("DUT Registry",       "devices",    "/duts")
+            _nav_item("DUT Assets",        "inventory",  "/assets")
             _nav_item("Test Profiles",      "tune",       "/profiles")
             _nav_item("Historical Projects", "history",   "/history")
             _nav_item("Team Members",       "group",      "/team")
+            _nav_item("Risk Registry",      "warning",    "/risks")
+            _nav_item("PR Registry",       "bug_report", "/pr-registry")
+            _nav_item("Document Types",    "description","/document-types")
+            _nav_item("Public Holidays",   "event",      "/public-holidays")
 
             ui.separator()
 
@@ -520,6 +586,33 @@ def sidebar():
                     _hdr_dark = _ci.get("value") or _hdr_dark
         _active_hdr = _hdr_dark if is_dark else _hdr_light
         ui.add_css(f".q-table thead th {{ background-color: {_active_hdr} !important; }}")
+
+        # Inject custom sidebar/content/button colors from config
+        _sidebar_bg = "#1D1D1D" if is_dark else "#FFFFFF"
+        _content_bg = "#121212" if is_dark else "#FAFAFA"
+        _button_color = "#90CAF9" if is_dark else "#1976D2"
+        if _cfg_list:
+            for _ci in _cfg_list:
+                k, v = _ci.get("key", ""), _ci.get("value", "")
+                if not v:
+                    continue
+                if k == "sidebar_bg_light" and not is_dark:
+                    _sidebar_bg = v
+                elif k == "sidebar_bg_dark" and is_dark:
+                    _sidebar_bg = v
+                elif k == "content_bg_light" and not is_dark:
+                    _content_bg = v
+                elif k == "content_bg_dark" and is_dark:
+                    _content_bg = v
+                elif k == "button_color_light" and not is_dark:
+                    _button_color = v
+                elif k == "button_color_dark" and is_dark:
+                    _button_color = v
+        ui.add_css(f"""
+            .q-drawer--left {{ background-color: {_sidebar_bg} !important; }}
+            .q-page {{ background-color: {_content_bg} !important; }}
+            .q-btn--standard.bg-primary {{ background-color: {_button_color} !important; }}
+        """)
 
         def toggle_theme():
             dark.toggle()
@@ -633,6 +726,11 @@ import frontend_nicegui.pages.users         # noqa: F401,E402
 import frontend_nicegui.pages.audit         # noqa: F401,E402
 import frontend_nicegui.pages.estimation    # noqa: F401,E402
 import frontend_nicegui.pages.rbac          # noqa: F401,E402
+import frontend_nicegui.pages.risks         # noqa: F401,E402
+import frontend_nicegui.pages.assets        # noqa: F401,E402
+import frontend_nicegui.pages.pr_registry   # noqa: F401,E402
+import frontend_nicegui.pages.documents    # noqa: F401,E402
+import frontend_nicegui.pages.holidays    # noqa: F401,E402
 
 # ---------------------------------------------------------------------------
 # Run
@@ -658,7 +756,7 @@ if __name__ in {"__main__", "__mp_main__"}:
     print(f"Starting NiceGUI on {scheme}://0.0.0.0:{_port}")
 
     ui.run(
-        title="Test Effort Estimation Tool",
+        title="PRESTO",
         port=_port,
         storage_secret="estimation-tool-secret-change-me",
         favicon="🧪",

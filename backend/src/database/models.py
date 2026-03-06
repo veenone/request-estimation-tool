@@ -58,6 +58,7 @@ class Feature(Base):
     has_existing_tests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    study_effort_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     task_templates: Mapped[list["TaskTemplate"]] = relationship(back_populates="feature", cascade="all, delete-orphan")
@@ -78,6 +79,22 @@ class TaskTemplate(Base):
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     feature: Mapped[Optional["Feature"]] = relationship(back_populates="task_templates")
+
+
+class DocumentType(Base):
+    """Registry of document types for reporting/documentation tasks."""
+    __tablename__ = "document_types"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    category: Mapped[str] = mapped_column(String, nullable=False, default="Report")
+    base_effort_hours: Mapped[float] = mapped_column(Float, nullable=False, default=4.0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    task_template_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("task_templates.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    task_template: Mapped[Optional["TaskTemplate"]] = relationship()
 
 
 class DutType(Base):
@@ -151,13 +168,23 @@ class Estimation(Base):
     assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     wizard_inputs_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    expected_releases: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    release_extra_hours: Mapped[float] = mapped_column(Float, default=0)
+    documentation_hours: Mapped[float] = mapped_column(Float, default=0)
+    pr_no_test_hours: Mapped[float] = mapped_column(Float, default=0)
+    project_goals: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    target_customer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    team_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
 
     request: Mapped[Optional["Request"]] = relationship(back_populates="estimations")
     tasks: Mapped[list["EstimationTask"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
     team_allocations: Mapped[list["EstimationTeamAllocation"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
+    risks: Mapped[list["EstimationRisk"]] = relationship(back_populates="estimation", cascade="all, delete-orphan")
     creator: Mapped[Optional["User"]] = relationship(foreign_keys=[created_by_id])
     approver: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
+    team: Mapped[Optional["Team"]] = relationship()
 
 
 class EstimationTask(Base):
@@ -228,6 +255,45 @@ class TaskPreset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class RiskItem(Base):
+    __tablename__ = "risk_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    category: Mapped[str] = mapped_column(String, nullable=False, default="General")
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    likelihood: Mapped[str] = mapped_column(String, nullable=False, default="MEDIUM")
+    impact: Mapped[str] = mapped_column(String, nullable=False, default="MEDIUM")
+    mitigation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class EstimationRisk(Base):
+    __tablename__ = "estimation_risks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    estimation_id: Mapped[int] = mapped_column(Integer, ForeignKey("estimations.id", ondelete="CASCADE"), nullable=False)
+    risk_item_id: Mapped[int] = mapped_column(Integer, ForeignKey("risk_items.id", ondelete="CASCADE"), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    estimation: Mapped["Estimation"] = relationship(back_populates="risks")
+    risk_item: Mapped["RiskItem"] = relationship()
+
+
+class EstimationVersionSnapshot(Base):
+    """Stores a snapshot of an estimation before it is revised."""
+    __tablename__ = "estimation_version_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    estimation_id: Mapped[int] = mapped_column(Integer, ForeignKey("estimations.id", ondelete="CASCADE"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    estimation: Mapped["Estimation"] = relationship()
+
+
 class Configuration(Base):
     __tablename__ = "configuration"
 
@@ -247,6 +313,16 @@ class WebhookNotification(Base):
     request_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("requests.id", ondelete="SET NULL"), nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class PublicHoliday(Base):
+    __tablename__ = "public_holidays"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    country: Mapped[str] = mapped_column(String, nullable=False, default="")
+    is_recurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class IntegrationConfig(Base):

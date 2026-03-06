@@ -396,60 +396,186 @@ class OutlineAdapter(BaseAdapter):
             Multi-line Markdown string suitable for an Outline document body.
         """
         feasibility: str = data.get("feasibility_status", "N/A")
-        status_icon = {
-            "FEASIBLE": "green_circle",
-            "AT_RISK": "yellow_circle",
-            "NOT_FEASIBLE": "red_circle",
-        }.get(feasibility, "white_circle")
+        status_display = {
+            "FEASIBLE": "**FEASIBLE** \u2705",
+            "AT_RISK": "**AT RISK** \u26a0\ufe0f",
+            "NOT_FEASIBLE": "**NOT FEASIBLE** \u274c",
+        }.get(feasibility, feasibility)
 
         lines: list[str] = [
             f"# {data.get('estimation_number', 'N/A')} — {data.get('project_name', 'Unnamed')}",
             "",
             f"**Status:** {data.get('status', 'DRAFT')}  ",
             f"**Version:** {data.get('version', 1)}  ",
-            f"**Feasibility:** [{status_icon}] {feasibility}  ",
+            f"**Feasibility:** {status_display}  ",
             f"**Project Type:** {data.get('project_type', 'N/A')}  ",
             f"**Assigned To:** {data.get('assigned_to_name') or 'Unassigned'}  ",
             f"**Created:** {data.get('created_at', 'N/A')}  ",
             "",
+        ]
+
+        # Project context
+        project_goals = data.get("project_goals")
+        target_customer = data.get("target_customer")
+        if project_goals or target_customer:
+            lines.append("## Project Context")
+            lines.append("")
+            if project_goals:
+                lines.append(f"**Project Goals:** {project_goals}  ")
+            if target_customer:
+                lines.append(f"**Target Customer:** {target_customer}  ")
+            lines.append("")
+
+        # Effort summary
+        effort_lines = [
             "## Effort Summary",
             "",
             "| Category | Hours |",
             "|----------|------:|",
             f"| Tester Effort | {data.get('total_tester_hours', 0):.1f} |",
             f"| Leader Effort | {data.get('total_leader_hours', 0):.1f} |",
+            f"| PR Fix Validation | {data.get('pr_fix_hours', 0):.1f} |",
+        ]
+        pr_no_test = data.get("pr_no_test_hours", 0)
+        if pr_no_test:
+            effort_lines.append(f"| PR Test Creation | {pr_no_test:.1f} |")
+        effort_lines.append(f"| New Feature Study | {data.get('study_hours', 0):.1f} |")
+        release_extra = data.get("release_extra_hours", 0)
+        doc_hours = data.get("documentation_hours", 0)
+        if release_extra:
+            effort_lines.append(f"| Release Extra | {release_extra:.1f} |")
+        if doc_hours:
+            effort_lines.append(f"| Documentation | {doc_hours:.1f} |")
+        effort_lines.extend([
+            f"| Buffer | {data.get('buffer_hours', 0):.1f} |",
             f"| **Grand Total** | **{data.get('grand_total_hours', 0):.1f}** |",
             f"| Grand Total (days) | {data.get('grand_total_days', 0):.1f} |",
-            "",
+        ])
+        working_weeks = data.get("working_weeks", 0)
+        if working_weeks:
+            effort_lines.append(f"| Working Weeks | {working_weeks:.1f} |")
+        effort_lines.append("")
+        lines.extend(effort_lines)
+
+        # Parameters
+        lines.extend([
             "## Parameters",
             "",
             f"- DUT Count: {data.get('dut_count', 0)}",
             f"- Profile Count: {data.get('profile_count', 0)}",
             f"- DUT x Profile Combinations: {data.get('dut_profile_combinations', 0)}",
             f"- PR Fix Count: {data.get('pr_fix_count', 0)}",
-            "",
-        ]
+        ])
+        dut_names = data.get("dut_names", [])
+        if dut_names:
+            lines.append(f"- DUT Types: {', '.join(dut_names)}")
+        profile_names = data.get("profile_names", [])
+        if profile_names:
+            lines.append(f"- Test Profiles: {', '.join(profile_names)}")
+        lines.append("")
+
+        # PR Fixes breakdown
+        pr_simple = data.get("pr_simple", 0)
+        pr_medium = data.get("pr_medium", 0)
+        pr_complex = data.get("pr_complex", 0)
+        if pr_simple or pr_medium or pr_complex:
+            lines.extend([
+                "## PR Fixes Breakdown",
+                "",
+                "| Complexity | Count | Hours Each | Subtotal |",
+                "|------------|------:|-----------:|---------:|",
+                f"| Simple | {pr_simple} | 2 | {pr_simple * 2} |",
+                f"| Medium | {pr_medium} | 4 | {pr_medium * 4} |",
+                f"| Complex | {pr_complex} | 8 | {pr_complex * 8} |",
+                f"| **Total** | **{pr_simple + pr_medium + pr_complex}** | | **{data.get('pr_fix_hours', 0):.1f}** |",
+                "",
+            ])
+
+        pr_details: list[dict] = data.get("pr_details", [])
+        if pr_details:
+            lines.extend([
+                "### PR Details",
+                "",
+                "| PR # | Link | Priority | Complexity | Status | Test Available |",
+                "|------|------|----------|------------|--------|---------------|",
+            ])
+            for pr in pr_details:
+                pr_num = pr.get("pr_number", "")
+                link = pr.get("link", "")
+                link_md = f"[{link}]({link})" if link else "\u2014"
+                priority = pr.get("priority", "")
+                cx = pr.get("complexity", "")
+                st = pr.get("status", "")
+                test_avail = "\u2705" if pr.get("test_available", True) else "\u274c"
+                lines.append(f"| {pr_num} | {link_md} | {priority} | {cx} | {st} | {test_avail} |")
+            lines.append("")
 
         tasks: list[dict] = data.get("tasks", [])
         if tasks:
             lines.extend([
                 "## Task Breakdown",
                 "",
-                "| Task | Type | Tester Hours | Leader Hours |",
-                "|------|------|-------------:|-------------:|",
+                "| Task | Type | Tester Hours | Leader Hours | Notes |",
+                "|------|------|-------------:|-------------:|-------|",
             ])
             for task in tasks:
                 name = task.get("task_name", task.get("name", ""))
                 task_type = task.get("task_type", "")
                 tester_hours = task.get("calculated_hours", 0)
                 leader_hours = task.get("leader_hours", 0)
-                lines.append(f"| {name} | {task_type} | {tester_hours:.1f} | {leader_hours:.1f} |")
+                notes = task.get("notes", "") or ""
+                lines.append(f"| {name} | {task_type} | {tester_hours:.1f} | {leader_hours:.1f} | {notes} |")
+            lines.append("")
+
+        # Document Deliverables
+        doc_deliverables: list[dict] = data.get("document_deliverables", [])
+        if doc_deliverables:
+            lines.extend([
+                "## Document Deliverables",
+                "",
+                "| Document Type | Category | Linked Task | Count | Total Hours | Effective Hours | Note |",
+                "|---------------|----------|-------------|------:|------------:|----------------:|------|",
+            ])
+            for dd in doc_deliverables:
+                lines.append(
+                    f"| {dd.get('name', '')} "
+                    f"| {dd.get('category', '')} "
+                    f"| {dd.get('linked_task', '') or '\u2014'} "
+                    f"| {dd.get('count', 0)} "
+                    f"| {dd.get('total_hours', 0):.1f} "
+                    f"| {dd.get('effective_hours', 0):.1f} "
+                    f"| {dd.get('overlap_note', '') or ''} |"
+                )
+            lines.append("")
+
+        # Team Allocation
+        team_members: list[dict] = data.get("team_members", [])
+        if team_members:
+            lines.extend([
+                "## Team Allocation",
+                "",
+                "| Member | Role | Allocated Hours |",
+                "|--------|------|----------------:|",
+            ])
+            for tm in team_members:
+                lines.append(f"| {tm.get('name', '')} | {tm.get('role', '')} | {tm.get('allocated_hours', 0):.1f} |")
+            lines.append("")
+
+        # Risk Assessment
+        risk_messages: list[str] = data.get("risk_messages", [])
+        if risk_messages:
+            lines.extend([
+                "## Risk Assessment",
+                "",
+            ])
+            for msg in risk_messages:
+                lines.append(f"- \u26a0\ufe0f {msg}")
             lines.append("")
 
         lines.extend([
             "---",
             (
-                f"*Generated by Test Effort Estimation Tool on "
+                f"*Generated by PRESTO on "
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')}*"
             ),
         ])

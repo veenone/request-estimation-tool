@@ -256,6 +256,137 @@ class RedmineAdapter(BaseAdapter):
                 errors=[str(e)],
             )
 
+    def create_task_breakdown(self, estimation_data: dict) -> SyncResult:
+        """Create sub-tasks in Redmine for each estimation task.
+
+        If a parent issue (external_id) is provided, tasks are created as
+        child issues.  Otherwise, tasks are created as standalone issues
+        in the configured project_id.
+        """
+        external_id = estimation_data.get("external_id")  # parent Redmine issue ID
+
+        tasks = estimation_data.get("tasks", [])
+        if not tasks:
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.SKIPPED,
+                errors=["No tasks to export."],
+            )
+
+        try:
+            project_id = None
+            has_parent = False
+            subtask_tracker_id = self.additional_config.get("subtask_tracker_id")
+
+            # Try to resolve project from parent issue
+            if external_id:
+                try:
+                    parent_resp = http_requests.get(
+                        self._url(f"/issues/{external_id}.json"),
+                        headers=self._headers(),
+                        timeout=self.timeout,
+                    )
+                    if parent_resp.status_code == 200:
+                        parent_data = parent_resp.json().get("issue", {})
+                        project_id = parent_data.get("project", {}).get("id")
+                        has_parent = True
+                        if not subtask_tracker_id:
+                            subtask_tracker_id = parent_data.get("tracker", {}).get("id")
+                except Exception:
+                    pass
+
+            # Fallback to configured project_id
+            if not project_id:
+                project_id = self.project_id
+
+            if not project_id:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.FAILED,
+                    errors=[
+                        "Cannot determine Redmine project. "
+                        "Either link the estimation to a Redmine issue or "
+                        "configure a Project ID in Redmine integration settings."
+                    ],
+                )
+
+            if not subtask_tracker_id:
+                subtask_tracker_id = self.tracker_id
+
+            est_num = estimation_data.get("estimation_number", "")
+            created = 0
+            errors: list[str] = []
+
+            for task in tasks:
+                task_name = task.get("task_name", task.get("name", "Task"))
+                calc_hours = task.get("calculated_hours", 0)
+                leader_hours = task.get("leader_hours", 0)
+                task_type = task.get("task_type", "")
+                total_hours = calc_hours + leader_hours
+
+                subject = f"[{est_num}] {task_name}"
+                desc_lines = [
+                    f"Task Type: {task_type}",
+                    f"Tester Hours: {calc_hours:.1f}h",
+                    f"Leader Hours: {leader_hours:.1f}h",
+                    f"Total: {total_hours:.1f}h",
+                ]
+                if task.get("is_new_feature_study"):
+                    desc_lines.append("(New Feature Study)")
+                if task.get("notes"):
+                    desc_lines.append(f"Notes: {task['notes']}")
+
+                issue_payload: dict[str, Any] = {
+                    "issue": {
+                        "project_id": project_id,
+                        "subject": subject,
+                        "description": "\n".join(desc_lines),
+                        "estimated_hours": total_hours,
+                    }
+                }
+                if has_parent and external_id:
+                    issue_payload["issue"]["parent_issue_id"] = int(external_id)
+                if subtask_tracker_id:
+                    issue_payload["issue"]["tracker_id"] = int(subtask_tracker_id)
+
+                resp = http_requests.post(
+                    self._url("/issues.json"),
+                    headers=self._headers(),
+                    json=issue_payload,
+                    timeout=self.timeout,
+                )
+                if resp.status_code == 201:
+                    created += 1
+                else:
+                    errors.append(f"Failed to create '{task_name}': HTTP {resp.status_code}: {resp.text[:150]}")
+
+            if errors and created == 0:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.FAILED,
+                    items_processed=len(tasks),
+                    items_created=created,
+                    errors=errors,
+                )
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.SUCCESS if not errors else SyncStatus.PARTIAL,
+                items_processed=len(tasks),
+                items_created=created,
+                errors=errors,
+            )
+        except Exception as e:
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.FAILED,
+                errors=[str(e)],
+            )
+
     def upload_attachment(self, issue_id: str, filename: str, content: bytes) -> SyncResult:
         """Upload an attachment (report) to a Redmine issue."""
         try:

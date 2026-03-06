@@ -5,10 +5,11 @@ API used:
     PUT  /configuration/{key}    -> {key, value, description}  (ADMIN only)
 """
 
+import asyncio
 import json
 
 from nicegui import ui
-from frontend_nicegui.app import _safe_storage, api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
+from frontend_nicegui.app import API_URL, _safe_storage, api_get, api_post, api_put, auth_headers, is_authenticated, show_error_page, sidebar
 
 # ---------------------------------------------------------------------------
 # Role mapping constants
@@ -32,14 +33,30 @@ SECTION_KEYS: dict[str, list[str]] = {
         "buffer_percentage",
         "pr_fix_base_hours",
         "estimation_number_prefix",
+        "pr_priority_list",
+        "pr_hours_simple",
+        "pr_hours_medium",
+        "pr_hours_complex",
+        "pr_no_test_hours",
+        "pr_no_test_task_template_id",
     ],
     "Workflow Automation": [
         "outline_auto_export_states",
         "auto_create_historical_project",
     ],
+    "Branding": [
+        "logo_url",
+        "logo_height",
+    ],
     "Appearance": [
         "table_header_bg_light",
         "table_header_bg_dark",
+        "sidebar_bg_light",
+        "sidebar_bg_dark",
+        "content_bg_light",
+        "content_bg_dark",
+        "button_color_light",
+        "button_color_dark",
     ],
     "Data Management": [
         "dut_categories",
@@ -129,15 +146,86 @@ async def settings_page():
                         value: str = item.get("value") or ""
                         description: str = item.get("description") or ""
 
+                        # Use color picker for color config keys
+                        is_color_key = any(p in key for p in ("_bg_", "_color_"))
                         with ui.column().classes("w-full"):
-                            inp = ui.input(
-                                label=key,
-                                value=value,
-                            ).classes("w-full")
+                            if is_color_key:
+                                inp = ui.color_input(
+                                    label=key,
+                                    value=value,
+                                ).classes("w-full")
+                            else:
+                                inp = ui.input(
+                                    label=key,
+                                    value=value,
+                                ).classes("w-full")
                             if description:
                                 ui.label(description).classes(
                                     "text-caption text-grey q-mt-none q-mb-xs"
                                 )
+                            # Logo upload button alongside the URL input
+                            if key == "logo_url":
+                                _logo_inp = inp  # capture for closure
+                                _logo_preview = None
+                                with ui.row().classes("items-center gap-2 q-mt-xs"):
+                                    if value:
+                                        _logo_preview = ui.image(value).classes("q-mr-sm").style(
+                                            "max-height: 40px; max-width: 120px;"
+                                        )
+
+                                    def _make_logo_handler(logo_input=_logo_inp, logo_preview=_logo_preview):
+                                        async def _handle_logo_upload(e) -> None:
+                                            import httpx
+                                            # NiceGUI 3.8+: e is UploadEventArguments with .file (FileUpload)
+                                            # FileUpload has .name, async .read(), async .save()
+                                            upload_file = getattr(e, "file", None) or e
+                                            fname = upload_file.name if hasattr(upload_file, "name") else "logo.png"
+                                            # Read content: NiceGUI 3.8 uses async read()
+                                            if hasattr(upload_file, "read") and asyncio.iscoroutinefunction(upload_file.read):
+                                                content = await upload_file.read()
+                                            elif hasattr(upload_file, "content"):
+                                                # Legacy NiceGUI: content is a SpooledTemporaryFile
+                                                upload_file.content.seek(0)
+                                                content = upload_file.content.read()
+                                            else:
+                                                ui.notify("Could not read upload file.", type="warning")
+                                                return
+                                            if not content:
+                                                ui.notify("Upload file is empty.", type="warning")
+                                                return
+                                            try:
+                                                async with httpx.AsyncClient() as client:
+                                                    resp = await client.post(
+                                                        f"{API_URL}/configuration/logo/upload",
+                                                        headers=auth_headers(),
+                                                        files={"file": (fname, content)},
+                                                        timeout=15,
+                                                    )
+                                                resp.raise_for_status()
+                                                result = resp.json()
+                                                new_url = result.get("logo_url", "")
+                                                if logo_input and new_url:
+                                                    logo_input.value = new_url
+                                                ui.notify(
+                                                    "Logo uploaded and saved. Reloading page...",
+                                                    type="positive",
+                                                )
+                                                ui.timer(1.5, lambda: ui.navigate.to("/settings"), once=True)
+                                            except Exception as exc:
+                                                ui.notify(
+                                                    f"Logo upload failed: {exc}",
+                                                    type="negative",
+                                                )
+                                        return _handle_logo_upload
+
+                                    ui.upload(
+                                        label="Upload Logo",
+                                        auto_upload=True,
+                                        max_files=1,
+                                        on_upload=_make_logo_handler(),
+                                    ).props('accept=".png,.jpg,.jpeg,.gif,.svg,.webp" flat dense').classes(
+                                        "w-48"
+                                    )
                         inputs[key] = inp
 
         # ---- role mapping matrix tables ------------------------------------------

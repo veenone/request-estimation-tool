@@ -42,11 +42,12 @@ _STATUS_CLASSES: dict[str, str] = {
     "ESTIMATED": "text-positive",
     "COMPLETED": "text-positive",
     "REJECTED": "text-negative",
+    "DELETED_UPSTREAM": "text-negative",
 }
 
 _SOURCE_OPTIONS = ["MANUAL", "REDMINE", "JIRA", "EMAIL"]
 _PRIORITY_OPTIONS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-_STATUS_FILTER_OPTIONS = ["All", "NEW", "IN_ESTIMATION", "ESTIMATED", "COMPLETED", "REJECTED"]
+_STATUS_FILTER_OPTIONS = ["All", "NEW", "IN_ESTIMATION", "ESTIMATED", "COMPLETED", "REJECTED", "DELETED_UPSTREAM"]
 
 
 def _priority_badge(priority: str) -> None:
@@ -145,7 +146,9 @@ async def requests_list_page() -> None:
                     props.value === 'IN_ESTIMATION' ? 'warning' :
                     props.value === 'ESTIMATED' || props.value === 'COMPLETED' ? 'positive' :
                     'negative'
-                ">{{ props.value }}</q-badge>
+                " :class="props.value === 'DELETED_UPSTREAM' ? 'text-strike' : ''">
+                    {{ props.value === 'DELETED_UPSTREAM' ? 'Deleted Upstream' : props.value }}
+                </q-badge>
             </q-td>
         """)
 

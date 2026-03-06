@@ -118,6 +118,17 @@ class ExcelReportData:
         risk_messages: list[str] | None = None,
         # PR details
         pr_details: list[dict] | None = None,
+        # Additional info
+        release_extra_hours: float = 0,
+        documentation_hours: float = 0,
+        pr_no_test_hours: float = 0,
+        project_goals: str | None = None,
+        target_customer: str | None = None,
+        version: int = 1,
+        status: str = "DRAFT",
+        start_date: str | None = None,
+        document_deliverables: list[dict] | None = None,
+        working_weeks: float = 0,
     ):
         self.project_name = project_name
         self.estimation_number = estimation_number
@@ -157,6 +168,16 @@ class ExcelReportData:
         self.risk_flags = risk_flags or []
         self.risk_messages = risk_messages or []
         self.pr_details = pr_details or []
+        self.release_extra_hours = release_extra_hours
+        self.documentation_hours = documentation_hours
+        self.pr_no_test_hours = pr_no_test_hours
+        self.project_goals = project_goals or ""
+        self.target_customer = target_customer or ""
+        self.version = version
+        self.status = status
+        self.start_date = start_date or ""
+        self.document_deliverables = document_deliverables or []
+        self.working_weeks = working_weeks
 
 
 # ── Sheet builders ───────────────────────────────────────
@@ -164,13 +185,15 @@ class ExcelReportData:
 def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
     ws.title = "Summary"
 
-    ws.cell(row=1, column=1, value="Test Effort Estimation Report").font = TITLE_FONT
+    ws.cell(row=1, column=1, value="PRESTO — Estimation Report").font = TITLE_FONT
     ws.merge_cells("A1:D1")
 
     rows = [
         ("Estimation Number", data.estimation_number),
         ("Project Name", data.project_name),
         ("Project Type", data.project_type),
+        ("Version", f"v{data.version}"),
+        ("Status", data.status),
         ("Created By", data.created_by),
         ("Created At", data.created_at),
         ("", ""),
@@ -180,11 +203,21 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
         ("Business Unit", data.business_unit),
         ("Priority", data.priority),
         ("", ""),
+    ]
+    if data.project_goals:
+        rows.append(("Project Goals", ""))
+        rows.append(("", data.project_goals))
+    if data.target_customer:
+        rows.append(("Target Customer", data.target_customer))
+    if data.project_goals or data.target_customer:
+        rows.append(("", ""))
+    rows += [
         ("Project Parameters", ""),
         ("DUT Count", data.dut_count),
         ("Profile Count", data.profile_count),
         ("DUT × Profile Combinations", data.dut_profile_combinations),
         ("PR Fix Count", data.pr_fix_count),
+        ("Start Date", data.start_date),
         ("Expected Delivery", data.expected_delivery),
         ("", ""),
         ("Effort Summary", ""),
@@ -192,14 +225,23 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
         ("Test Leader Hours", f"{data.total_leader_hours:.1f}"),
         ("PR Fix Hours", f"{data.pr_fix_hours:.1f}"),
         ("Study Hours", f"{data.study_hours:.1f}"),
+    ]
+    if data.pr_no_test_hours > 0:
+        rows.append(("PR Test Creation Hours", f"{data.pr_no_test_hours:.1f}"))
+    if data.release_extra_hours > 0:
+        rows.append(("Release Extra Hours", f"{data.release_extra_hours:.1f}"))
+    if data.documentation_hours > 0:
+        rows.append(("Documentation Hours", f"{data.documentation_hours:.1f}"))
+    rows += [
         ("Buffer Hours", f"{data.buffer_hours:.1f}"),
         ("Grand Total (Hours)", f"{data.grand_total_hours:.1f}"),
         ("Grand Total (Days)", f"{data.grand_total_days:.1f}"),
+        ("Working Weeks", f"{data.working_weeks:.1f}"),
         ("", ""),
         ("Feasibility", ""),
         ("Available Capacity (Hours)", f"{data.capacity_hours:.1f}"),
         ("Utilization", f"{data.utilization_pct:.1f}%"),
-        ("Status", data.feasibility_status),
+        ("Feasibility Status", data.feasibility_status),
     ]
 
     for i, (label, value) in enumerate(rows, start=3):
@@ -355,7 +397,7 @@ def _build_pr_fixes_sheet(ws: Any, data: ExcelReportData) -> None:
     if data.pr_details:
         detail_start = 10
         ws.cell(row=detail_start, column=1, value="PR Details").font = SUBTITLE_FONT
-        detail_headers = ["PR Number", "Link", "Complexity", "Status"]
+        detail_headers = ["PR Number", "Link", "Description", "Complexity", "Status"]
         for col, header in enumerate(detail_headers, 1):
             ws.cell(row=detail_start + 1, column=col, value=header)
         _style_header_row(ws, detail_start + 1, len(detail_headers))
@@ -363,8 +405,9 @@ def _build_pr_fixes_sheet(ws: Any, data: ExcelReportData) -> None:
         for i, pr in enumerate(data.pr_details, start=detail_start + 2):
             ws.cell(row=i, column=1, value=pr.get("pr_number", ""))
             ws.cell(row=i, column=2, value=pr.get("link", ""))
-            ws.cell(row=i, column=3, value=pr.get("complexity", ""))
-            ws.cell(row=i, column=4, value=pr.get("status", ""))
+            ws.cell(row=i, column=3, value=pr.get("description", ""))
+            ws.cell(row=i, column=4, value=pr.get("complexity", ""))
+            ws.cell(row=i, column=5, value=pr.get("status", ""))
             for col in range(1, 5):
                 ws.cell(row=i, column=col).border = THIN_BORDER
 
@@ -431,6 +474,30 @@ def generate_excel_report(data: ExcelReportData, output_path: str | Path | None 
 
     # Sheet 6 - Reference Data
     _build_reference_data_sheet(wb.create_sheet(), data)
+
+    # Sheet 7 - Document Deliverables (if any)
+    if data.document_deliverables:
+        ws_doc = wb.create_sheet()
+        ws_doc.title = "Document Deliverables"
+        doc_headers = ["Document Type", "Category", "Linked Task", "Count", "Base Hours", "Total Hours", "Effective Hours", "Note"]
+        for col, header in enumerate(doc_headers, 1):
+            ws_doc.cell(row=1, column=col, value=header)
+        _style_header_row(ws_doc, 1, len(doc_headers))
+        for i, dd in enumerate(data.document_deliverables, start=2):
+            ws_doc.cell(row=i, column=1, value=dd.get("name", ""))
+            ws_doc.cell(row=i, column=2, value=dd.get("category", ""))
+            ws_doc.cell(row=i, column=3, value=dd.get("linked_task") or "—")
+            ws_doc.cell(row=i, column=4, value=dd.get("count", 1))
+            ws_doc.cell(row=i, column=5, value=dd.get("base_effort_hours", 0))
+            ws_doc.cell(row=i, column=6, value=dd.get("total_hours", 0))
+            ws_doc.cell(row=i, column=7, value=dd.get("effective_hours", dd.get("total_hours", 0)))
+            ws_doc.cell(row=i, column=8, value=dd.get("overlap_note") or "")
+            for col in range(1, len(doc_headers) + 1):
+                ws_doc.cell(row=i, column=col).border = THIN_BORDER
+        total_row = len(data.document_deliverables) + 2
+        ws_doc.cell(row=total_row, column=1, value="TOTAL").font = LABEL_FONT
+        ws_doc.cell(row=total_row, column=7, value=f"{data.documentation_hours:.1f}").font = LABEL_FONT
+        _auto_width(ws_doc)
 
     if output_path:
         output_path = Path(output_path)

@@ -2,10 +2,12 @@
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..auth.middleware import AuthContextMiddleware
@@ -44,7 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Test Effort Estimation Tool",
-    version="3.1.0",
+    version="3.2.0",
     description="API for managing test effort estimations",
     lifespan=lifespan,
 )
@@ -67,6 +69,15 @@ from .routes import router  # noqa: E402
 
 app.include_router(router, prefix="/api")
 
+# Serve uploaded files (logo, etc.) as static assets.
+# Prefer /app/data/uploads (inside Docker volume) so files persist across restarts.
+_upload_dir = Path("/app/data/uploads")
+if not _upload_dir.parent.exists():
+    # Fallback for local dev: use data/uploads relative to CWD
+    _upload_dir = Path("data/uploads")
+_upload_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/api/static/uploads", StaticFiles(directory=str(_upload_dir)), name="uploads")
+
 
 # ── Health / host-config endpoints (no auth required) ─────────────
 # ── Streamlit _stcore requests (silently absorb) ──────────────────
@@ -85,14 +96,14 @@ def _stcore_stub(path: str = ""):
 @app.get("/api/healthcheck")
 def healthcheck():
     """Simple liveness probe — returns 200 if the service is running."""
-    return {"status": "ok", "version": "3.1.0"}
+    return {"status": "ok", "version": "3.2.0"}
 
 
 @app.get("/api/host-config")
 def host_config():
     """Return runtime configuration useful for frontends."""
     return {
-        "api_version": "3.1.0",
+        "api_version": "3.2.0",
         "auth_providers": ["local", "ldap", "oidc"],
         "title": "Test Effort Estimation Tool",
     }

@@ -15,6 +15,7 @@ from .email_adapter import EmailAdapter
 from .jira_adapter import JiraAdapter
 from .outline_adapter import OutlineAdapter
 from .redmine_adapter import RedmineAdapter
+from .snipeit_adapter import SnipeItAdapter
 
 
 ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
@@ -22,6 +23,7 @@ ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
     "JIRA": JiraAdapter,
     "EMAIL": EmailAdapter,
     "OUTLINE": OutlineAdapter,
+    "SNIPE_IT": SnipeItAdapter,
 }
 
 
@@ -156,6 +158,31 @@ def sync_import(system_name: str, session: Session) -> SyncResult:
         result.items_created = created
         result.items_updated = updated
 
+    # Check for previously synced requests that no longer appear in the import.
+    # These may have been deleted or closed on the external system side.
+    if result.status in (SyncStatus.SUCCESS, SyncStatus.PARTIAL):
+        imported_ext_ids = {ext.external_id for ext in (result.imported_items or [])}
+        existing_requests = (
+            session.query(Request)
+            .filter(
+                Request.request_source == system_name,
+                Request.external_id.isnot(None),
+                Request.status != "DELETED_UPSTREAM",
+            )
+            .all()
+        )
+        stale_count = 0
+        for req in existing_requests:
+            if req.external_id and req.external_id not in imported_ext_ids:
+                req.status = "DELETED_UPSTREAM"
+                stale_count += 1
+        if stale_count:
+            session.flush()
+            result.errors.append(
+                f"{stale_count} previously synced request(s) no longer found "
+                f"in {system_name} — marked as DELETED_UPSTREAM."
+            )
+
     # Update last_sync_at
     config_row = (
         session.query(IntegrationConfig)
@@ -186,6 +213,30 @@ def sync_export(
     return adapter.export_estimation(estimation_data)
 
 
+def sync_export_task_breakdown(
+    system_name: str,
+    estimation_data: dict,
+    session: Session,
+) -> SyncResult:
+    """Export estimation task breakdown as sub-tasks to an external system."""
+    adapter = get_adapter(system_name, session)
+    if not adapter:
+        return SyncResult(
+            system=system_name,
+            direction="EXPORT",
+            status=SyncStatus.FAILED,
+            errors=[f"{system_name} is not configured or not enabled."],
+        )
+    if not hasattr(adapter, "create_task_breakdown"):
+        return SyncResult(
+            system=system_name,
+            direction="EXPORT",
+            status=SyncStatus.SKIPPED,
+            errors=[f"{system_name} does not support task breakdown export."],
+        )
+    return adapter.create_task_breakdown(estimation_data)
+
+
 def _estimation_to_export_dict(est: "Estimation") -> dict:
     """Convert an Estimation ORM object to the dict expected by adapters."""
     tasks_data = []
@@ -194,7 +245,22 @@ def _estimation_to_export_dict(est: "Estimation") -> dict:
             "task_name": t.task_name,
             "task_type": t.task_type,
             "calculated_hours": t.calculated_hours,
+            "leader_hours": t.leader_hours,
+            "assigned_testers": t.assigned_testers,
+            "has_leader_support": t.has_leader_support,
+            "is_new_feature_study": t.is_new_feature_study,
+            "notes": t.notes,
+            "base_hours": t.base_hours,
         })
+    # Extract PR fixes and details from wizard inputs
+    wizard = {}
+    try:
+        import json as _json
+        wizard = _json.loads(est.wizard_inputs_json) if est.wizard_inputs_json else {}
+    except Exception:
+        pass
+    pr_fixes = wizard.get("pr_fixes", {})
+
     return {
         "estimation_number": est.estimation_number or f"EST-{est.id}",
         "project_name": est.project_name,
@@ -203,6 +269,11 @@ def _estimation_to_export_dict(est: "Estimation") -> dict:
         "feasibility_status": est.feasibility_status,
         "total_tester_hours": est.total_tester_hours,
         "total_leader_hours": est.total_leader_hours,
+        "pr_fix_hours": est.pr_fix_hours,
+        "study_hours": est.study_hours,
+        "release_extra_hours": getattr(est, "release_extra_hours", 0) or 0,
+        "documentation_hours": getattr(est, "documentation_hours", 0) or 0,
+        "buffer_hours": est.buffer_hours,
         "grand_total_hours": est.grand_total_hours,
         "grand_total_days": est.grand_total_days,
         "dut_count": est.dut_count,
@@ -212,7 +283,14 @@ def _estimation_to_export_dict(est: "Estimation") -> dict:
         "created_at": str(est.created_at) if est.created_at else "",
         "assigned_to_name": (est.assigned_to.display_name or est.assigned_to.username) if est.assigned_to else None,
         "version": getattr(est, "version", 1) or 1,
+        "project_goals": getattr(est, "project_goals", None),
+        "target_customer": getattr(est, "target_customer", None),
         "tasks": tasks_data,
+        "pr_simple": pr_fixes.get("simple", 0),
+        "pr_medium": pr_fixes.get("medium", 0),
+        "pr_complex": pr_fixes.get("complex", 0),
+        "pr_details": wizard.get("pr_details", []),
+        "pr_no_test_hours": getattr(est, "pr_no_test_hours", 0) or 0,
     }
 
 

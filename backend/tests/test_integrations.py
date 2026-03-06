@@ -349,6 +349,75 @@ class TestJiraAdapter:
         assert "timetracking" in body.get("fields", {})
         assert body["fields"]["timetracking"]["originalEstimate"] == "512h"
 
+    def test_dc_pat_auth_with_username(self):
+        """DC with auth_mode=pat and username set must still use Bearer, not Basic."""
+        config = _jira_config(username="admin")
+        config["additional_config"]["is_cloud"] = False
+        config["additional_config"]["auth_mode"] = "pat"
+        adapter = JiraAdapter(config)
+        headers = adapter._headers()
+        assert headers["Authorization"] == "Bearer test-token"
+
+    def test_dc_auto_auth_with_username(self):
+        """DC with auth_mode=auto and username set uses Basic auth."""
+        config = _jira_config(username="admin")
+        config["additional_config"]["is_cloud"] = False
+        config["additional_config"]["auth_mode"] = "auto"
+        adapter = JiraAdapter(config)
+        headers = adapter._headers()
+        assert "Basic" in headers["Authorization"]
+
+    def test_dc_auto_auth_no_username(self):
+        """DC with auth_mode=auto and no username defaults to Bearer (PAT)."""
+        config = _jira_config(username="")
+        config["additional_config"]["is_cloud"] = False
+        config["additional_config"]["auth_mode"] = "auto"
+        adapter = JiraAdapter(config)
+        headers = adapter._headers()
+        assert headers["Authorization"] == "Bearer test-token"
+
+    def test_test_connection_no_key(self):
+        config = _jira_config(api_key="")
+        adapter = JiraAdapter(config)
+        result = adapter.test_connection()
+        assert not result.success
+        assert "token" in result.message.lower()
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_connection_401(self, mock_request):
+        """HTTP 401 gives a clear auth failure message."""
+        mock_request.return_value = MagicMock(status_code=401, text="Unauthorized")
+        config = _jira_config()
+        config["additional_config"]["is_cloud"] = False
+        adapter = JiraAdapter(config)
+        result = adapter.test_connection()
+        assert not result.success
+        assert "401" in result.message
+        assert "auth" in result.message.lower()
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_connection_404(self, mock_request):
+        """HTTP 404 hints at context path issue."""
+        mock_request.return_value = MagicMock(status_code=404, text="Not Found")
+        config = _jira_config()
+        config["additional_config"]["is_cloud"] = False
+        adapter = JiraAdapter(config)
+        result = adapter.test_connection()
+        assert not result.success
+        assert "404" in result.message
+        assert "context path" in result.message.lower()
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_connection_ssl_error(self, mock_request):
+        """SSL errors produce a clear hint about self-signed certs."""
+        import requests as _req
+        mock_request.side_effect = _req.exceptions.SSLError("SSL: CERTIFICATE_VERIFY_FAILED")
+        config = _jira_config()
+        adapter = JiraAdapter(config)
+        result = adapter.test_connection()
+        assert not result.success
+        assert "ssl" in result.message.lower()
+
 
 # ── EmailAdapter tests ──────────────────────────────────
 

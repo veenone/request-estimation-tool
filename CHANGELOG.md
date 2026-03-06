@@ -4,6 +4,56 @@ All notable changes to the Test Effort Estimation Tool are documented here.
 
 ---
 
+## [3.2.0] - 2026-03-06
+
+### Added
+- **Configurable PR complexity hours** — Simple/Medium/Complex PR fix hours editable from Settings (`pr_hours_simple`, `pr_hours_medium`, `pr_hours_complex`) instead of hardcoded values
+- **PR test availability tracking** — each PR fix can be marked as `test_available`; PRs without existing tests generate synthetic "Test Creation" tasks in the task breakdown
+- **PR no-test hours** — configurable hours per PR without existing tests (`pr_no_test_hours`), linkable to a task template for overlap detection (`pr_no_test_task_template_id`)
+- **Document deliverables visibility** — document type overlap adjustments now visible in estimation detail view and all 3 report formats (Excel, Word, PDF) with effective hours, total hours, and deduction notes
+- **Synthetic documentation tasks** — document types appear as synthetic tasks in the task breakdown, showing effective hours after overlap deduction with linked templates
+- **Public holiday calendar** — CRUD management page for public holidays with support for recurring annual holidays (`GET/POST/PUT/DELETE /public-holidays`)
+- **Working weeks calculation** — grand total days converted to working weeks (÷5) displayed in detail view and reports; holiday-aware calculation endpoint (`GET /working-weeks`)
+- **Enhanced Outline wiki export** — full estimation data in wiki pages: DUT/profile names, team allocation, document deliverables, risk assessment, PR details with test_available column, task notes, and working weeks
+- **Jira import enhancements** — PR priority field, test_available property, description modal in import dialog
+- **Snipe-IT integration** — new adapter for Snipe-IT asset management system
+- **Risk registry page** — new frontend page for risk tracking and management
+- **PR registry page** — dedicated frontend page for PR fix management
+- **Document types page** — frontend page for managing document type deliverables
+- **Asset management page** — frontend page for Snipe-IT asset tracking
+- Database migration v14: `pr_no_test_hours` column on estimations, `public_holidays` table
+
+### Changed
+- Estimation calculation engine supports configurable PR complexity hours via `EstimationInput`
+- Grand total formula includes PR no-test effort and documentation effort
+- Excel, Word, and PDF reports include PR Test Creation hours, document deliverables with overlap notes, and working weeks
+- Outline export generates comprehensive markdown with team allocation, DUT/profile names, and risk assessment sections
+- Settings page includes PR configuration parameters section
+- Integration service supports 5 adapters (Redmine, Jira, Email, Outline, Snipe-IT)
+- Database schema version bumped to 14 (15 tables total)
+
+### Fixed
+- `SyntaxError: 'await' outside async function` in Jira import dialog — changed `_import_selected()` to `async def`
+- Per-document vs per-template-group overlap deduction in documentation hours calculation
+
+### Tests
+- 274 tests (up from 267): added PR config, public holiday, and integration coverage
+
+---
+
+## [3.1.0] - 2026-02-28
+
+### Added
+- RBAC enhancements with fine-grained role permissions
+- Team presets for quick estimation setup
+- Client IP tracking in audit log entries
+- 14 feature enhancements: batch of UI, auth, and integration improvements
+
+### Fixed
+- Login authentication for both internal and LDAP providers
+
+---
+
 ## [3.0.0] - 2026-03-02
 
 ### Added

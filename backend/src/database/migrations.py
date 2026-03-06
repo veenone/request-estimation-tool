@@ -11,8 +11,11 @@ from .models import (
     Base,
     Configuration,
     DutType,
+    EstimationRisk,
     EstimationTeamAllocation,
     Feature,
+    PublicHoliday,
+    RiskItem,
     TaskPreset,
     TaskTemplate,
     Team,
@@ -25,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 7  # v7 adds task_presets, teams, test_profile.is_active, team_member.team_id, config keys
+SCHEMA_VERSION = 14  # v14 adds pr_no_test_hours column to estimations
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -328,6 +331,163 @@ def _migrate_v6_to_v7(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v7_to_v8(engine, session: Session) -> None:
+    """Migrate from v7 to v8 (expected_releases, release_extra_hours, project_goals, target_customer)."""
+    if _table_exists(engine, "estimations"):
+        for col_name, col_def in [
+            ("expected_releases", "INTEGER DEFAULT 1"),
+            ("release_extra_hours", "REAL DEFAULT 0"),
+            ("project_goals", "TEXT"),
+            ("target_customer", "TEXT"),
+        ]:
+            if not _column_exists(engine, "estimations", col_name):
+                session.execute(text(
+                    f"ALTER TABLE estimations ADD COLUMN {col_name} {col_def}"
+                ))
+
+    # Add release_effort_factor config key
+    existing = session.query(Configuration).filter(
+        Configuration.key == "release_effort_factor"
+    ).first()
+    if not existing:
+        session.add(Configuration(
+            key="release_effort_factor",
+            value="0.5",
+            description="Fraction of (tester + leader) hours added per additional release (0.5 = 50%)",
+        ))
+
+    _set_schema_version(session, 8)
+    session.commit()
+
+
+def _migrate_v8_to_v9(engine, session: Session) -> None:
+    """Migrate from v8 to v9 (team_id on estimations, risk_items, estimation_risks, branding config)."""
+    # Add team_id to estimations
+    if _table_exists(engine, "estimations"):
+        if not _column_exists(engine, "estimations", "team_id"):
+            session.execute(text(
+                "ALTER TABLE estimations ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL"
+            ))
+
+    # Create risk_items table
+    if not _table_exists(engine, "risk_items"):
+        table = Base.metadata.tables.get("risk_items")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Create estimation_risks table
+    if not _table_exists(engine, "estimation_risks"):
+        table = Base.metadata.tables.get("estimation_risks")
+        if table is not None:
+            table.create(engine, checkfirst=True)
+
+    # Add branding and color config keys
+    _ensure = lambda k, v, d: session.add(Configuration(key=k, value=v, description=d)) if not session.query(Configuration).filter(Configuration.key == k).first() else None
+    _ensure("logo_url", "", "URL or path to custom logo image")
+    _ensure("logo_height", "40", "Logo image height in pixels")
+    _ensure("sidebar_bg_light", "#FFFFFF", "Sidebar background color for light mode")
+    _ensure("sidebar_bg_dark", "#1D1D1D", "Sidebar background color for dark mode")
+    _ensure("content_bg_light", "#FAFAFA", "Content area background color for light mode")
+    _ensure("content_bg_dark", "#121212", "Content area background color for dark mode")
+    _ensure("button_color_light", "#1976D2", "Primary button color for light mode")
+    _ensure("button_color_dark", "#90CAF9", "Primary button color for dark mode")
+
+    _set_schema_version(session, 9)
+    session.commit()
+
+
+def _migrate_v9_to_v10(engine, session: Session) -> None:
+    """Migrate from v9 to v10 (per-feature study_effort_hours)."""
+    if _table_exists(engine, "features"):
+        if not _column_exists(engine, "features", "study_effort_hours"):
+            session.execute(text(
+                "ALTER TABLE features ADD COLUMN study_effort_hours REAL"
+            ))
+
+    _set_schema_version(session, 10)
+    session.commit()
+
+
+def _migrate_v10_to_v11(engine, session: Session) -> None:
+    """Migrate from v10 to v11 (estimation version snapshots for diff)."""
+    if not _table_exists(engine, "estimation_version_snapshots"):
+        session.execute(text("""
+            CREATE TABLE estimation_version_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                estimation_id INTEGER NOT NULL REFERENCES estimations(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL,
+                snapshot_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        session.execute(text(
+            "CREATE INDEX ix_estimation_version_snapshots_estimation_id "
+            "ON estimation_version_snapshots(estimation_id)"
+        ))
+
+    _set_schema_version(session, 11)
+    session.commit()
+
+
+def _migrate_v11_to_v12(engine, session: Session) -> None:
+    """Migrate from v11 to v12 (document type registry)."""
+    if not _table_exists(engine, "document_types"):
+        session.execute(text("""
+            CREATE TABLE document_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR NOT NULL UNIQUE,
+                description TEXT,
+                category VARCHAR NOT NULL DEFAULT 'Report',
+                base_effort_hours REAL NOT NULL DEFAULT 4.0,
+                is_active BOOLEAN NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        # Seed some common document types
+        for name, cat, hours in [
+            ("Test Plan", "Planning", 8.0),
+            ("Test Report", "Report", 6.0),
+            ("Test Strategy", "Planning", 12.0),
+            ("Test Summary Report", "Report", 4.0),
+            ("Traceability Matrix", "Report", 4.0),
+            ("Release Notes", "Report", 2.0),
+            ("Defect Report", "Report", 3.0),
+        ]:
+            session.execute(text(
+                "INSERT INTO document_types (name, category, base_effort_hours) VALUES (:n, :c, :h)"
+            ), {"n": name, "c": cat, "h": hours})
+
+    # Add documentation_hours column to estimations
+    if not _column_exists(engine, "estimations", "documentation_hours"):
+        session.execute(text("ALTER TABLE estimations ADD COLUMN documentation_hours REAL NOT NULL DEFAULT 0"))
+
+    _set_schema_version(session, 12)
+    session.commit()
+
+
+def _migrate_v12_to_v13(engine, session: Session) -> None:
+    """Migrate from v12 to v13 (link document types to task templates)."""
+    if not _column_exists(engine, "document_types", "task_template_id"):
+        session.execute(text(
+            "ALTER TABLE document_types ADD COLUMN task_template_id INTEGER "
+            "REFERENCES task_templates(id) ON DELETE SET NULL"
+        ))
+
+    _set_schema_version(session, 13)
+    session.commit()
+
+
+def _migrate_v13_to_v14(engine, session: Session) -> None:
+    """Migrate from v13 to v14 (add pr_no_test_hours to estimations)."""
+    if not _column_exists(engine, "estimations", "pr_no_test_hours"):
+        session.execute(text(
+            "ALTER TABLE estimations ADD COLUMN pr_no_test_hours REAL DEFAULT 0"
+        ))
+
+    _set_schema_version(session, 14)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -358,6 +518,20 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v5_to_v6(engine, session)
         if current_version < 7:
             _migrate_v6_to_v7(engine, session)
+        if current_version < 8:
+            _migrate_v7_to_v8(engine, session)
+        if current_version < 9:
+            _migrate_v8_to_v9(engine, session)
+        if current_version < 10:
+            _migrate_v9_to_v10(engine, session)
+        if current_version < 11:
+            _migrate_v10_to_v11(engine, session)
+        if current_version < 12:
+            _migrate_v11_to_v12(engine, session)
+        if current_version < 13:
+            _migrate_v12_to_v13(engine, session)
+        if current_version < 14:
+            _migrate_v13_to_v14(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)
@@ -376,6 +550,30 @@ def _ensure_config_keys(session: Session) -> None:
         "dut_categories": (
             "SIM,eSIM,UICC,IoT Device,Mobile Device,Other",
             "Comma-separated list of DUT type categories for dropdown menus",
+        ),
+        "pr_priority_list": (
+            "LOW,MEDIUM,HIGH,CRITICAL",
+            "Comma-separated PR priority levels used in PR detail entries (maps to Jira priorities)",
+        ),
+        "pr_hours_simple": (
+            "2.0",
+            "Hours per simple PR fix validation",
+        ),
+        "pr_hours_medium": (
+            "4.0",
+            "Hours per medium PR fix validation",
+        ),
+        "pr_hours_complex": (
+            "8.0",
+            "Hours per complex PR fix validation",
+        ),
+        "pr_no_test_hours": (
+            "8.0",
+            "Hours to create tests when PR has no existing test available",
+        ),
+        "pr_no_test_task_template_id": (
+            "",
+            "Task template ID linked to PR test creation effort (optional)",
         ),
     }
     for key, (value, desc) in _keys.items():

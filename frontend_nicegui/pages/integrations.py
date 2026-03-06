@@ -18,13 +18,14 @@ import json
 from nicegui import ui
 from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
 
-SYSTEMS: list[str] = ["REDMINE", "JIRA", "EMAIL", "OUTLINE"]
+SYSTEMS: list[str] = ["REDMINE", "JIRA", "EMAIL", "OUTLINE", "SNIPE_IT"]
 
 SYSTEM_ICONS: dict[str, str] = {
-    "REDMINE": "bug_report",
-    "JIRA":    "view_kanban",
-    "EMAIL":   "email",
-    "OUTLINE": "article",
+    "REDMINE":  "bug_report",
+    "JIRA":     "view_kanban",
+    "EMAIL":    "email",
+    "OUTLINE":  "article",
+    "SNIPE_IT": "inventory_2",
 }
 
 
@@ -245,6 +246,21 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
                 placeholder="Custom field ID",
             ).classes("flex-1")
 
+        # -- Task Breakdown Export -----------------------------------------------
+        ui.label("Task Breakdown Export").classes("text-subtitle1 text-weight-medium")
+        ui.label(
+            "Configure sub-task creation when exporting estimation task breakdown to Redmine."
+        ).classes("text-caption text-grey q-mb-sm")
+
+        subtask_tracker_input = ui.input(
+            label="Sub-task Tracker ID",
+            value=extra.get("subtask_tracker_id", ""),
+            placeholder="(uses parent issue tracker if empty)",
+        ).classes("w-full")
+        ui.label(
+            "Redmine tracker ID for sub-tasks. Leave empty to use the same tracker as the parent issue."
+        ).classes("text-caption text-grey")
+
         ui.separator()
 
         # -- Enabled toggle -----------------------------------------------------
@@ -269,6 +285,7 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
             _poll=poll_interval_input,
             _ws=webhook_secret_input,
             _watchers=watcher_select,
+            _stid=subtask_tracker_input,
         ) -> None:
             additional: dict = {
                 "project_id":               (_pid.value or "").strip(),
@@ -278,6 +295,7 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
                 "estimation_number_field_id": (_est.value or "").strip(),
                 "poll_interval_minutes":    int(_poll.value or 0),
                 "webhook_secret":           (_ws.value or "").strip(),
+                "subtask_tracker_id":       (_stid.value or "").strip(),
             }
             payload: dict = {
                 "enabled":                _tog.value,
@@ -444,6 +462,93 @@ def _build_jira_panel(data: dict) -> None:
                 placeholder="e.g., XRAY",
             ).classes("flex-1")
 
+        # -- Task Breakdown Export -----------------------------------------------
+        ui.label("Task Breakdown Export").classes("text-subtitle1 text-weight-medium")
+        ui.label(
+            "Configure sub-task creation when exporting estimation task breakdown to Jira."
+        ).classes("text-caption text-grey q-mb-sm")
+
+        task_export_type_input = ui.input(
+            label="Standalone Task Issue Type",
+            value=extra.get("task_export_type", ""),
+            placeholder="e.g. Todo, Task (auto-detect if empty)",
+        ).classes("w-full")
+        ui.label(
+            "Issue type for standalone tasks (no parent). Auto-detected from project if empty."
+        ).classes("text-caption text-grey")
+
+        subtask_type_input = ui.input(
+            label="Sub-task Issue Type",
+            value=extra.get("subtask_type", "Sub-task"),
+            placeholder="Sub-task",
+        ).classes("w-full")
+        ui.label(
+            "Issue type when creating sub-tasks under a parent issue (default: Sub-task)."
+        ).classes("text-caption text-grey")
+
+        ui.separator()
+
+        # -- Problem Reports (PR) Integration -----------------------------------
+        ui.label("Problem Reports (PR)").classes("text-subtitle1 text-weight-medium")
+        ui.label(
+            "Configure a separate JQL query to import Problem Reports / Defects from Jira. "
+            "These can be used as PR fix items in estimations."
+        ).classes("text-caption text-grey q-mb-sm")
+
+        pr_api_key_input = ui.input(
+            label="PR API Key / Token",
+            value="",
+            password=True,
+            password_toggle_button=True,
+            placeholder="(uses connection API key if empty)",
+        ).classes("w-full")
+        ui.label(
+            "Optional separate API key for PR queries. Leave empty to use the connection API key."
+        ).classes("text-caption text-grey")
+
+        pr_jql_input = ui.textarea(
+            label="PR JQL Filter",
+            value=extra.get("pr_jql_filter", ""),
+            placeholder='e.g., type = "Bug" AND status = "Open" AND project = PROJ',
+        ).classes("w-full").props("rows=3")
+
+        pr_fields_input = ui.input(
+            label="PR Additional Fields (comma-separated)",
+            value=extra.get("pr_fields", ""),
+            placeholder="e.g., customfield_10100,priority,components",
+        ).classes("w-full")
+        ui.label(
+            "Optional Jira fields to fetch alongside summary, status, and priority. "
+            "These will be available as extra columns when importing PRs."
+        ).classes("text-caption text-grey")
+
+        # -- Sync PR items button --
+        pr_result_label = ui.label("").classes("text-caption q-mt-xs")
+
+        async def _sync_pr_items(
+            _pr_jql=pr_jql_input,
+        ) -> None:
+            jql = (_pr_jql.value or "").strip()
+            if not jql:
+                ui.notify("PR JQL Filter is empty.", type="warning")
+                return
+            ui.notify("Fetching PR items from Jira...", type="info", timeout=2000)
+            try:
+                items = await api_get(
+                    "/integrations/JIRA/pr-items",
+                    params={"jql": jql},
+                )
+                count = len(items) if isinstance(items, list) else 0
+                pr_result_label.set_text(f"Fetched {count} PR item(s)")
+                ui.notify(f"Found {count} PR item(s).", type="positive")
+            except Exception as exc:
+                pr_result_label.set_text("")
+                ui.notify(f"PR fetch failed: {exc}", type="negative")
+
+        ui.button(
+            "Fetch PR Items", icon="bug_report", on_click=_sync_pr_items,
+        ).props("flat color=secondary")
+
         ui.separator()
 
         # -- Enabled toggle -----------------------------------------------------
@@ -472,6 +577,11 @@ def _build_jira_panel(data: dict) -> None:
             _est=estimation_field_input,
             _xe=xray_enabled_toggle,
             _xk=xray_project_key_input,
+            _pr_jql=pr_jql_input,
+            _pr_fields=pr_fields_input,
+            _pr_key=pr_api_key_input,
+            _st=subtask_type_input,
+            _tet=task_export_type_input,
         ) -> None:
             additional: dict = {
                 "jql_filter":             (_jql.value or "").strip(),
@@ -485,7 +595,15 @@ def _build_jira_panel(data: dict) -> None:
                 "estimation_number_field": (_est.value or "").strip(),
                 "xray_enabled":           _xe.value,
                 "xray_project_key":       (_xk.value or "").strip(),
+                "pr_jql_filter":          (_pr_jql.value or "").strip(),
+                "pr_fields":              (_pr_fields.value or "").strip(),
+                "subtask_type":           (_st.value or "Sub-task").strip(),
+                "task_export_type":       (_tet.value or "").strip(),
             }
+            # Save PR API key separately if provided
+            pr_key_raw = (_pr_key.value or "").strip()
+            if pr_key_raw:
+                additional["pr_api_key"] = pr_key_raw
             payload: dict = {
                 "enabled":                _tog.value,
                 "base_url":               (_url.value or "").strip() or None,
@@ -751,14 +869,139 @@ def _build_outline_panel(data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# SNIPE_IT panel
+# ---------------------------------------------------------------------------
+
+def _build_snipe_it_panel(data: dict) -> None:
+    """Per-system form for SNIPE_IT with individual labeled fields."""
+
+    has_api_key: bool = bool(data.get("has_api_key", False))
+    last_sync: str | None = data.get("last_sync_at")
+
+    extra: dict = {}
+    raw_json = data.get("additional_config_json") or "{}"
+    try:
+        extra = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        extra = {}
+
+    with ui.column().classes("q-pa-md w-full gap-3"):
+
+        ui.label("Connection Settings").classes("text-subtitle1 text-weight-medium")
+
+        base_url_input = ui.input(
+            label="Base URL",
+            value=data.get("base_url") or "",
+            placeholder="https://snipeit.example.com",
+        ).classes("w-full")
+
+        api_key_input = ui.input(
+            label="API Key (Bearer Token)",
+            value="",
+            password=True,
+            password_toggle_button=True,
+            placeholder="(unchanged)" if has_api_key else "Your Snipe-IT API key",
+        ).classes("w-full")
+        if has_api_key:
+            ui.label(
+                "An API key is already stored on the server. "
+                "Leave this field empty to keep it unchanged."
+            ).classes("text-caption text-grey")
+
+        ui.separator()
+
+        ui.label("Asset Settings").classes("text-subtitle1 text-weight-medium")
+
+        # Parse previously saved categories into a list
+        _saved_cats_str = extra.get("categories", "")
+        _saved_cats = [c.strip() for c in _saved_cats_str.split(",") if c.strip()] if _saved_cats_str else []
+
+        categories_select = ui.select(
+            options=_saved_cats or [],
+            label="Categories (select from Snipe-IT)",
+            value=_saved_cats,
+            multiple=True,
+            with_input=True,
+            clearable=True,
+        ).classes("w-full")
+        ui.label(
+            "Select categories to filter DUT assets. Click 'Fetch Categories' to load from Snipe-IT."
+        ).classes("text-caption text-grey")
+
+        async def _fetch_categories(_sel=categories_select) -> None:
+            try:
+                cats: list = await api_get("/integrations/SNIPE_IT/categories")
+                names = sorted([c.get("name", "") for c in cats if c.get("name")])
+                _sel.options = names
+                _sel.update()
+                ui.notify(f"Loaded {len(names)} categories from Snipe-IT.", type="positive")
+            except Exception as exc:
+                ui.notify(f"Failed to fetch categories: {exc}", type="negative")
+
+        ui.button("Fetch Categories", icon="sync", on_click=_fetch_categories).props("flat color=secondary dense")
+
+        timeout_input = ui.number(
+            label="Timeout (seconds)",
+            value=int(extra.get("timeout", 30)),
+            min=5,
+            max=120,
+            step=5,
+            format="%.0f",
+        ).classes("w-full")
+
+        ui.separator()
+
+        enabled_toggle = ui.switch(
+            "Enable Snipe-IT Integration",
+            value=bool(data.get("enabled", False)),
+        )
+
+        _render_action_buttons("SNIPE_IT", last_sync)
+
+        async def save_snipeit(
+            _tog=enabled_toggle,
+            _url=base_url_input,
+            _key=api_key_input,
+            _cats=categories_select,
+            _timeout=timeout_input,
+        ) -> None:
+            # categories_select.value is a list of selected names
+            cats_val = _cats.value or []
+            cats_str = ", ".join(cats_val) if isinstance(cats_val, list) else str(cats_val)
+            additional: dict = {
+                "categories": cats_str,
+                "timeout": int(_timeout.value or 30),
+            }
+            payload: dict = {
+                "enabled": _tog.value,
+                "base_url": (_url.value or "").strip() or None,
+                "username": None,
+                "additional_config_json": json.dumps(additional),
+            }
+            raw_key = (_key.value or "").strip()
+            if raw_key:
+                payload["api_key"] = raw_key
+
+            try:
+                await api_put("/integrations/SNIPE_IT", json=payload)
+                ui.notify("Snipe-IT configuration saved.", type="positive")
+                _key.value = ""
+            except Exception as exc:
+                ui.notify(f"Save failed: {exc}", type="negative")
+
+        ui.button("Save", icon="save", on_click=save_snipeit).props("color=primary")
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table: system name -> panel builder
 # ---------------------------------------------------------------------------
 
 _PANEL_BUILDERS = {
-    "REDMINE": _build_redmine_panel,
-    "JIRA":    _build_jira_panel,
-    "EMAIL":   _build_email_panel,
-    "OUTLINE": _build_outline_panel,
+    "REDMINE":  _build_redmine_panel,
+    "JIRA":     _build_jira_panel,
+    "EMAIL":    _build_email_panel,
+    "OUTLINE":  _build_outline_panel,
+    "SNIPE_IT": _build_snipe_it_panel,
 }
 
 

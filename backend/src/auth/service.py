@@ -206,7 +206,7 @@ class AuthService:
     # ------------------------------------------------------------------
 
     def login(
-        self, username: str, password: str
+        self, username: str, password: str, ip_address: Optional[str] = None
     ) -> Optional[tuple[User, str, str]]:
         """Authenticate a local user by username and password.
 
@@ -236,7 +236,7 @@ class AuthService:
         refresh_token = self.create_refresh_token(user)
         self.session.commit()
 
-        self.log_action(user.id, "LOGIN")
+        self.log_action(user.id, "LOGIN", ip_address=ip_address)
         return user, access_token, refresh_token
 
     def refresh(

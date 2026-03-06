@@ -35,6 +35,9 @@ PR_COMPLEXITY_HOURS: dict[str, float] = {
     "complex": 8.0,
 }
 
+# Default hours to create tests when a PR has no existing tests
+PR_NO_TEST_DEFAULT_HOURS: float = 8.0
+
 
 @dataclass
 class TaskInput:
@@ -84,6 +87,7 @@ class EstimationInput:
     profile_count: int
     pr_fixes: PRFixInput = field(default_factory=PRFixInput)
     new_feature_count: int = 0
+    feature_study_hours_list: list[float] = field(default_factory=list)
     team_size: int = 1
     has_leader: bool = False
     working_days: int = 20
@@ -93,6 +97,13 @@ class EstimationInput:
     working_hours_per_day: float = 7.0
     buffer_percentage: float = 10.0
     pr_scales_with_profile: bool = False
+    expected_releases: int = 1
+    release_effort_factor: float = 0.5
+    # Configurable PR complexity hours (overrides PR_COMPLEXITY_HOURS)
+    pr_complexity_hours: dict[str, float] = field(default_factory=lambda: dict(PR_COMPLEXITY_HOURS))
+    # Extra hours per PR that has no test available
+    pr_no_test_hours: float = PR_NO_TEST_DEFAULT_HOURS
+    pr_no_test_count: int = 0
 
 
 @dataclass
@@ -103,7 +114,9 @@ class EstimationResult:
     total_tester_hours: float
     total_leader_hours: float
     pr_fix_hours: float
+    pr_no_test_total_hours: float
     study_hours: float
+    release_extra_hours: float
     subtotal_hours: float
     buffer_hours: float
     grand_total_hours: float
@@ -150,16 +163,18 @@ def calculate_pr_fix_effort(
     dut_count: int = 1,
     profile_count: int = 1,
     pr_scales_with_profile: bool = False,
+    complexity_hours: dict[str, float] | None = None,
 ) -> float:
     """Calculate total PR fix validation effort.
 
     Each PR is validated per DUT (scales_with_dut = true per SPEC §9.2).
     Optionally scales with profile count if pr_scales_with_profile is enabled.
     """
+    hours = complexity_hours or PR_COMPLEXITY_HOURS
     total = (
-        pr_fixes.simple * PR_COMPLEXITY_HOURS["simple"]
-        + pr_fixes.medium * PR_COMPLEXITY_HOURS["medium"]
-        + pr_fixes.complex * PR_COMPLEXITY_HOURS["complex"]
+        pr_fixes.simple * hours.get("simple", 2.0)
+        + pr_fixes.medium * hours.get("medium", 4.0)
+        + pr_fixes.complex * hours.get("complex", 8.0)
     )
     profile_factor = profile_count if pr_scales_with_profile else 1
     return total * dut_count * profile_factor
@@ -194,14 +209,24 @@ def calculate_estimation(inputs: EstimationInput) -> EstimationResult:
         inputs.dut_count,
         inputs.profile_count,
         inputs.pr_scales_with_profile,
+        complexity_hours=inputs.pr_complexity_hours,
     )
 
-    # New feature study effort (already included in tasks if study tasks are provided,
-    # but this is the separate line item from SPEC §4.2 for features flagged as new)
-    study_hours = inputs.new_feature_count * inputs.new_feature_study_hours
+    # PR no-test effort: extra hours for PRs without existing tests
+    pr_no_test_total = inputs.pr_no_test_count * inputs.pr_no_test_hours
+
+    # New feature study effort — use per-feature hours if available, else flat rate
+    if inputs.feature_study_hours_list:
+        study_hours = sum(inputs.feature_study_hours_list)
+    else:
+        study_hours = inputs.new_feature_count * inputs.new_feature_study_hours
+
+    # Release extra hours: each additional release adds a fraction of tester+leader effort
+    extra_releases = max(0, inputs.expected_releases - 1)
+    release_extra_hours = (total_tester + total_leader) * extra_releases * inputs.release_effort_factor
 
     # Subtotal before buffer
-    subtotal = total_tester + total_leader + pr_fix_hours + study_hours
+    subtotal = total_tester + total_leader + pr_fix_hours + pr_no_test_total + study_hours + release_extra_hours
 
     # Buffer
     buffer = subtotal * inputs.buffer_percentage / 100.0
@@ -227,7 +252,9 @@ def calculate_estimation(inputs: EstimationInput) -> EstimationResult:
         total_tester_hours=total_tester,
         total_leader_hours=total_leader,
         pr_fix_hours=pr_fix_hours,
+        pr_no_test_total_hours=pr_no_test_total,
         study_hours=study_hours,
+        release_extra_hours=release_extra_hours,
         subtotal_hours=subtotal,
         buffer_hours=buffer,
         grand_total_hours=grand_total,

@@ -1,8 +1,11 @@
 """FastAPI REST endpoints for all entities."""
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -12,13 +15,18 @@ from starlette.requests import Request as HTTPRequest
 
 from ..database.models import (
     Configuration,
+    DocumentType,
     DutType,
     Estimation,
+    EstimationRisk,
     EstimationTask,
     EstimationTeamAllocation,
+    EstimationVersionSnapshot,
     Feature,
     HistoricalProject,
+    PublicHoliday,
     Request,
+    RiskItem,
     TaskPreset,
     TaskTemplate,
     Team,
@@ -44,11 +52,15 @@ from .schemas import (
     DashboardStatsOut,
     RecentEstimationOut,
     RecentRequestOut,
+    DocumentTypeCreate,
+    DocumentTypeOut,
+    DocumentTypeUpdate,
     DutTypeCreate,
     DutTypeOut,
     DutTypeUpdate,
     EstimationCreate,
     EstimationOut,
+    EstimationTaskOut,
     EstimationRevise,
     EstimationStatusUpdate,
     EstimationUpdate,
@@ -61,6 +73,9 @@ from .schemas import (
     RequestDetailOut,
     RequestOut,
     RequestUpdate,
+    RiskItemCreate,
+    RiskItemOut,
+    RiskItemUpdate,
     TaskPresetCreate,
     TaskPresetOut,
     TaskPresetUpdate,
@@ -80,6 +95,9 @@ from .schemas import (
     TestProfileUpdate,
     UnreadCountOut,
     WebhookNotificationOut,
+    PublicHolidayCreate,
+    PublicHolidayOut,
+    PublicHolidayUpdate,
 )
 from ..auth.models import AuditLog, User
 from ..auth.schemas import (
@@ -113,6 +131,171 @@ def _generate_number(db: Session, prefix_key: str, table_class: type, number_fie
     return f"{prefix}-{year}-{count + 1:03d}"
 
 
+def _get_pr_config(db: Session) -> dict:
+    """Read PR configuration values from the database."""
+    return {
+        "complexity_hours": {
+            "simple": float(_get_config_value(db, "pr_hours_simple", "2.0")),
+            "medium": float(_get_config_value(db, "pr_hours_medium", "4.0")),
+            "complex": float(_get_config_value(db, "pr_hours_complex", "8.0")),
+        },
+        "no_test_hours": float(_get_config_value(db, "pr_no_test_hours", "8.0")),
+        "no_test_task_template_id": _get_config_value(db, "pr_no_test_task_template_id", ""),
+    }
+
+
+def _count_no_test_prs(pr_details: list[dict]) -> int:
+    """Count the number of PRs with test_available=false."""
+    return sum(1 for pr in pr_details if not pr.get("test_available", True))
+
+
+def _calc_doc_hours_and_deliverables(
+    doc_type_ids: list[int],
+    doc_counts: dict[str, int],
+    included_template_ids: set[int],
+    db: Session,
+) -> tuple[float, list[dict]]:
+    """Calculate documentation hours and build deliverables with overlap info.
+
+    When multiple document types are linked to the same task template, the
+    template's base hours are deducted only ONCE from the combined total of
+    those documents (not once per document).
+
+    Returns (documentation_hours, deliverables_list).
+    """
+    if not doc_type_ids:
+        return 0.0, []
+
+    doc_types = db.query(DocumentType).filter(DocumentType.id.in_(doc_type_ids)).all()
+    dt_map = {dt.id: dt for dt in doc_types}
+
+    # First pass: build raw deliverable entries and group by linked template
+    raw_entries: list[dict] = []
+    # template_id → list of indices into raw_entries
+    template_groups: dict[int, list[int]] = {}
+
+    for dtid in doc_type_ids:
+        dt = dt_map.get(dtid)
+        if not dt:
+            continue
+        count = doc_counts.get(str(dtid), 1)
+        total_hours = dt.base_effort_hours * count
+        idx = len(raw_entries)
+        raw_entries.append({
+            "name": dt.name,
+            "category": dt.category,
+            "count": count,
+            "base_effort_hours": dt.base_effort_hours,
+            "total_hours": total_hours,
+            "effective_hours": total_hours,
+            "overlap_note": None,
+            "linked_task": dt.task_template.name if dt.task_template else None,
+            "_task_template_id": dt.task_template_id,
+        })
+        if dt.task_template_id and dt.task_template_id in included_template_ids:
+            template_groups.setdefault(dt.task_template_id, []).append(idx)
+
+    # Second pass: for each shared template, deduct its hours once from the
+    # group total and distribute effective hours proportionally.
+    for tmpl_id, indices in template_groups.items():
+        linked_tmpl = db.get(TaskTemplate, tmpl_id)
+        if not linked_tmpl:
+            continue
+        deducted = linked_tmpl.base_effort_hours
+        group_total = sum(raw_entries[i]["total_hours"] for i in indices)
+        group_effective = max(0.0, group_total - deducted)
+
+        for i in indices:
+            entry = raw_entries[i]
+            proportion = entry["total_hours"] / group_total if group_total > 0 else 0
+            entry["effective_hours"] = round(group_effective * proportion, 2)
+            entry["overlap_note"] = (
+                f"Deducted {deducted:.1f}h across group (already in task '{linked_tmpl.name}')"
+            )
+
+    # Build final list (strip internal key) and sum effective hours
+    deliverables = []
+    documentation_hours = 0.0
+    for entry in raw_entries:
+        entry.pop("_task_template_id", None)
+        deliverables.append(entry)
+        documentation_hours += entry["effective_hours"]
+
+    return documentation_hours, deliverables
+
+
+def _build_doc_synthetic_tasks(deliverables: list[dict]) -> list[dict]:
+    """Build synthetic task-breakdown entries for documentation excess hours.
+
+    Groups deliverables by linked task and creates one synthetic task per group
+    whose effective_hours > 0.  The task name is
+    ``"{linked_task} (additional documentation)"``.
+    Deliverables without a linked task that still carry effective hours get a
+    generic "Documentation effort" entry.
+    """
+    # group by linked_task name
+    groups: dict[str, float] = {}
+    doc_names: dict[str, list[str]] = {}
+    for dd in deliverables:
+        if dd["effective_hours"] <= 0:
+            continue
+        key = dd.get("linked_task") or ""
+        groups[key] = groups.get(key, 0) + dd["effective_hours"]
+        doc_names.setdefault(key, []).append(dd["name"])
+
+    tasks: list[dict] = []
+    for key, hours in groups.items():
+        if key:
+            task_name = f"{key} (additional documentation)"
+        else:
+            task_name = "Documentation effort"
+        detail = ", ".join(doc_names[key])
+        tasks.append({
+            "task_name": task_name,
+            "task_type": "DOCUMENTATION",
+            "base_hours": round(hours, 2),
+            "calculated_hours": round(hours, 2),
+            "leader_hours": 0,
+            "is_new_feature_study": False,
+            "notes": f"Additional effort for: {detail}",
+        })
+    return tasks
+
+
+def _build_pr_no_test_synthetic_tasks(pr_details: list[dict], no_test_hours: float) -> list[dict]:
+    """Build synthetic task entries for PRs without existing tests.
+
+    Creates one consolidated task for all no-test PRs with the total hours.
+    """
+    no_test_prs = [pr for pr in pr_details if not pr.get("test_available", True)]
+    if not no_test_prs:
+        return []
+    count = len(no_test_prs)
+    total = count * no_test_hours
+    pr_ids = ", ".join(pr.get("pr_number", "?") for pr in no_test_prs)
+    return [{
+        "task_name": "Test Creation (PR without existing tests)",
+        "task_type": "PR_TEST_CREATION",
+        "base_hours": no_test_hours,
+        "calculated_hours": round(total, 2),
+        "leader_hours": 0,
+        "is_new_feature_study": False,
+        "notes": f"{count} PR(s) without tests: {pr_ids} ({no_test_hours:.1f}h each)",
+    }]
+
+
+def _compute_doc_deliverables(estimation: Estimation, db: Session) -> list[dict]:
+    """Compute document deliverables with overlap adjustment info from wizard inputs."""
+    wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
+    doc_type_ids = wizard.get("document_type_ids", [])
+    doc_counts = wizard.get("document_counts", {})
+    included_template_ids = {t.task_template_id for t in estimation.tasks if t.task_template_id}
+    _, deliverables = _calc_doc_hours_and_deliverables(
+        doc_type_ids, doc_counts, included_template_ids, db,
+    )
+    return deliverables
+
+
 # ── Authentication ──────────────────────────────────────
 
 @router.post("/auth/login")
@@ -123,9 +306,11 @@ def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db
 
     result = None
 
+    client_ip = getattr(request.state, "client_ip", None)
+
     # Try local auth (unless method is explicitly "ldap")
     if method in ("auto", "local"):
-        result = auth_service.login(data.username, data.password)
+        result = auth_service.login(data.username, data.password, ip_address=client_ip)
 
     # Try LDAP if local fails or method is explicitly "ldap"
     if result is None and method in ("auto", "ldap"):
@@ -142,6 +327,7 @@ def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db
             if ldap_user:
                 access_token = auth_service.create_access_token(ldap_user)
                 refresh_token = auth_service.create_refresh_token(ldap_user)
+                auth_service.log_action(ldap_user.id, "LOGIN", ip_address=client_ip)
                 result = (ldap_user, access_token, refresh_token)
         elif method == "ldap":
             raise HTTPException(
@@ -739,6 +925,16 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
     profile_count = len(data.profile_ids) if data.profile_ids else 1
     new_feature_count = len(new_feature_ids)
 
+    # Build per-feature study hours list
+    feature_study_hours_list: list[float] = []
+    for fid in new_feature_ids:
+        feat = next((f for f in features if f.id == fid), None)
+        hrs = feat.study_effort_hours if feat and feat.study_effort_hours is not None else study_hours_cfg
+        feature_study_hours_list.append(hrs)
+
+    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    pr_cfg = _get_pr_config(db)
+
     calc_input = EstimationInput(
         project_type=data.project_type,
         tasks=task_inputs,
@@ -750,6 +946,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
             complex=data.pr_fixes.complex_,
         ),
         new_feature_count=new_feature_count,
+        feature_study_hours_list=feature_study_hours_list,
         team_size=data.team_size,
         has_leader=data.has_leader,
         working_days=data.working_days,
@@ -758,6 +955,11 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
         pr_scales_with_profile=pr_scales_profile,
+        expected_releases=data.expected_releases,
+        release_effort_factor=release_factor,
+        pr_complexity_hours=pr_cfg["complexity_hours"],
+        pr_no_test_hours=pr_cfg["no_test_hours"],
+        pr_no_test_count=0,  # preview doesn't have pr_details
     )
     result = calculate_estimation(calc_input)
 
@@ -769,6 +971,28 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         delivery_date=delivery,
         dut_profile_combinations=len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count,
     )
+
+    # Calculate documentation hours — deduct linked template hours once per
+    # template group to avoid double-counting.
+    included_template_ids = {tmpl.id for tmpl in templates}
+    documentation_hours, _ = _calc_doc_hours_and_deliverables(
+        data.document_type_ids, data.document_counts, included_template_ids, db,
+    )
+
+    # Add documentation hours to grand total
+    adjusted_grand_total = result.grand_total_hours + documentation_hours
+    adjusted_grand_total_days = adjusted_grand_total / hours_per_day if hours_per_day else result.grand_total_days
+
+    # Append user-selected risk registry items to risk messages
+    all_risk_messages = list(risks.messages)
+    if data.risk_item_ids:
+        registry_risks = db.query(RiskItem).filter(RiskItem.id.in_(data.risk_item_ids)).all()
+        for ri in registry_risks:
+            label = f"[{ri.category}] " if ri.category else ""
+            level = ""
+            if ri.likelihood or ri.impact:
+                level = f" (Likelihood: {ri.likelihood or '?'}, Impact: {ri.impact or '?'})"
+            all_risk_messages.append(f"{label}{ri.name}{level}")
 
     return CalculationResultOut(
         tasks=[
@@ -783,15 +1007,18 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         total_tester_hours=result.total_tester_hours,
         total_leader_hours=result.total_leader_hours,
         pr_fix_hours=result.pr_fix_hours,
+        pr_no_test_hours=result.pr_no_test_total_hours,
         study_hours=result.study_hours,
+        release_extra_hours=result.release_extra_hours,
+        documentation_hours=documentation_hours,
         buffer_hours=result.buffer_hours,
-        grand_total_hours=result.grand_total_hours,
-        grand_total_days=result.grand_total_days,
+        grand_total_hours=adjusted_grand_total,
+        grand_total_days=adjusted_grand_total_days,
         feasibility_status=result.feasibility_status,
         capacity_hours=result.capacity_hours,
         utilization_pct=result.utilization_pct,
         risk_flags=[f.value for f in risks.flags],
-        risk_messages=risks.messages,
+        risk_messages=all_risk_messages,
     )
 
 
@@ -805,7 +1032,44 @@ def get_estimation(estimation_id: int, user: User = Depends(get_current_user), d
     est = db.get(Estimation, estimation_id)
     if not est:
         raise HTTPException(404, "Estimation not found")
-    return est
+    # Compute document deliverables with overlap info from wizard inputs
+    doc_deliverables = _compute_doc_deliverables(est, db)
+    result = EstimationOut.model_validate(est)
+    result.document_deliverables = doc_deliverables
+    # Append synthetic tasks for documentation excess hours
+    for st in _build_doc_synthetic_tasks(doc_deliverables):
+        result.tasks.append(EstimationTaskOut(
+            id=0,
+            task_template_id=None,
+            task_name=st["task_name"],
+            task_type=st["task_type"],
+            base_hours=st["base_hours"],
+            calculated_hours=st["calculated_hours"],
+            assigned_testers=0,
+            has_leader_support=False,
+            leader_hours=0,
+            is_new_feature_study=False,
+            notes=st["notes"],
+        ))
+    # Append synthetic tasks for PRs without existing tests
+    wizard = json.loads(est.wizard_inputs_json) if est.wizard_inputs_json else {}
+    pr_details = wizard.get("pr_details", [])
+    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    for st in _build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg):
+        result.tasks.append(EstimationTaskOut(
+            id=0,
+            task_template_id=None,
+            task_name=st["task_name"],
+            task_type=st["task_type"],
+            base_hours=st["base_hours"],
+            calculated_hours=st["calculated_hours"],
+            assigned_testers=0,
+            has_leader_support=False,
+            leader_hours=0,
+            is_new_feature_study=False,
+            notes=st["notes"],
+        ))
+    return result
 
 
 @router.post("/estimations", response_model=EstimationOut, status_code=201)
@@ -850,6 +1114,17 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
     combinations = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
     new_feature_count = len(data.new_feature_ids)
     pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    pr_cfg = _get_pr_config(db)
+    pr_details_raw = [d.model_dump() for d in data.pr_details] if data.pr_details else []
+    no_test_count = _count_no_test_prs(pr_details_raw)
+
+    # Build per-feature study hours list
+    feature_study_hours_list: list[float] = []
+    for fid in data.new_feature_ids:
+        feat = next((f for f in features if f.id == fid), None)
+        hrs = feat.study_effort_hours if feat and feat.study_effort_hours is not None else study_hours_cfg
+        feature_study_hours_list.append(hrs)
 
     # Run calculation
     calc_input = EstimationInput(
@@ -863,6 +1138,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             complex=data.pr_fixes.complex_,
         ),
         new_feature_count=new_feature_count,
+        feature_study_hours_list=feature_study_hours_list,
         team_size=data.team_size,
         has_leader=data.has_leader,
         working_days=data.working_days,
@@ -871,6 +1147,11 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
         pr_scales_with_profile=pr_scales_profile,
+        expected_releases=data.expected_releases,
+        release_effort_factor=release_factor,
+        pr_complexity_hours=pr_cfg["complexity_hours"],
+        pr_no_test_hours=pr_cfg["no_test_hours"],
+        pr_no_test_count=no_test_count,
     )
     result = calculate_estimation(calc_input)
 
@@ -890,12 +1171,24 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             "medium": data.pr_fixes.medium,
             "complex": data.pr_fixes.complex_,
         },
-        "pr_details": [d.model_dump() for d in data.pr_details] if data.pr_details else [],
+        "pr_details": pr_details_raw,
         "team_size": data.team_size,
         "has_leader": data.has_leader,
         "working_days": data.working_days,
         "start_date": str(data.start_date) if data.start_date else None,
+        "expected_releases": data.expected_releases,
+        "document_type_ids": data.document_type_ids,
+        "document_counts": data.document_counts,
     }
+
+    # Calculate documentation hours — deduct linked template hours once per group
+    included_template_ids = {tmpl.id for tmpl in templates}
+    documentation_hours, _ = _calc_doc_hours_and_deliverables(
+        data.document_type_ids, data.document_counts, included_template_ids, db,
+    )
+
+    adjusted_grand_total = result.grand_total_hours + documentation_hours
+    adjusted_grand_total_days = adjusted_grand_total / hours_per_day if hours_per_day else result.grand_total_days
 
     # Save estimation
     estimation = Estimation(
@@ -913,15 +1206,22 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         total_tester_hours=result.total_tester_hours,
         total_leader_hours=result.total_leader_hours,
         pr_fix_hours=result.pr_fix_hours,
+        pr_no_test_hours=result.pr_no_test_total_hours,
         study_hours=result.study_hours,
+        release_extra_hours=result.release_extra_hours,
+        documentation_hours=documentation_hours,
         buffer_hours=result.buffer_hours,
-        grand_total_hours=result.grand_total_hours,
-        grand_total_days=result.grand_total_days,
+        grand_total_hours=adjusted_grand_total,
+        grand_total_days=adjusted_grand_total_days,
         feasibility_status=result.feasibility_status,
         status="DRAFT",
         created_by=data.created_by,
         version=1,
         wizard_inputs_json=json.dumps(wizard_inputs),
+        expected_releases=data.expected_releases,
+        project_goals=data.project_goals,
+        target_customer=data.target_customer,
+        team_id=data.team_id,
     )
     db.add(estimation)
     db.flush()
@@ -951,6 +1251,10 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             allocated_hours=alloc.allocated_hours,
         )
         db.add(eta)
+
+    # Save risk associations
+    for rid in data.risk_item_ids:
+        db.add(EstimationRisk(estimation_id=estimation.id, risk_item_id=rid))
 
     # Update request status if linked
     if data.request_id:
@@ -1019,6 +1323,17 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
         dut_profile_combinations=estimation.dut_profile_combinations,
     )
 
+    # Append user-selected risk registry items
+    all_risk_messages = list(risks.messages)
+    for er in estimation.risks:
+        ri = er.risk_item
+        if ri:
+            label = f"[{ri.category}] " if ri.category else ""
+            level = ""
+            if ri.likelihood or ri.impact:
+                level = f" (Likelihood: {ri.likelihood or '?'}, Impact: {ri.impact or '?'})"
+            all_risk_messages.append(f"{label}{ri.name}{level}")
+
     return CalculationResultOut(
         tasks=[
             {
@@ -1033,6 +1348,7 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
         total_leader_hours=result.total_leader_hours,
         pr_fix_hours=result.pr_fix_hours,
         study_hours=result.study_hours,
+        release_extra_hours=result.release_extra_hours,
         buffer_hours=result.buffer_hours,
         grand_total_hours=result.grand_total_hours,
         grand_total_days=result.grand_total_days,
@@ -1040,7 +1356,7 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
         capacity_hours=result.capacity_hours,
         utilization_pct=result.utilization_pct,
         risk_flags=[f.value for f in risks.flags],
-        risk_messages=risks.messages,
+        risk_messages=all_risk_messages,
     )
 
 
@@ -1102,6 +1418,49 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
     # PR details from wizard inputs
     pr_details = wizard.get("pr_details", [])
 
+    # Build team members data from allocations
+    team_members_data = []
+    for alloc in estimation.team_allocations:
+        tm = alloc.team_member
+        team_members_data.append({
+            "name": tm.name if tm else "Unknown",
+            "role": alloc.role or (tm.role if tm else ""),
+            "hours_per_day": tm.available_hours_per_day if tm else 7.0,
+            "skills": tm.skills_json if tm else "[]",
+            "allocated_hours": alloc.allocated_hours,
+        })
+
+    # Calculate capacity and utilization
+    team_size = wizard.get("team_size", 1)
+    has_leader = wizard.get("has_leader", False)
+    working_days = wizard.get("working_days", 20)
+    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    capacity_hours = team_size * working_days * hours_per_day
+    if has_leader:
+        capacity_hours += working_days * hours_per_day
+    utilization_pct = (estimation.grand_total_hours / capacity_hours * 100) if capacity_hours > 0 else 0
+
+    # Build document deliverables data with overlap adjustment info
+    doc_type_ids = wizard.get("document_type_ids", [])
+    doc_counts = wizard.get("document_counts", {})
+    included_template_ids = {t.task_template_id for t in estimation.tasks if t.task_template_id}
+    _, doc_deliverables = _calc_doc_hours_and_deliverables(
+        doc_type_ids, doc_counts, included_template_ids, db,
+    )
+
+    # Append synthetic tasks for documentation excess hours so they appear
+    # in the task breakdown alongside template-based tasks.
+    tasks.extend(_build_doc_synthetic_tasks(doc_deliverables))
+
+    # Append synthetic tasks for PRs without existing tests
+    pr_details = wizard.get("pr_details", [])
+    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    tasks.extend(_build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg))
+
+    # Compute working weeks
+    grand_total_days = estimation.grand_total_days or 0
+    working_weeks = round(grand_total_days / 5.0, 1)
+
     return ExcelReportData(
         project_name=estimation.project_name,
         estimation_number=estimation.estimation_number or "",
@@ -1125,6 +1484,8 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         grand_total_hours=estimation.grand_total_hours,
         grand_total_days=estimation.grand_total_days,
         feasibility_status=estimation.feasibility_status,
+        capacity_hours=capacity_hours,
+        utilization_pct=utilization_pct,
         tasks=tasks,
         dut_types=dut_types_data,
         profiles=profiles_data,
@@ -1134,7 +1495,50 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         pr_complex=pr_fixes_data.get("complex", 0),
         reference_projects=ref_projects,
         pr_details=pr_details,
+        team_members=team_members_data,
+        team_size=team_size,
+        has_leader=has_leader,
+        risk_messages=_build_risk_messages(estimation, db),
+        release_extra_hours=estimation.release_extra_hours,
+        documentation_hours=getattr(estimation, "documentation_hours", 0) or 0,
+        pr_no_test_hours=getattr(estimation, "pr_no_test_hours", 0) or 0,
+        project_goals=estimation.project_goals,
+        target_customer=estimation.target_customer,
+        version=estimation.version or 1,
+        status=estimation.status,
+        start_date=str(estimation.start_date) if estimation.start_date else "",
+        document_deliverables=doc_deliverables,
+        working_weeks=working_weeks,
     )
+
+
+def _build_risk_messages(estimation: Estimation, db: Session) -> list[str]:
+    """Build combined risk messages from auto-assessment + registry items."""
+    wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
+    new_feature_ids = wizard.get("new_feature_ids", [])
+    feature_ids = wizard.get("feature_ids", [])
+    ref_ids = json.loads(estimation.reference_project_ids) if estimation.reference_project_ids else []
+
+    risks = assess_risks(
+        total_features=len(feature_ids),
+        new_feature_count=len(new_feature_ids),
+        reference_project_count=len(ref_ids),
+        delivery_date=estimation.expected_delivery,
+        dut_profile_combinations=estimation.dut_profile_combinations,
+    )
+    messages = list(risks.messages)
+
+    # Append user-selected risk registry items
+    for er in estimation.risks:
+        ri = er.risk_item
+        if ri:
+            label = f"[{ri.category}] " if ri.category else ""
+            level = ""
+            if ri.likelihood or ri.impact:
+                level = f" (Likelihood: {ri.likelihood or '?'}, Impact: {ri.impact or '?'})"
+            messages.append(f"{label}{ri.name}{level}")
+
+    return messages
 
 
 @router.get("/estimations/{estimation_id}/report/xlsx")
@@ -1583,11 +1987,24 @@ def _try_export_estimation(estimation: "Estimation", db: Session) -> None:
             "grand_total_hours": estimation.grand_total_hours,
             "feasibility_status": estimation.feasibility_status,
             "estimation_number": estimation.estimation_number or f"EST-{estimation.id}",
+            "project_name": estimation.project_name,
+            "status": estimation.status,
         }
         sync_export(req.request_source, estimation_data, db)
+        logger.info(
+            "Auto-exported estimation %s to %s (external_id=%s)",
+            estimation.estimation_number or estimation.id,
+            req.request_source,
+            req.external_id,
+        )
     except Exception:
-        # Export failure should not block the status transition
-        pass
+        logger.warning(
+            "Auto-export failed for estimation %s to %s (external_id=%s)",
+            estimation.estimation_number or estimation.id,
+            req.request_source,
+            req.external_id,
+            exc_info=True,
+        )
 
 
 def _try_outline_auto_export(estimation: "Estimation", new_status: str, db: Session) -> None:
@@ -1660,6 +2077,17 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     combinations = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
     new_feature_count = len(data.new_feature_ids)
     pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    pr_cfg = _get_pr_config(db)
+    pr_details_raw = [d.model_dump() for d in data.pr_details] if data.pr_details else []
+    no_test_count = _count_no_test_prs(pr_details_raw)
+
+    # Build per-feature study hours list
+    feature_study_hours_list: list[float] = []
+    for fid in data.new_feature_ids:
+        feat = next((f for f in features if f.id == fid), None)
+        hrs = feat.study_effort_hours if feat and feat.study_effort_hours is not None else study_hours_cfg
+        feature_study_hours_list.append(hrs)
 
     # Run calculation
     calc_input = EstimationInput(
@@ -1673,6 +2101,7 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             complex=data.pr_fixes.complex_,
         ),
         new_feature_count=new_feature_count,
+        feature_study_hours_list=feature_study_hours_list,
         team_size=data.team_size,
         has_leader=data.has_leader,
         working_days=data.working_days,
@@ -1681,6 +2110,11 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         working_hours_per_day=hours_per_day,
         buffer_percentage=buffer_pct,
         pr_scales_with_profile=pr_scales_profile,
+        expected_releases=data.expected_releases,
+        release_effort_factor=release_factor,
+        pr_complexity_hours=pr_cfg["complexity_hours"],
+        pr_no_test_hours=pr_cfg["no_test_hours"],
+        pr_no_test_count=no_test_count,
     )
     result = calculate_estimation(calc_input)
 
@@ -1697,12 +2131,68 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             "medium": data.pr_fixes.medium,
             "complex": data.pr_fixes.complex_,
         },
-        "pr_details": [d.model_dump() for d in data.pr_details] if data.pr_details else [],
+        "pr_details": pr_details_raw,
         "team_size": data.team_size,
         "has_leader": data.has_leader,
         "working_days": data.working_days,
         "start_date": str(data.start_date) if data.start_date else None,
+        "expected_releases": data.expected_releases,
+        "document_type_ids": data.document_type_ids,
+        "document_counts": data.document_counts,
     }
+
+    # Calculate documentation hours — deduct linked template hours once per group
+    included_template_ids = {tmpl.id for tmpl in templates}
+    documentation_hours, _ = _calc_doc_hours_and_deliverables(
+        data.document_type_ids, data.document_counts, included_template_ids, db,
+    )
+
+    adjusted_grand_total = result.grand_total_hours + documentation_hours
+    adjusted_grand_total_days = adjusted_grand_total / hours_per_day if hours_per_day else result.grand_total_days
+
+    # Save a snapshot of the current version before overwriting
+    snapshot_data = {
+        "project_name": estimation.project_name,
+        "project_type": estimation.project_type,
+        "dut_count": estimation.dut_count,
+        "profile_count": estimation.profile_count,
+        "dut_profile_combinations": estimation.dut_profile_combinations,
+        "pr_fix_count": estimation.pr_fix_count,
+        "start_date": str(estimation.start_date) if estimation.start_date else None,
+        "expected_delivery": str(estimation.expected_delivery) if estimation.expected_delivery else None,
+        "total_tester_hours": estimation.total_tester_hours,
+        "total_leader_hours": estimation.total_leader_hours,
+        "pr_fix_hours": estimation.pr_fix_hours,
+        "study_hours": estimation.study_hours,
+        "buffer_hours": estimation.buffer_hours,
+        "grand_total_hours": estimation.grand_total_hours,
+        "grand_total_days": estimation.grand_total_days,
+        "feasibility_status": estimation.feasibility_status,
+        "status": estimation.status,
+        "expected_releases": estimation.expected_releases,
+        "release_extra_hours": estimation.release_extra_hours,
+        "project_goals": estimation.project_goals,
+        "target_customer": estimation.target_customer,
+        "wizard_inputs": json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {},
+        "tasks": [
+            {"task_name": t.task_name, "task_type": t.task_type, "base_hours": t.base_hours, "calculated_hours": t.calculated_hours}
+            for t in estimation.tasks
+        ],
+        "team_allocations": [
+            {"member_name": a.team_member.name if a.team_member else "Unknown", "role": a.role, "allocated_hours": a.allocated_hours}
+            for a in estimation.team_allocations
+        ],
+        "risks": [
+            {"risk_name": r.risk_item.name if r.risk_item else "Unknown", "notes": r.notes}
+            for r in estimation.risks
+        ],
+    }
+    snapshot = EstimationVersionSnapshot(
+        estimation_id=estimation.id,
+        version=estimation.version or 1,
+        snapshot_json=json.dumps(snapshot_data),
+    )
+    db.add(snapshot)
 
     # Update estimation in-place
     estimation.project_name = data.project_name
@@ -1717,11 +2207,18 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     estimation.total_tester_hours = result.total_tester_hours
     estimation.total_leader_hours = result.total_leader_hours
     estimation.pr_fix_hours = result.pr_fix_hours
+    estimation.pr_no_test_hours = result.pr_no_test_total_hours
     estimation.study_hours = result.study_hours
+    estimation.release_extra_hours = result.release_extra_hours
+    estimation.documentation_hours = documentation_hours
     estimation.buffer_hours = result.buffer_hours
-    estimation.grand_total_hours = result.grand_total_hours
-    estimation.grand_total_days = result.grand_total_days
+    estimation.grand_total_hours = adjusted_grand_total
+    estimation.grand_total_days = adjusted_grand_total_days
     estimation.feasibility_status = result.feasibility_status
+    estimation.expected_releases = data.expected_releases
+    estimation.project_goals = data.project_goals
+    estimation.target_customer = data.target_customer
+    estimation.team_id = data.team_id
     estimation.status = "DRAFT"
     estimation.version = (estimation.version or 1) + 1
     estimation.wizard_inputs_json = json.dumps(wizard_inputs)
@@ -1755,6 +2252,11 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             allocated_hours=alloc.allocated_hours,
         )
         db.add(eta)
+
+    # Delete old risks, create new ones
+    db.query(EstimationRisk).filter(EstimationRisk.estimation_id == estimation_id).delete()
+    for rid in data.risk_item_ids:
+        db.add(EstimationRisk(estimation_id=estimation.id, risk_item_id=rid))
 
     # Audit log
     try:
@@ -1797,6 +2299,8 @@ def export_estimation_to_external(estimation_id: int, user: User = Depends(Requi
         "grand_total_hours": estimation.grand_total_hours,
         "feasibility_status": estimation.feasibility_status,
         "estimation_number": estimation.estimation_number or f"EST-{estimation.id}",
+        "project_name": estimation.project_name,
+        "status": estimation.status,
     }
     result = sync_export(req.request_source, estimation_data, db)
 
@@ -1804,6 +2308,73 @@ def export_estimation_to_external(estimation_id: int, user: User = Depends(Requi
         "status": result.status.value,
         "system": result.system,
         "items_updated": result.items_updated,
+        "errors": result.errors,
+    }
+
+
+class ExportTasksInput(BaseModel):
+    target_system: str | None = None
+    issue_key: str | None = None
+
+
+@router.post("/estimations/{estimation_id}/export-tasks")
+def export_task_breakdown(
+    estimation_id: int,
+    body: ExportTasksInput | None = None,
+    user: User = Depends(RequireRole("ESTIMATOR")),
+    db: Session = Depends(get_db),
+):
+    """Export estimation task breakdown as sub-tasks to Jira or Redmine.
+
+    If no target_system is given, auto-detects from the linked request.
+    If issue_key is provided, tasks are created as sub-tasks under it.
+    Otherwise, tasks are created as standalone issues in the configured project.
+    """
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+
+    target_system = body.target_system if body else None
+    issue_key = body.issue_key if body else None
+
+    # Determine target system and external_id
+    system_name = None
+    external_id = issue_key  # explicit issue key takes priority
+
+    if target_system:
+        system_name = target_system.upper()
+    elif estimation.request_id:
+        req = db.get(Request, estimation.request_id)
+        if req and req.request_source != "MANUAL":
+            system_name = req.request_source
+            if not external_id and req.external_id:
+                external_id = req.external_id
+
+    if not system_name:
+        # Try to find any enabled integration that supports task breakdown
+        from ..integrations.service import get_adapter
+        for sys in ["JIRA", "REDMINE"]:
+            adapter = get_adapter(sys, db)
+            if adapter and hasattr(adapter, "create_task_breakdown"):
+                system_name = sys
+                break
+
+    if not system_name:
+        raise HTTPException(400, "No target system specified and no enabled integration found (Jira/Redmine)")
+
+    from ..integrations.service import _estimation_to_export_dict, sync_export_task_breakdown
+
+    estimation_data = _estimation_to_export_dict(estimation)
+    if external_id:
+        estimation_data["external_id"] = external_id
+
+    result = sync_export_task_breakdown(system_name, estimation_data, db)
+
+    return {
+        "status": result.status.value,
+        "system": result.system,
+        "items_created": result.items_created,
+        "items_processed": result.items_processed,
         "errors": result.errors,
     }
 
@@ -1855,6 +2426,44 @@ async def upload_attachment(request_id: int, file: UploadFile = File(...), user:
     db.commit()
 
     return {"status": "ok", "filename": file.filename, "size": len(content)}
+
+
+# ── Logo upload ─────────────────────────────────────────
+
+@router.post("/configuration/logo/upload")
+async def upload_logo(
+    file: UploadFile = File(...),
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    """Upload a logo image and update the logo_url configuration."""
+    import os
+
+    allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+    ext = os.path.splitext(file.filename or "logo.png")[1].lower()
+    if ext not in allowed_ext:
+        raise HTTPException(400, f"Invalid file type '{ext}'. Allowed: {', '.join(allowed_ext)}")
+
+    # Use same upload dir as the static mount in app.py
+    upload_dir = "/app/data/uploads" if os.path.isdir("/app/data") else os.path.join("data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    filename = f"logo{ext}"
+    filepath = os.path.join(upload_dir, filename)
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # Update config key with relative URL served by the static mount
+    logo_url = f"/api/static/uploads/{filename}"
+    cfg = db.get(Configuration, "logo_url")
+    if cfg:
+        cfg.value = logo_url
+    else:
+        db.add(Configuration(key="logo_url", value=logo_url, description="Logo image URL"))
+    db.commit()
+
+    return {"status": "ok", "logo_url": logo_url, "size": len(content)}
 
 
 # ── Calibration endpoint ────────────────────────────────
@@ -2210,26 +2819,50 @@ def publish_to_outline(
     if not adapter:
         raise HTTPException(400, "Outline integration is not configured")
 
-    est_data = {
-        "estimation_number": estimation.estimation_number,
-        "project_name": estimation.project_name,
-        "project_type": estimation.project_type,
-        "total_tester_hours": estimation.total_tester_hours,
-        "total_leader_hours": estimation.total_leader_hours,
-        "grand_total_hours": estimation.grand_total_hours,
-        "grand_total_days": estimation.grand_total_days,
-        "feasibility_status": estimation.feasibility_status,
-        "status": estimation.status,
-        "dut_count": estimation.dut_count,
-        "profile_count": estimation.profile_count,
-        "dut_profile_combinations": estimation.dut_profile_combinations,
-        "pr_fix_count": estimation.pr_fix_count,
-        "created_at": str(estimation.created_at) if estimation.created_at else "",
-        "tasks": [
-            {"task_name": t.task_name, "task_type": t.task_type, "calculated_hours": t.calculated_hours}
-            for t in estimation.tasks
-        ],
-    }
+    from ..integrations.service import _estimation_to_export_dict
+    est_data = _estimation_to_export_dict(estimation)
+
+    # Enrich with additional data for comprehensive export
+    _outline_wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
+
+    # Add pr_no_test_hours
+    est_data["pr_no_test_hours"] = getattr(estimation, "pr_no_test_hours", 0) or 0
+
+    # Add working weeks
+    grand_total_days = estimation.grand_total_days or 0
+    est_data["working_weeks"] = round(grand_total_days / 5.0, 1)
+
+    # Add DUT/profile names
+    dut_ids = _outline_wizard.get("dut_ids", [])
+    profile_ids = _outline_wizard.get("profile_ids", [])
+    if dut_ids:
+        duts = db.query(DutType).filter(DutType.id.in_(dut_ids)).all()
+        est_data["dut_names"] = [d.name for d in duts]
+    if profile_ids:
+        profiles = db.query(TestProfile).filter(TestProfile.id.in_(profile_ids)).all()
+        est_data["profile_names"] = [p.name for p in profiles]
+
+    # Add team allocation
+    est_data["team_members"] = [
+        {"name": a.team_member.name if a.team_member else "Unknown", "role": a.role or "", "allocated_hours": a.allocated_hours}
+        for a in estimation.team_allocations
+    ]
+
+    # Add document deliverables
+    doc_deliverables = _compute_doc_deliverables(estimation, db)
+    est_data["document_deliverables"] = doc_deliverables
+
+    # Add risk messages
+    est_data["risk_messages"] = _build_risk_messages(estimation, db)
+
+    # Add synthetic tasks (documentation + no-test PRs)
+    tasks = est_data.get("tasks", [])
+    tasks.extend(_build_doc_synthetic_tasks(doc_deliverables))
+    pr_details = _outline_wizard.get("pr_details", [])
+    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    tasks.extend(_build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg))
+    est_data["tasks"] = tasks
+
     result = adapter.export_estimation(est_data)
     return {
         "status": result.status.value if hasattr(result.status, 'value') else str(result.status),
@@ -2404,3 +3037,561 @@ def delete_task_preset(preset_id: int, user: User = Depends(RequireRole("ESTIMAT
         raise HTTPException(404, "Task preset not found")
     db.delete(preset)
     db.commit()
+
+
+# ── Risk Items ─────────────────────────────────────────────
+
+@router.get("/risk-items", response_model=list[RiskItemOut])
+def list_risk_items(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(RiskItem).filter(RiskItem.is_active.is_(True)).all()
+
+
+@router.post("/risk-items", response_model=RiskItemOut, status_code=201)
+def create_risk_item(data: RiskItemCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    existing = db.query(RiskItem).filter(RiskItem.name == data.name).first()
+    if existing:
+        raise HTTPException(400, f"Risk item '{data.name}' already exists")
+    item = RiskItem(**data.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.put("/risk-items/{item_id}", response_model=RiskItemOut)
+def update_risk_item(item_id: int, data: RiskItemUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    item = db.get(RiskItem, item_id)
+    if not item:
+        raise HTTPException(404, "Risk item not found")
+    for key, val in data.model_dump(exclude_unset=True).items():
+        setattr(item, key, val)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/risk-items/{item_id}", status_code=204)
+def delete_risk_item(item_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    item = db.get(RiskItem, item_id)
+    if not item:
+        raise HTTPException(404, "Risk item not found")
+    db.delete(item)
+    db.commit()
+
+
+# ── Document Types ─────────────────────────────────────────
+
+def _doc_type_to_out(item: DocumentType) -> dict:
+    """Convert DocumentType ORM to dict with resolved task_template_name."""
+    return {
+        "id": item.id,
+        "name": item.name,
+        "description": item.description,
+        "category": item.category,
+        "base_effort_hours": item.base_effort_hours,
+        "is_active": item.is_active,
+        "task_template_id": item.task_template_id,
+        "task_template_name": item.task_template.name if item.task_template else None,
+        "created_at": item.created_at,
+    }
+
+
+@router.get("/document-types", response_model=list[DocumentTypeOut])
+def list_document_types(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    items = db.query(DocumentType).filter(DocumentType.is_active.is_(True)).order_by(DocumentType.name).all()
+    return [_doc_type_to_out(i) for i in items]
+
+
+@router.get("/document-types/all", response_model=list[DocumentTypeOut])
+def list_all_document_types(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    items = db.query(DocumentType).order_by(DocumentType.name).all()
+    return [_doc_type_to_out(i) for i in items]
+
+
+@router.post("/document-types", response_model=DocumentTypeOut, status_code=201)
+def create_document_type(data: DocumentTypeCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    existing = db.query(DocumentType).filter(DocumentType.name == data.name).first()
+    if existing:
+        raise HTTPException(400, f"Document type '{data.name}' already exists")
+    item = DocumentType(**data.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _doc_type_to_out(item)
+
+
+@router.put("/document-types/{item_id}", response_model=DocumentTypeOut)
+def update_document_type(item_id: int, data: DocumentTypeUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    item = db.get(DocumentType, item_id)
+    if not item:
+        raise HTTPException(404, "Document type not found")
+    for key, val in data.model_dump(exclude_unset=True).items():
+        setattr(item, key, val)
+    db.commit()
+    db.refresh(item)
+    return _doc_type_to_out(item)
+
+
+@router.delete("/document-types/{item_id}", status_code=204)
+def delete_document_type(item_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    item = db.get(DocumentType, item_id)
+    if not item:
+        raise HTTPException(404, "Document type not found")
+    db.delete(item)
+    db.commit()
+
+
+# ── Snipe-IT Assets ────────────────────────────────────────
+
+@router.get("/integrations/SNIPE_IT/assets")
+def get_snipeit_assets(categories: str = "", user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch hardware assets from Snipe-IT, optionally filtered by categories."""
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("SNIPE_IT", db)
+    if not adapter:
+        raise HTTPException(400, "Snipe-IT integration is not configured or not enabled.")
+
+    from ..integrations.snipeit_adapter import SnipeItAdapter
+    if not isinstance(adapter, SnipeItAdapter):
+        raise HTTPException(500, "Invalid Snipe-IT adapter")
+
+    cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
+    assets = adapter.get_hardware_by_category(cat_list)
+    return assets
+
+
+@router.get("/integrations/SNIPE_IT/categories")
+def get_snipeit_categories(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch available categories from Snipe-IT."""
+    from ..integrations.service import get_adapter
+    adapter = get_adapter("SNIPE_IT", db)
+    if not adapter:
+        raise HTTPException(400, "Snipe-IT integration is not configured or not enabled.")
+
+    from ..integrations.snipeit_adapter import SnipeItAdapter
+    if not isinstance(adapter, SnipeItAdapter):
+        raise HTTPException(500, "Invalid Snipe-IT adapter")
+
+    return adapter.get_categories()
+
+
+# ── Jira Problem Reports (PR Items) ───────────────────────────
+
+@router.get("/integrations/JIRA/pr-items")
+def get_jira_pr_items(
+    jql: str = "",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch PR / defect issues from Jira using a dedicated JQL query."""
+    from ..integrations.service import get_adapter
+
+    config = db.query(IntegrationConfig).filter_by(system_name="JIRA").first()
+    if not config or not config.enabled:
+        raise HTTPException(status_code=400, detail="JIRA integration not configured or not enabled.")
+
+    adapter = get_adapter("JIRA", db)
+
+    # Parse extra config for PR-specific settings
+    import json as _json
+    try:
+        extra = _json.loads(config.additional_config_json or "{}")
+    except Exception:
+        extra = {}
+
+    if not jql:
+        jql = extra.get("pr_jql_filter", "")
+
+    if not jql:
+        raise HTTPException(status_code=400, detail="No PR JQL filter provided.")
+
+    # Use separate PR API key if configured, otherwise fall back to main adapter key
+    pr_api_key = extra.get("pr_api_key", "")
+
+    try:
+        import requests as http_requests
+
+        # Build headers: use PR-specific API key if available
+        if pr_api_key:
+            import base64
+            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            if adapter.is_cloud and adapter.username:
+                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            elif adapter.auth_mode == "basic" and adapter.username:
+                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            elif adapter.auth_mode == "pat":
+                headers["Authorization"] = f"Bearer {pr_api_key}"
+            elif adapter.username:
+                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            else:
+                headers["Authorization"] = f"Bearer {pr_api_key}"
+
+            resp = http_requests.request(
+                "GET",
+                adapter._url("search"),
+                headers=headers,
+                params={
+                    "jql": jql,
+                    "maxResults": 200,
+                    "fields": "summary,priority,status,issuetype,created",
+                },
+                timeout=adapter.timeout,
+                verify=adapter.ssl_verify,
+            )
+        else:
+            resp = adapter._request(
+                "GET",
+                adapter._url("search"),
+                params={
+                    "jql": jql,
+                    "maxResults": 200,
+                    "fields": "summary,priority,status,issuetype,created",
+                },
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        issues = data.get("issues", [])
+
+        result = []
+        for issue in issues:
+            fields = issue.get("fields", {})
+            priority = (fields.get("priority") or {}).get("name", "Medium")
+            status = (fields.get("status") or {}).get("name", "")
+            issue_type = (fields.get("issuetype") or {}).get("name", "")
+            result.append({
+                "key": issue.get("key", ""),
+                "summary": fields.get("summary", ""),
+                "priority": priority,
+                "status": status,
+                "issue_type": issue_type,
+                "created": fields.get("created", ""),
+            })
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch PR items: {exc}")
+
+
+# ── Estimation Version History & Diff ──────────────────────────────
+
+@router.get("/estimations/{estimation_id}/versions")
+def get_estimation_versions(
+    estimation_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all version snapshots for an estimation."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+
+    snapshots = (
+        db.query(EstimationVersionSnapshot)
+        .filter(EstimationVersionSnapshot.estimation_id == estimation_id)
+        .order_by(EstimationVersionSnapshot.version.asc())
+        .all()
+    )
+
+    versions = []
+    for snap in snapshots:
+        data = json.loads(snap.snapshot_json)
+        versions.append({
+            "id": snap.id,
+            "version": snap.version,
+            "created_at": snap.created_at.isoformat() if snap.created_at else None,
+            "project_name": data.get("project_name", ""),
+            "grand_total_hours": data.get("grand_total_hours", 0),
+            "feasibility_status": data.get("feasibility_status", ""),
+            "status": data.get("status", ""),
+        })
+
+    # Add current version
+    versions.append({
+        "id": None,
+        "version": estimation.version,
+        "created_at": estimation.created_at.isoformat() if estimation.created_at else None,
+        "project_name": estimation.project_name,
+        "grand_total_hours": estimation.grand_total_hours,
+        "feasibility_status": estimation.feasibility_status,
+        "status": estimation.status,
+        "is_current": True,
+    })
+
+    return versions
+
+
+@router.get("/estimations/{estimation_id}/versions/{version_a}/diff/{version_b}")
+def diff_estimation_versions(
+    estimation_id: int,
+    version_a: int,
+    version_b: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Compare two versions of an estimation and return the differences."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+
+    def _get_version_data(ver: int) -> dict:
+        if ver == estimation.version:
+            # Current version — build from live data
+            return {
+                "project_name": estimation.project_name,
+                "project_type": estimation.project_type,
+                "dut_count": estimation.dut_count,
+                "profile_count": estimation.profile_count,
+                "dut_profile_combinations": estimation.dut_profile_combinations,
+                "pr_fix_count": estimation.pr_fix_count,
+                "start_date": str(estimation.start_date) if estimation.start_date else None,
+                "expected_delivery": str(estimation.expected_delivery) if estimation.expected_delivery else None,
+                "total_tester_hours": estimation.total_tester_hours,
+                "total_leader_hours": estimation.total_leader_hours,
+                "pr_fix_hours": estimation.pr_fix_hours,
+                "study_hours": estimation.study_hours,
+                "buffer_hours": estimation.buffer_hours,
+                "grand_total_hours": estimation.grand_total_hours,
+                "grand_total_days": estimation.grand_total_days,
+                "feasibility_status": estimation.feasibility_status,
+                "status": estimation.status,
+                "expected_releases": estimation.expected_releases,
+                "release_extra_hours": getattr(estimation, "release_extra_hours", 0),
+                "project_goals": estimation.project_goals,
+                "target_customer": estimation.target_customer,
+                "wizard_inputs": json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {},
+                "tasks": [
+                    {"task_name": t.task_name, "task_type": t.task_type, "base_hours": t.base_hours, "calculated_hours": t.calculated_hours}
+                    for t in estimation.tasks
+                ],
+            }
+        else:
+            snap = (
+                db.query(EstimationVersionSnapshot)
+                .filter_by(estimation_id=estimation_id, version=ver)
+                .first()
+            )
+            if not snap:
+                raise HTTPException(404, f"Version {ver} snapshot not found")
+            return json.loads(snap.snapshot_json)
+
+    data_a = _get_version_data(version_a)
+    data_b = _get_version_data(version_b)
+
+    # Build diff — compare key fields
+    diff_fields = [
+        ("project_name", "Project Name"),
+        ("project_type", "Project Type"),
+        ("dut_count", "DUT Count"),
+        ("profile_count", "Profile Count"),
+        ("dut_profile_combinations", "DUT x Profile Combinations"),
+        ("pr_fix_count", "PR Fix Count"),
+        ("start_date", "Start Date"),
+        ("expected_delivery", "Expected Delivery"),
+        ("total_tester_hours", "Total Tester Hours"),
+        ("total_leader_hours", "Total Leader Hours"),
+        ("pr_fix_hours", "PR Fix Hours"),
+        ("study_hours", "Study Hours"),
+        ("buffer_hours", "Buffer Hours"),
+        ("grand_total_hours", "Grand Total Hours"),
+        ("grand_total_days", "Grand Total Days"),
+        ("feasibility_status", "Feasibility"),
+        ("expected_releases", "Expected Releases"),
+        ("release_extra_hours", "Release Extra Hours"),
+        ("project_goals", "Project Goals"),
+        ("target_customer", "Target Customer"),
+    ]
+
+    changes = []
+    for field_key, field_label in diff_fields:
+        val_a = data_a.get(field_key)
+        val_b = data_b.get(field_key)
+        if val_a != val_b:
+            changes.append({
+                "field": field_label,
+                "version_a": val_a,
+                "version_b": val_b,
+            })
+
+    # Compare task lists
+    tasks_a = data_a.get("tasks", [])
+    tasks_b = data_b.get("tasks", [])
+    tasks_a_names = {t["task_name"] for t in tasks_a}
+    tasks_b_names = {t["task_name"] for t in tasks_b}
+    added_tasks = [t for t in tasks_b if t["task_name"] not in tasks_a_names]
+    removed_tasks = [t for t in tasks_a if t["task_name"] not in tasks_b_names]
+    modified_tasks = []
+    for tb in tasks_b:
+        ta = next((t for t in tasks_a if t["task_name"] == tb["task_name"]), None)
+        if ta and ta.get("calculated_hours") != tb.get("calculated_hours"):
+            modified_tasks.append({
+                "task_name": tb["task_name"],
+                "hours_a": ta.get("calculated_hours", 0),
+                "hours_b": tb.get("calculated_hours", 0),
+            })
+
+    # Compare wizard inputs (features, DUTs, profiles)
+    wi_a = data_a.get("wizard_inputs", {})
+    wi_b = data_b.get("wizard_inputs", {})
+    input_changes = {}
+    for wi_key in ["feature_ids", "new_feature_ids", "dut_ids", "profile_ids"]:
+        list_a = set(wi_a.get(wi_key, []))
+        list_b = set(wi_b.get(wi_key, []))
+        if list_a != list_b:
+            input_changes[wi_key] = {
+                "added": sorted(list_b - list_a),
+                "removed": sorted(list_a - list_b),
+            }
+
+    return {
+        "estimation_id": estimation_id,
+        "version_a": version_a,
+        "version_b": version_b,
+        "changes": changes,
+        "added_tasks": added_tasks,
+        "removed_tasks": removed_tasks,
+        "modified_tasks": modified_tasks,
+        "input_changes": input_changes,
+    }
+
+
+# ── Public Holidays ─────────────────────────────────────────────
+
+@router.get("/public-holidays", response_model=list[PublicHolidayOut])
+def list_public_holidays(
+    year: int | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all public holidays, optionally filtered by year."""
+    from sqlalchemy import extract
+    q = db.query(PublicHoliday)
+    if year is not None:
+        q = q.filter(
+            (extract("year", PublicHoliday.date) == year) | (PublicHoliday.is_recurring == True)
+        )
+    return q.order_by(PublicHoliday.date).all()
+
+
+@router.post("/public-holidays", response_model=PublicHolidayOut, status_code=201)
+def create_public_holiday(
+    data: PublicHolidayCreate,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    holiday = PublicHoliday(
+        date=data.date,
+        name=data.name,
+        country=data.country,
+        is_recurring=data.is_recurring,
+    )
+    db.add(holiday)
+    db.commit()
+    db.refresh(holiday)
+    return holiday
+
+
+@router.put("/public-holidays/{holiday_id}", response_model=PublicHolidayOut)
+def update_public_holiday(
+    holiday_id: int,
+    data: PublicHolidayUpdate,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    holiday = db.get(PublicHoliday, holiday_id)
+    if not holiday:
+        raise HTTPException(404, "Holiday not found")
+    if data.date is not None:
+        holiday.date = data.date
+    if data.name is not None:
+        holiday.name = data.name
+    if data.country is not None:
+        holiday.country = data.country
+    if data.is_recurring is not None:
+        holiday.is_recurring = data.is_recurring
+    db.commit()
+    db.refresh(holiday)
+    return holiday
+
+
+@router.delete("/public-holidays/{holiday_id}")
+def delete_public_holiday(
+    holiday_id: int,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    holiday = db.get(PublicHoliday, holiday_id)
+    if not holiday:
+        raise HTTPException(404, "Holiday not found")
+    db.delete(holiday)
+    db.commit()
+    return {"detail": "Deleted"}
+
+
+@router.get("/working-weeks")
+def calculate_working_weeks(
+    total_days: float,
+    start_date: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Calculate working weeks from total days, excluding holidays.
+
+    If start_date is provided, counts actual holidays in the period.
+    Otherwise returns a simple conversion (total_days / 5).
+    """
+    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+
+    if start_date:
+        from datetime import timedelta
+        start = date.fromisoformat(start_date)
+        # Walk forward through calendar days, counting working days
+        remaining = total_days
+        holidays = set()
+        # Fetch all holidays
+        all_holidays = db.query(PublicHoliday).all()
+        for h in all_holidays:
+            if h.is_recurring:
+                # For recurring, match month and day across years
+                for y in range(start.year, start.year + 3):
+                    holidays.add(date(y, h.date.month, h.date.day))
+            else:
+                holidays.add(h.date)
+
+        current = start
+        working_days_counted = 0
+        holiday_days_in_period = 0
+        while remaining > 0:
+            # Skip weekends
+            if current.weekday() < 5:  # Mon-Fri
+                if current in holidays:
+                    holiday_days_in_period += 1
+                else:
+                    remaining -= 1
+                    working_days_counted += 1
+            current += timedelta(days=1)
+
+        end_date = current - timedelta(days=1)
+        calendar_days = (end_date - start).days + 1
+        working_weeks = working_days_counted / 5.0
+
+        return {
+            "total_days": total_days,
+            "working_days": working_days_counted,
+            "working_weeks": round(working_weeks, 1),
+            "holidays_excluded": holiday_days_in_period,
+            "start_date": str(start),
+            "end_date": str(end_date),
+            "calendar_days": calendar_days,
+        }
+    else:
+        working_weeks = total_days / 5.0
+        return {
+            "total_days": total_days,
+            "working_days": total_days,
+            "working_weeks": round(working_weeks, 1),
+            "holidays_excluded": 0,
+        }

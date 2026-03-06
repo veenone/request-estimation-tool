@@ -2,14 +2,15 @@
 
 A structured, data-driven application for producing professional test effort estimations for new product launches, product evolutions, and ongoing support projects. The tool combines a 7-step estimation wizard, historical project calibration, intelligent task catalogs, and automated report generation to deliver defensible estimates in minutes.
 
-**Status:** Version 3.0.0 — Production Ready
+**Status:** Version 3.2.0 — Production Ready
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [What's New in v2.0](#whats-new-in-v20)
+- [What's New in v3.2](#whats-new-in-v32)
+- [What's New in v3.1](#whats-new-in-v31)
 - [Key Features](#key-features)
 - [Technology Stack](#technology-stack)
 - [Project Structure](#project-structure)
@@ -41,8 +42,10 @@ The Test Effort Estimation Tool automates the estimation process for QA teams, t
 - **Calculates effort** with configurable multipliers (DUT types, test profiles, risk factors)
 - **Detects feasibility issues** and suggests mitigation (extend date or add staff)
 - **Generates reports** in Excel, Word, and PDF for stakeholder communication
-- **Integrates** with Redmine, Jira/Xray, SMTP Email, and Outline Wiki
+- **Integrates** with Redmine, Jira/Xray, SMTP Email, Outline Wiki, and Snipe-IT
 - **Secures access** with JWT authentication, RBAC (4 roles), LDAP/OIDC support
+- **Tracks documents** with document type deliverables and overlap-aware hour calculations
+- **Manages holidays** with a public holiday calendar for working week calculations
 
 The tool assumes a matrix-based testing model where testing effort is a function of:
 - Task base effort (hours) x DUT multiplier x Profile multiplier x Complexity weight
@@ -50,7 +53,37 @@ The tool assumes a matrix-based testing model where testing effort is a function
 
 ---
 
-## What's New in v3.0
+## What's New in v3.2
+
+| Feature | Description |
+|---------|-------------|
+| **Configurable PR Hours** | PR fix complexity hours (Simple/Medium/Complex) configurable from Settings instead of hardcoded |
+| **PR Test Availability** | Each PR fix can be marked as `test_available`. PRs without tests generate synthetic "Test Creation" tasks in the breakdown |
+| **PR No-Test Hours** | Configurable hours per PR without existing tests; linked to a task template for overlap detection |
+| **Document Deliverables Visibility** | Document type hours overlap adjustments now visible in detail view and all 3 report formats (Excel, Word, PDF) with effective hours and deduction notes |
+| **Synthetic Documentation Tasks** | Document types appear as synthetic tasks in the task breakdown, showing effective hours after overlap deduction |
+| **Public Holiday Calendar** | CRUD management for public holidays with recurring annual support; holidays excluded from working week calculations |
+| **Working Weeks** | Grand total days converted to working weeks (÷5) displayed in detail view and reports; holiday-aware calculation via API |
+| **Enhanced Outline Export** | Full estimation data in wiki export: DUT/profile names, team allocation, document deliverables, risk assessment, PR details with test_available, working weeks |
+| **Jira Import Enhancements** | PR priority field, test_available property, description modal in import dialog |
+| **Snipe-IT Integration** | New adapter for Snipe-IT asset management |
+| **Risk Registry Page** | New frontend page for risk tracking |
+| **PR Registry Page** | Dedicated PR fix management page |
+| **Document Types Page** | Frontend page for managing document type deliverables |
+| **Asset Management Page** | Frontend page for Snipe-IT asset tracking |
+| **274 Tests** | Up from 267; added PR config, holiday, and integration coverage |
+
+### What's New in v3.1
+
+| Feature | Description |
+|---------|-------------|
+| **RBAC Enhancements** | Fine-grained role permissions with interactive matrix UI |
+| **Team Presets** | Save and load team configurations for quick estimation setup |
+| **Audit IP Tracking** | Client IP address recorded in audit log entries |
+| **14 Feature Enhancements** | Batch of UI, auth, and integration improvements |
+| **274 Tests** | Expanded test coverage across all modules |
+
+### What's New in v3.0
 
 | Feature | Description |
 |---------|-------------|
@@ -60,7 +93,6 @@ The tool assumes a matrix-based testing model where testing effort is a function
 | **NiceGUI Sidebar Redesign** | Category-grouped sidebar with Material icons matching Streamlit layout |
 | **RBAC Matrix UI** | LDAP/OIDC role mapping displayed as interactive matrix tables in Settings |
 | **Outline Auto-Export** | Automatic wiki export on estimation status change (configurable states) |
-| **267 Tests** | Up from 263; added versioning and config coverage |
 
 ### What's New in v2.0
 
@@ -79,7 +111,6 @@ The tool assumes a matrix-based testing model where testing effort is a function
 | **RBAC Management** | UI page for configuring role permissions |
 | **Docker** | Dockerfile + docker-compose.yml for containerized deployment |
 | **Admin Script** | `backend/scripts/create_admin.py` for account management |
-| **263 Tests** | Up from 152; added auth/RBAC test coverage |
 
 ---
 
@@ -91,7 +122,7 @@ The tool assumes a matrix-based testing model where testing effort is a function
 2. **Feature Selection** – Pick features from the catalog; complexity weights auto-applied
 3. **Reference Projects** – Select historical projects for calibration and improvement ratios
 4. **DUT x Profile Matrix** – Specify device types and test profiles; cross-product combinations
-5. **PR Fixes** – Count and categorize in-flight bug fixes (Simple/Medium/Complex with hours)
+5. **PR Fixes** – Count and categorize in-flight bug fixes (Simple/Medium/Complex with configurable hours); mark test availability per PR
 6. **Delivery Date & Team** – Set target delivery and assign testers + test leaders
 7. **Review & Generate** – Auto-detect risk flags, generate multi-format reports
 
@@ -100,7 +131,7 @@ The tool assumes a matrix-based testing model where testing effort is a function
 **Core Formula:**
 ```
 Task_Effort = Base_Hours x DUT_Multiplier x Profile_Multiplier x Complexity_Weight
-Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + Study_Effort + Buffer(10%)
+Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + PR_No_Test_Effort + Study_Effort + Documentation_Effort + Buffer(10%)
 ```
 
 **Feasibility Assessment:**
@@ -115,13 +146,20 @@ Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + Study_Effort 
 - DUT x Profile matrix exceeds 20 combinations
 - Historical accuracy ratio >1.3 (consistently underestimating)
 
+### Document Deliverables
+
+Document types can be linked to task templates. When a linked template is already included in the estimation tasks, the system deducts overlapping hours to avoid double-counting. The detail view and reports show:
+- **Total Hours**: raw `base_effort_hours × count`
+- **Effective Hours**: after overlap deduction
+- **Note**: explanation of the deduction (e.g., "Deducted 8.0h already in task 'Reporting'")
+
 ### Report Generation
 
-**Excel Workbook** (6 sheets): Summary, Tasks, Matrix, Team, PR Fixes, References
+**Excel Workbook** (6 sheets): Summary, Tasks, Matrix, Team, PR Fixes, References — includes document deliverables with effective hours and overlap notes
 
-**Word Document**: Cover page, executive summary, detailed tables, sign-off block
+**Word Document**: Cover page, executive summary, detailed tables, sign-off block, document deliverables, working weeks
 
-**PDF Report**: Color-coded feasibility, summary tables, risk flag callouts
+**PDF Report**: Color-coded feasibility, summary tables, risk flag callouts, PR test creation hours, working weeks
 
 ### Three Frontend Options
 
@@ -147,9 +185,9 @@ Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + Study_Effort 
 | **Frontend (Web Alt)** | Streamlit | Pure Python web UI, no JavaScript |
 | **Frontend (Desktop)** | C# WinForms (.NET 8) | Native Windows experience |
 | **Reports** | openpyxl, python-docx, ReportLab | Professional multi-format output |
-| **External APIs** | httpx, requests | HTTP clients for Redmine, Jira, SMTP, Outline |
+| **External APIs** | httpx, requests | HTTP clients for Redmine, Jira, SMTP, Outline, Snipe-IT |
 | **Container** | Docker, docker-compose | Containerized deployment |
-| **Testing** | pytest | 267 tests across 9 test modules |
+| **Testing** | pytest | 274 tests across 9 test modules |
 
 ---
 
@@ -158,6 +196,8 @@ Grand_Total = Tester_Effort + Leader_Effort(50%) + PR_Fix_Effort + Study_Effort 
 ```
 request-estimation-tool/
 ├── README.md                           # This file
+├── CHANGELOG.md                        # Version history
+├── FEATURES.md                         # Complete feature list
 ├── SPEC.md                             # Detailed software requirements specification
 ├── CLAUDE.md                           # Development instructions for Claude Code
 ├── Dockerfile                          # Docker image definition
@@ -172,10 +212,10 @@ request-estimation-tool/
 │   ├── src/
 │   │   ├── api/                        # FastAPI application
 │   │   │   ├── app.py                  # FastAPI app init, CORS, healthcheck
-│   │   │   ├── routes.py               # All API endpoints (50+ routes)
+│   │   │   ├── routes.py               # All API endpoints (60+ routes)
 │   │   │   └── schemas.py              # Pydantic request/response models
 │   │   │
-│   │   ├── auth/                       # Authentication & authorization (v2.0)
+│   │   ├── auth/                       # Authentication & authorization
 │   │   │   ├── models.py              # User, UserSession, AuditLog ORM models
 │   │   │   ├── schemas.py            # Auth Pydantic models
 │   │   │   ├── service.py            # AuthService (JWT, login, RBAC)
@@ -186,7 +226,7 @@ request-estimation-tool/
 │   │   │
 │   │   ├── database/                   # Data persistence layer
 │   │   │   ├── engine.py              # Engine factory (SQLite + MySQL)
-│   │   │   ├── models.py             # SQLAlchemy ORM models (14 tables)
+│   │   │   ├── models.py             # SQLAlchemy ORM models (15 tables)
 │   │   │   ├── migrations.py         # Schema setup, versioning, seed data
 │   │   │   └── seed_data.json        # Default catalogs and reference projects
 │   │   │
@@ -201,6 +241,7 @@ request-estimation-tool/
 │   │   │   ├── jira_adapter.py       # Jira/Xray connector
 │   │   │   ├── email_adapter.py      # SMTP email sender
 │   │   │   ├── outline_adapter.py    # Outline wiki integration
+│   │   │   ├── snipeit_adapter.py    # Snipe-IT asset management
 │   │   │   └── service.py            # Unified integration dispatcher
 │   │   │
 │   │   ├── reports/                    # Report generation
@@ -208,41 +249,46 @@ request-estimation-tool/
 │   │   │   ├── word_report.py        # Word document (python-docx)
 │   │   │   └── pdf_report.py         # PDF report (ReportLab)
 │   │   │
-│   │   ├── notifications/             # Notification service (v2.0)
+│   │   ├── notifications/             # Notification service
 │   │   │   └── service.py            # SMTP notifications with HTML templates
 │   │   │
-│   │   ├── imports/                    # Bulk import (v2.0)
+│   │   ├── imports/                    # Bulk import
 │   │   │   └── service.py            # CSV/Excel import with validation
 │   │   │
 │   │   └── cli/                        # Command-line interface
 │   │       └── ipc_handler.py         # JSON IPC for C# desktop app
 │   │
-│   └── tests/                          # 267 tests across 9 modules
+│   └── tests/                          # 274 tests across 9 modules
 │       ├── test_calculator.py          # Estimation formula tests
 │       ├── test_feasibility.py        # Feasibility checking tests
 │       ├── test_calibration.py        # Historical accuracy tests
 │       ├── test_models.py             # Data model validation
 │       ├── test_reports.py            # Report generation tests
 │       ├── test_api.py                # Core API endpoint tests
-│       ├── test_auth.py               # Authentication & RBAC tests (v2.0)
+│       ├── test_auth.py               # Authentication & RBAC tests
 │       ├── test_phase6_api.py         # Integration/Request API tests
 │       └── test_integrations.py       # External connector tests
 │
 ├── frontend_nicegui/                   # NiceGUI web UI (recommended)
 │   ├── app.py                          # Entry point, auth, sidebar, dashboard
-│   └── pages/                          # 14 page modules
+│   └── pages/                          # Page modules
 │       ├── features.py                # Feature catalog CRUD
 │       ├── duts.py                    # DUT registry CRUD
 │       ├── profiles.py               # Test profiles CRUD
 │       ├── history.py                # Historical projects
 │       ├── team.py                   # Team management
 │       ├── requests.py               # Request inbox + detail view
-│       ├── integrations.py           # Integration config (4 tabs)
+│       ├── integrations.py           # Integration config (5 tabs)
 │       ├── settings.py               # Settings + SMTP/LDAP test buttons
 │       ├── estimation.py             # 7-step wizard + detail view
 │       ├── users.py                  # User management (ADMIN)
 │       ├── audit.py                  # Audit log viewer
-│       └── rbac.py                   # RBAC permission matrix (ADMIN)
+│       ├── rbac.py                   # RBAC permission matrix (ADMIN)
+│       ├── holidays.py               # Public holiday calendar
+│       ├── documents.py              # Document type deliverables
+│       ├── pr_registry.py            # PR fix registry
+│       ├── risks.py                  # Risk registry
+│       └── assets.py                 # Asset management (Snipe-IT)
 │
 ├── frontend_web/                       # Streamlit web UI (alternative)
 │   ├── app.py                          # Main Streamlit entry point
@@ -344,7 +390,7 @@ docker-compose down         # Stop all services
 ```bash
 # Health check (no auth required)
 curl http://localhost:8501/api/healthcheck
-# → {"status":"ok","version":"3.0.0"}
+# → {"status":"ok","version":"3.2.0"}
 
 # Login and get a token
 curl -X POST http://localhost:8501/api/auth/login \
@@ -450,6 +496,10 @@ Available_Capacity = Delivery_Days x Team_Size x Hours_Per_Day (default: 7)
 - **AT_RISK**: 80-100% utilization
 - **NOT_FEASIBLE**: >100% utilization
 
+### Working Weeks
+
+Grand total days are converted to working weeks (÷5). A holiday-aware API endpoint (`GET /working-weeks`) can exclude public holidays from the calculation for more accurate timeline planning.
+
 ---
 
 ## Estimation Workflow
@@ -467,7 +517,7 @@ Select 1-3 past projects. System calculates weighted improvement ratio for calib
 Specify which device types and test profiles apply. Cross-product determines multiplier combinations.
 
 ### Step 5: PR Fixes
-Count bug fixes by complexity: Simple (2h), Medium (4h), Complex (8h).
+Count bug fixes by complexity: Simple, Medium, Complex (hours configurable from Settings). Mark each PR's test availability — PRs without tests generate additional "Test Creation" effort.
 
 ### Step 6: Delivery Date & Team
 Set target delivery date, team size, and leader allocation. Feasibility calculated on-the-fly.
@@ -499,6 +549,7 @@ Final review with risk flags, mitigation suggestions, and one-click report gener
 - **Leader Effort (50%):** 155 hours
 - **Buffer (10%):** 46.5 hours
 - **Grand Total:** 511.5 hours (73.1 person-days)
+- **Working Weeks:** 14.6 weeks
 - **Available Capacity:** 560 hours (20 days x 4 people x 7 hrs)
 - **Utilization:** 91.3% → **AT_RISK**
 
@@ -521,7 +572,7 @@ Authorization: Bearer <access_token>
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"3.0.0"}` |
+| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"3.2.0"}` |
 | GET | `/api/host-config` | Runtime config for frontends (API version, auth providers) |
 
 ### Authentication
@@ -594,13 +645,15 @@ Authorization: Bearer <access_token>
 | POST | `/api/estimations/calculate` | Preview calculation without saving |
 | POST | `/api/estimations` | Create estimation from wizard inputs |
 | GET | `/api/estimations` | List all estimations |
-| GET | `/api/estimations/{id}` | Get estimation detail |
+| GET | `/api/estimations/{id}` | Get estimation detail (includes document deliverables, synthetic tasks) |
 | PUT | `/api/estimations/{id}` | Update estimation |
+| PUT | `/api/estimations/{id}/revise` | Create new version (preserves history) |
 | DELETE | `/api/estimations/{id}` | Delete estimation |
 | POST | `/api/estimations/{id}/status` | Change status (DRAFT/FINAL/APPROVED/REVISED) |
 | GET | `/api/estimations/{id}/report/xlsx` | Download Excel report |
 | GET | `/api/estimations/{id}/report/docx` | Download Word report |
 | GET | `/api/estimations/{id}/report/pdf` | Download PDF report |
+| POST | `/api/estimations/{id}/publish/outline` | Publish to Outline wiki |
 
 ### Requests
 
@@ -610,6 +663,21 @@ Authorization: Bearer <access_token>
 | POST | `/api/requests` | Create request |
 | GET | `/api/requests/{id}/detail` | Full request details |
 | PUT | `/api/requests/{id}` | Update request |
+
+### Public Holidays
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/public-holidays` | List all public holidays |
+| POST | `/api/public-holidays` | Create a public holiday |
+| PUT | `/api/public-holidays/{id}` | Update a public holiday |
+| DELETE | `/api/public-holidays/{id}` | Delete a public holiday |
+
+### Working Weeks
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/working-weeks` | Calculate working weeks with optional holiday exclusion |
 
 ### Configuration
 
@@ -623,7 +691,7 @@ Authorization: Bearer <access_token>
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/integrations` | List all integration configs |
-| PUT | `/api/integrations/{system}` | Update config (REDMINE, JIRA, EMAIL, OUTLINE) |
+| PUT | `/api/integrations/{system}` | Update config (REDMINE, JIRA, EMAIL, OUTLINE, SNIPE_IT) |
 | POST | `/api/integrations/{system}/test` | Test connection |
 | POST | `/api/integrations/{system}/sync` | Sync data from external system |
 
@@ -652,7 +720,7 @@ Authorization: Bearer <access_token>
 
 ## Database Schema
 
-The tool uses 14 tables (SQLite by default, MySQL supported):
+The tool uses 15 tables (SQLite by default, MySQL supported):
 
 ### Core Tables
 1. **features** – Feature catalog (name, category, complexity_weight, has_existing_tests)
@@ -660,17 +728,18 @@ The tool uses 14 tables (SQLite by default, MySQL supported):
 3. **dut_types** – Device registry (name, category, complexity_multiplier)
 4. **test_profiles** – Test config profiles (name, effort_multiplier)
 5. **historical_projects** – Past projects with actual vs estimated hours
-6. **estimations** – Estimation records (project info, totals, feasibility)
+6. **estimations** – Estimation records (project info, totals, feasibility, pr_no_test_hours)
 7. **estimation_tasks** – Task breakdown per estimation
 8. **team_members** – Tester roster (role, available_hours_per_day, skills)
-9. **configuration** – Key-value global settings
+9. **configuration** – Key-value global settings (schema version tracking)
 10. **requests** – Estimation requests with status tracking
 11. **integration_config** – External system credentials and settings
+12. **public_holidays** – Public holiday calendar (date, name, country, is_recurring)
 
-### Auth Tables (v2.0)
-12. **users** – User accounts (username, password_hash, role, auth_provider, is_active)
-13. **user_sessions** – Active JWT sessions with refresh tokens
-14. **audit_log** – Immutable action log (user, action, timestamp, details)
+### Auth Tables
+13. **users** – User accounts (username, password_hash, role, auth_provider, is_active)
+14. **user_sessions** – Active JWT sessions with refresh tokens
+15. **audit_log** – Immutable action log (user, action, timestamp, details, client_ip)
 
 ---
 
@@ -687,6 +756,11 @@ Global settings are stored in the `configuration` table and editable via the Set
 | `working_hours_per_day` | 7.0 | Working hours per team member per day |
 | `buffer_percentage` | 10 | Buffer percentage on total effort |
 | `pr_fix_base_hours` | 4.0 | Base hours for PR fix validation |
+| `pr_hours_simple` | 2.0 | Hours per simple PR fix (configurable) |
+| `pr_hours_medium` | 4.0 | Hours per medium PR fix (configurable) |
+| `pr_hours_complex` | 8.0 | Hours per complex PR fix (configurable) |
+| `pr_no_test_hours` | 8.0 | Hours per PR without existing tests |
+| `pr_no_test_task_template_id` | | Task template linked to PR no-test effort |
 | `rbac_matrix` | (JSON) | Role-permission matrix (managed via RBAC page) |
 | `dut_categories` | `SIM,eSIM,UICC,...` | Comma-separated DUT type categories |
 | `outline_auto_export_states` | `FINAL,APPROVED` | Estimation states that trigger Outline export |
@@ -755,7 +829,7 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8501
 ```
 
 ### Jira/Xray
-Import via JQL query, export to custom fields and X-Ray test plans.
+Import via JQL query, export to custom fields and X-Ray test plans. PR import includes priority and test availability fields.
 
 **Config fields:** Base URL, API Key, Username, JQL Filter, Project Key, Auth Mode (auto/basic/pat), Cloud toggle, SSL verify, Issue Type, field mappings, X-Ray project key
 
@@ -765,9 +839,14 @@ Send estimation reports to stakeholders.
 **Config fields:** SMTP Host, Port, TLS toggle, Username, Password, Sender Email, Sender Name
 
 ### Outline Wiki
-Publish estimations as wiki pages.
+Publish estimations as wiki pages. Export includes full estimation data: task breakdown, DUT/profile names, team allocation, document deliverables, risk assessment, PR details with test availability, and working weeks.
 
 **Config fields:** Outline URL, API Key, Collection ID, Auto-publish toggle
+
+### Snipe-IT
+Asset management integration for tracking test equipment and devices.
+
+**Config fields:** Snipe-IT URL, API Key
 
 ### Configuration
 
@@ -810,8 +889,8 @@ python -m pytest tests/ -m "not slow"
 | `test_api.py` | ~30 | Core API endpoint coverage |
 | `test_auth.py` | ~25 | Authentication, JWT, RBAC |
 | `test_phase6_api.py` | ~35 | Integration/Request API tests |
-| `test_integrations.py` | ~40 | Redmine, Jira, Email, Outline connectors |
-| **Total** | **267** | |
+| `test_integrations.py` | ~45 | Redmine, Jira, Email, Outline, Snipe-IT connectors |
+| **Total** | **274** | |
 
 ### Admin Script
 
@@ -928,6 +1007,6 @@ For major changes, please open an issue first to discuss the approach.
 
 ---
 
-**Version**: 3.0.0
+**Version**: 3.2.0
 **Last Updated**: March 2026
 **Status**: Production Ready

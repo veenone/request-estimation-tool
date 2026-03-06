@@ -24,9 +24,11 @@ _COLUMNS = [
     {"name": "id",                 "label": "ID",          "field": "id",                 "align": "left", "sortable": True},
     {"name": "name",               "label": "Name",         "field": "name",               "align": "left", "sortable": True},
     {"name": "category",           "label": "Category",     "field": "category",           "align": "left", "sortable": True},
-    {"name": "complexity_weight",  "label": "Complexity",   "field": "complexity_weight",  "align": "left", "sortable": True},
-    {"name": "has_existing_tests", "label": "Has Tests",    "field": "has_existing_tests", "align": "left"},
-    {"name": "actions",            "label": "Actions",      "field": "actions",            "align": "left"},
+    {"name": "product_type",       "label": "Product Type", "field": "product_type",       "align": "left", "sortable": True},
+    {"name": "complexity_weight",    "label": "Complexity",       "field": "complexity_weight",  "align": "left", "sortable": True},
+    {"name": "study_effort_hours",  "label": "Study Effort (h)", "field": "study_effort_hours", "align": "left", "sortable": True},
+    {"name": "has_existing_tests",  "label": "Has Tests",        "field": "has_existing_tests", "align": "left"},
+    {"name": "actions",             "label": "Actions",          "field": "actions",            "align": "left"},
 ]
 
 
@@ -50,7 +52,7 @@ async def features_page() -> None:
         # ------------------------------------------------------------------ #
         # Mutable state — a plain list so closures always see the latest ref  #
         # ------------------------------------------------------------------ #
-        state: dict = {"rows": [], "filter_category": "All"}
+        state: dict = {"rows": [], "filter_category": "All", "filter_product_type": "All"}
 
         # ------------------------------------------------------------------ #
         # Table                                                                #
@@ -71,6 +73,17 @@ async def features_page() -> None:
                     :color="props.value ? 'positive' : 'grey'"
                     :label="props.value ? 'Yes' : 'No'"
                 />
+            </q-td>
+            """,
+        )
+
+        # Render study effort — show "Default" when null
+        table.add_slot(
+            "body-cell-study_effort_hours",
+            r"""
+            <q-td :props="props">
+                <span v-if="props.value != null">{{ props.value }}h</span>
+                <span v-else class="text-grey-6 text-italic">Default</span>
             </q-td>
             """,
         )
@@ -99,12 +112,15 @@ async def features_page() -> None:
         async def refresh() -> None:
             try:
                 all_rows: list = await api_get("/features")
-                cat = state["filter_category"]
                 state["rows"] = all_rows
-                if cat and cat != "All":
-                    table.rows = [r for r in all_rows if r.get("category") == cat]
-                else:
-                    table.rows = list(all_rows)
+                cat = state.get("filter_category") or "All"
+                pt = state.get("filter_product_type") or "All"
+                filtered = list(all_rows)
+                if cat != "All":
+                    filtered = [r for r in filtered if r.get("category") == cat]
+                if pt != "All":
+                    filtered = [r for r in filtered if (r.get("product_type") or "") == pt]
+                table.rows = filtered
                 table.update()
             except Exception as exc:
                 ui.notify(f"Failed to load features: {exc}", type="negative")
@@ -138,6 +154,18 @@ async def features_page() -> None:
                     with_input=True,
                     clearable=True,
                 ).classes("w-full")
+                study_effort_input = ui.number(
+                    "Study Effort Hours (blank = use global default)",
+                    value=None,
+                    min=0,
+                    max=200,
+                    step=1,
+                    format="%.1f",
+                ).classes("w-full")
+                ui.label(
+                    "Hours of study effort when this feature is new. "
+                    "Leave blank to use global 'new_feature_study_hours' setting."
+                ).classes("text-caption text-grey")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
@@ -149,6 +177,7 @@ async def features_page() -> None:
                             "category": category_select.value,
                             "complexity_weight": float(complexity_input.value or 1.0),
                             "has_existing_tests": bool(has_tests_toggle.value),
+                            "study_effort_hours": float(study_effort_input.value) if study_effort_input.value is not None else None,
                         }
                         if product_type_input.value:
                             payload["product_type"] = product_type_input.value
@@ -200,6 +229,18 @@ async def features_page() -> None:
                     with_input=True,
                     clearable=True,
                 ).classes("w-full")
+                study_effort_input = ui.number(
+                    "Study Effort Hours (blank = use global default)",
+                    value=row.get("study_effort_hours"),
+                    min=0,
+                    max=200,
+                    step=1,
+                    format="%.1f",
+                ).classes("w-full")
+                ui.label(
+                    "Hours of study effort when this feature is new. "
+                    "Leave blank to use global 'new_feature_study_hours' setting."
+                ).classes("text-caption text-grey")
 
                 async def save() -> None:
                     if not name_input.value or not str(name_input.value).strip():
@@ -212,6 +253,7 @@ async def features_page() -> None:
                             "complexity_weight": float(complexity_input.value or 1.0),
                             "has_existing_tests": bool(has_tests_toggle.value),
                             "product_type": product_type_input.value if product_type_input.value else None,
+                            "study_effort_hours": float(study_effort_input.value) if study_effort_input.value is not None else None,
                         }
                         await api_put(
                             f"/features/{row['id']}",
@@ -265,10 +307,10 @@ async def features_page() -> None:
         # Toolbar: category filter + Add button                                #
         # ------------------------------------------------------------------ #
         with ui.row().classes("items-center q-gutter-sm q-mb-md"):
-            ui.label("Filter by category:").classes("text-body2")
+            ui.label("Filter:").classes("text-body2")
 
             async def on_category_change(e) -> None:
-                state["filter_category"] = e.value
+                state["filter_category"] = e.value if e.value else "All"
                 await refresh()
 
             ui.select(
@@ -277,6 +319,17 @@ async def features_page() -> None:
                 value="All",
                 on_change=on_category_change,
             ).classes("w-40")
+
+            async def on_product_type_change(e) -> None:
+                state["filter_product_type"] = e.value if e.value else "All"
+                await refresh()
+
+            ui.select(
+                ["All"] + product_types,
+                label="Product Type",
+                value="All",
+                on_change=on_product_type_change,
+            ).classes("w-48")
 
             ui.space()
 

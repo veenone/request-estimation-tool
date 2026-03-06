@@ -128,14 +128,15 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
 
     # ── 1. Cover page ──────────────────────────────────
     story.append(Spacer(1, 80))
-    story.append(Paragraph("Test Effort Estimation Report", styles["CoverTitle"]))
+    story.append(Paragraph("PRESTO — Estimation Report", styles["CoverTitle"]))
     story.append(Spacer(1, 20))
     story.append(Paragraph(data.project_name, styles["CoverSubtitle"]))
     story.append(Spacer(1, 30))
 
     meta_lines = [
-        f"Estimation: {data.estimation_number}",
+        f"Estimation: {data.estimation_number} (v{data.version})",
         f"Project Type: {data.project_type}",
+        f"Status: {data.status}",
     ]
     if data.request_number:
         meta_lines.append(f"Request: {data.request_number}")
@@ -162,6 +163,15 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
             ],
             col_widths=[page_width * 0.35, page_width * 0.65],
         ))
+        story.append(Spacer(1, 12))
+
+    # ── 2b. Project context ─────────────────────────────
+    if data.project_goals or data.target_customer:
+        story.append(Paragraph("Project Context", styles["SectionTitle"]))
+        if data.project_goals:
+            story.append(Paragraph(f"<b>Project Goals:</b> {data.project_goals}", styles["Body"]))
+        if data.target_customer:
+            story.append(Paragraph(f"<b>Target Customer:</b> {data.target_customer}", styles["Body"]))
         story.append(Spacer(1, 12))
 
     # ── 3. Executive summary ───────────────────────────
@@ -199,6 +209,7 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
             ["PR Fixes", str(data.pr_fix_count)],
             ["Team Size", str(data.team_size)],
             ["Test Leader", "Yes" if data.has_leader else "No"],
+            ["Start Date", data.start_date],
             ["Delivery Date", data.expected_delivery],
         ],
         col_widths=[page_width * 0.40, page_width * 0.60],
@@ -242,19 +253,101 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
 
     # ── 6. Effort summary ──────────────────────────────
     story.append(Paragraph("Effort Summary", styles["SectionTitle"]))
+    effort_rows = [
+        ["Total Tester Effort", f"{data.total_tester_hours:.1f}"],
+        ["Test Leader Effort", f"{data.total_leader_hours:.1f}"],
+        ["PR Fix Validation", f"{data.pr_fix_hours:.1f}"],
+        ["New Feature Study", f"{data.study_hours:.1f}"],
+    ]
+    if getattr(data, "pr_no_test_hours", 0) > 0:
+        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}"])
+    if data.release_extra_hours > 0:
+        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}"])
+    if data.documentation_hours > 0:
+        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}"])
+    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}"])
+    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}"])
+    effort_rows.append(["Grand Total (Days)", f"{data.grand_total_days:.1f}"])
+    if getattr(data, "working_weeks", 0) > 0:
+        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}"])
     story.append(_make_table(
         ["Component", "Hours"],
-        [
-            ["Total Tester Effort", f"{data.total_tester_hours:.1f}"],
-            ["Test Leader Effort", f"{data.total_leader_hours:.1f}"],
-            ["PR Fix Validation", f"{data.pr_fix_hours:.1f}"],
-            ["New Feature Study", f"{data.study_hours:.1f}"],
-            ["Buffer (10%)", f"{data.buffer_hours:.1f}"],
-            ["GRAND TOTAL", f"{data.grand_total_hours:.1f}"],
-        ],
+        effort_rows,
         col_widths=[page_width * 0.55, page_width * 0.45],
     ))
     story.append(Spacer(1, 12))
+
+    # ── 6b. Team Allocation ──────────────────────────
+    if data.team_members:
+        story.append(Paragraph("Team Allocation", styles["SectionTitle"]))
+        alloc_rows = []
+        for tm in data.team_members:
+            alloc_rows.append([
+                tm.get("name", ""),
+                tm.get("role", ""),
+                f"{tm.get('allocated_hours', 0):.1f}",
+            ])
+        story.append(_make_table(
+            ["Name", "Role", "Allocated Hours"],
+            alloc_rows,
+            col_widths=[page_width * 0.40, page_width * 0.30, page_width * 0.30],
+        ))
+        story.append(Spacer(1, 12))
+
+    # ── 6c. PR Fixes breakdown ──────────────────────
+    if data.pr_fix_count > 0:
+        story.append(Paragraph("PR Fixes Breakdown", styles["SectionTitle"]))
+        pr_breakdown_rows = [
+            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2)],
+            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4)],
+            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8)],
+            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}"],
+        ]
+        story.append(_make_table(
+            ["Complexity", "Count", "Hours Each", "Subtotal"],
+            pr_breakdown_rows,
+            col_widths=[page_width * 0.30, page_width * 0.20, page_width * 0.25, page_width * 0.25],
+        ))
+        story.append(Spacer(1, 8))
+
+        if data.pr_details:
+            story.append(Paragraph("PR Details", styles["SubSection"]))
+            pr_detail_rows = []
+            for pr in data.pr_details:
+                pr_detail_rows.append([
+                    pr.get("pr_number", ""),
+                    pr.get("link", "") or "—",
+                    pr.get("description", ""),
+                    pr.get("complexity", ""),
+                    pr.get("status", ""),
+                ])
+            story.append(_make_table(
+                ["PR #", "Link", "Description", "Complexity", "Status"],
+                pr_detail_rows,
+                col_widths=[page_width * 0.10, page_width * 0.30, page_width * 0.30, page_width * 0.15, page_width * 0.15],
+            ))
+            story.append(Spacer(1, 12))
+
+    # ── 6d. Document Deliverables ────────────────────────
+    if data.document_deliverables:
+        story.append(Paragraph("Document Deliverables", styles["SectionTitle"]))
+        doc_rows = []
+        for dd in data.document_deliverables:
+            doc_rows.append([
+                dd.get("name", ""),
+                dd.get("category", ""),
+                dd.get("linked_task") or "—",
+                str(dd.get("count", 1)),
+                f"{dd.get('base_effort_hours', 0):.1f}",
+                f"{dd.get('total_hours', 0):.1f}",
+                f"{dd.get('effective_hours', dd.get('total_hours', 0)):.1f}",
+                dd.get("overlap_note") or "",
+            ])
+        story.append(_make_table(
+            ["Document Type", "Category", "Linked Task", "Count", "Base Hrs", "Total Hrs", "Effective Hrs", "Note"],
+            doc_rows,
+        ))
+        story.append(Spacer(1, 12))
 
     # ── 7. Feasibility analysis ────────────────────────
     story.append(Paragraph("Timeline Feasibility", styles["SectionTitle"]))

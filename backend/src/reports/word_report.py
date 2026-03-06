@@ -69,7 +69,7 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Test Effort Estimation Report")
+    run = title.add_run("PRESTO — Estimation Report")
     run.bold = True
     run.font.size = Pt(26)
     run.font.color.rgb = RGBColor(0x2F, 0x54, 0x96)
@@ -85,8 +85,9 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
     doc.add_paragraph()
 
     meta_items = [
-        f"Estimation: {data.estimation_number}",
+        f"Estimation: {data.estimation_number} (v{data.version})",
         f"Project Type: {data.project_type}",
+        f"Status: {data.status}",
     ]
     if data.request_number:
         meta_items.append(f"Request: {data.request_number}")
@@ -115,6 +116,19 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
             ["Priority", data.priority],
             ["Requested Delivery", data.expected_delivery],
         ])
+        doc.add_paragraph()
+
+    # ── 2b. Project goals and target customer ───────────
+    if data.project_goals or data.target_customer:
+        doc.add_heading("Project Context", level=1)
+        if data.project_goals:
+            p = doc.add_paragraph()
+            p.add_run("Project Goals: ").bold = True
+            p.add_run(data.project_goals).font.size = Pt(10)
+        if data.target_customer:
+            p = doc.add_paragraph()
+            p.add_run("Target Customer: ").bold = True
+            p.add_run(data.target_customer).font.size = Pt(10)
         doc.add_paragraph()
 
     # ── 3. Executive summary ───────────────────────────
@@ -159,6 +173,7 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
         ["PR Fix Count", str(data.pr_fix_count)],
         ["Team Size", str(data.team_size)],
         ["Test Leader", "Yes" if data.has_leader else "No"],
+        ["Start Date", data.start_date],
         ["Expected Delivery", data.expected_delivery],
     ])
 
@@ -201,16 +216,83 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
 
     # ── 6. Effort summary ──────────────────────────────
     doc.add_heading("Effort Summary", level=1)
-    _add_styled_table(doc, ["Component", "Hours"], [
+    effort_rows = [
         ["Total Tester Effort", f"{data.total_tester_hours:.1f}"],
         ["Test Leader Effort", f"{data.total_leader_hours:.1f}"],
         ["PR Fix Validation", f"{data.pr_fix_hours:.1f}"],
         ["New Feature Study", f"{data.study_hours:.1f}"],
-        ["Buffer (10%)", f"{data.buffer_hours:.1f}"],
-        ["GRAND TOTAL", f"{data.grand_total_hours:.1f}"],
-    ])
+    ]
+    if getattr(data, "pr_no_test_hours", 0) > 0:
+        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}"])
+    if data.release_extra_hours > 0:
+        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}"])
+    if data.documentation_hours > 0:
+        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}"])
+    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}"])
+    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}"])
+    effort_rows.append(["Grand Total (Days)", f"{data.grand_total_days:.1f}"])
+    if getattr(data, "working_weeks", 0) > 0:
+        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}"])
+    _add_styled_table(doc, ["Component", "Hours"], effort_rows)
 
     doc.add_paragraph()
+
+    # ── 6b. Team Allocation ──────────────────────────
+    if data.team_members:
+        doc.add_heading("Team Allocation", level=1)
+        alloc_rows = []
+        for tm in data.team_members:
+            alloc_rows.append([
+                tm.get("name", ""),
+                tm.get("role", ""),
+                f"{tm.get('allocated_hours', 0):.1f}",
+            ])
+        _add_styled_table(doc, ["Name", "Role", "Allocated Hours"], alloc_rows)
+        doc.add_paragraph()
+
+    # ── 6c. PR Fixes breakdown ──────────────────────────
+    if data.pr_fix_count > 0:
+        doc.add_heading("PR Fixes Breakdown", level=1)
+        _add_styled_table(doc, ["Complexity", "Count", "Hours Each", "Subtotal"], [
+            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2)],
+            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4)],
+            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8)],
+            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}"],
+        ])
+
+        if data.pr_details:
+            doc.add_paragraph()
+            doc.add_heading("PR Details", level=2)
+            pr_detail_rows = []
+            for pr in data.pr_details:
+                pr_detail_rows.append([
+                    pr.get("pr_number", ""),
+                    pr.get("link", "") or "—",
+                    pr.get("description", ""),
+                    pr.get("complexity", ""),
+                    pr.get("status", ""),
+                ])
+            _add_styled_table(doc, ["PR #", "Link", "Description", "Complexity", "Status"], pr_detail_rows)
+
+        doc.add_paragraph()
+
+    # ── 6d. Document Deliverables ────────────────────────
+    if data.document_deliverables:
+        doc.add_heading("Document Deliverables", level=1)
+        doc_rows = []
+        for dd in data.document_deliverables:
+            doc_rows.append([
+                dd.get("name", ""),
+                dd.get("category", ""),
+                dd.get("linked_task") or "—",
+                str(dd.get("count", 1)),
+                f"{dd.get('base_effort_hours', 0):.1f}",
+                f"{dd.get('total_hours', 0):.1f}",
+                f"{dd.get('effective_hours', dd.get('total_hours', 0)):.1f}",
+                dd.get("overlap_note") or "",
+            ])
+        _add_styled_table(doc, ["Document Type", "Category", "Linked Task", "Count", "Base Hrs", "Total Hrs", "Effective Hrs", "Note"], doc_rows)
+        doc.add_paragraph()
 
     # ── 7. Feasibility analysis ────────────────────────
     doc.add_heading("Timeline Feasibility Analysis", level=1)

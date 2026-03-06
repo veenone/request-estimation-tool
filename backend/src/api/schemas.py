@@ -15,6 +15,7 @@ class FeatureBase(BaseModel):
     has_existing_tests: bool = False
     description: Optional[str] = None
     product_type: Optional[str] = None
+    study_effort_hours: Optional[float] = None
 
 class FeatureCreate(FeatureBase):
     pass
@@ -26,6 +27,7 @@ class FeatureUpdate(BaseModel):
     has_existing_tests: Optional[bool] = None
     description: Optional[str] = None
     product_type: Optional[str] = None
+    study_effort_hours: Optional[float] = None
 
 class TaskTemplateOut(BaseModel):
     id: int
@@ -249,8 +251,11 @@ class PRFixInput(BaseModel):
 class PRDetailItem(BaseModel):
     pr_number: str
     link: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[str] = None
     complexity: str = "simple"
     status: str = "Open"
+    test_available: bool = True
 
 class TeamAllocationItem(BaseModel):
     team_member_id: int
@@ -291,6 +296,10 @@ class CalculateInput(BaseModel):
     expected_delivery: Optional[date] = None
     working_days: int = 20
     delivery_date: Optional[date] = None
+    expected_releases: int = 1
+    risk_item_ids: list[int] = []
+    document_type_ids: list[int] = []
+    document_counts: dict[str, int] = {}  # {doc_type_id_str: count}
 
     model_config = {"populate_by_name": True}
 
@@ -321,6 +330,25 @@ class EstimationCreate(BaseModel):
     working_days: int = 20
     created_by: Optional[str] = None
     team_allocations: list[TeamAllocationItem] = []
+    expected_releases: int = 1
+    project_goals: Optional[str] = None
+    target_customer: Optional[str] = None
+    team_id: Optional[int] = None
+    risk_item_ids: list[int] = []
+    document_type_ids: list[int] = []
+    document_counts: dict[str, int] = {}  # {doc_type_id_str: count}
+
+class EstimationRiskOut(BaseModel):
+    id: int
+    risk_item_id: int
+    risk_item_name: Optional[str] = None
+    risk_item_category: Optional[str] = None
+    risk_item_likelihood: Optional[str] = None
+    risk_item_impact: Optional[str] = None
+    notes: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
 
 class EstimationOut(BaseModel):
     id: int
@@ -338,7 +366,10 @@ class EstimationOut(BaseModel):
     total_tester_hours: float
     total_leader_hours: float
     pr_fix_hours: float = 0
+    pr_no_test_hours: float = 0
     study_hours: float = 0
+    release_extra_hours: float = 0
+    documentation_hours: float = 0
     buffer_hours: float = 0
     grand_total_hours: float
     grand_total_days: float
@@ -346,30 +377,53 @@ class EstimationOut(BaseModel):
     status: str
     version: int = 1
     wizard_inputs_json: str = "{}"
+    expected_releases: int = 1
+    project_goals: Optional[str] = None
+    target_customer: Optional[str] = None
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
     assigned_to_id: Optional[int] = None
     assigned_to_name: Optional[str] = None
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    request_number: Optional[str] = None
     tasks: list[EstimationTaskOut] = []
     team_allocations: list[TeamAllocationItem] = []
+    risks: list[EstimationRiskOut] = []
+    document_deliverables: list[dict] = []
 
     model_config = {"from_attributes": True}
 
     @model_validator(mode="wrap")
     @classmethod
-    def _resolve_assigned_to_name(cls, data, handler):
-        # When constructing from an ORM object, resolve the relationship
+    def _resolve_relationships(cls, data, handler):
+        # When constructing from an ORM object, resolve relationships
         obj = handler(data)
         if obj.assigned_to_name is None and hasattr(data, "assigned_to") and data.assigned_to is not None:
             obj.assigned_to_name = data.assigned_to.display_name or data.assigned_to.username
+        # Resolve team name
+        if obj.team_name is None and hasattr(data, "team") and data.team is not None:
+            obj.team_name = data.team.name
+        # Resolve request number
+        if obj.request_number is None and hasattr(data, "request") and data.request is not None:
+            obj.request_number = data.request.request_number
         # Resolve team_member_name on each allocation
         if hasattr(data, "team_allocations"):
             for i, alloc in enumerate(data.team_allocations):
                 if i < len(obj.team_allocations) and obj.team_allocations[i].team_member_name is None:
                     if hasattr(alloc, "team_member") and alloc.team_member is not None:
                         obj.team_allocations[i].team_member_name = alloc.team_member.name
+        # Resolve risk item details
+        if hasattr(data, "risks"):
+            for i, er in enumerate(data.risks):
+                if i < len(obj.risks) and obj.risks[i].risk_item_name is None:
+                    if hasattr(er, "risk_item") and er.risk_item is not None:
+                        obj.risks[i].risk_item_name = er.risk_item.name
+                        obj.risks[i].risk_item_category = er.risk_item.category
+                        obj.risks[i].risk_item_likelihood = er.risk_item.likelihood
+                        obj.risks[i].risk_item_impact = er.risk_item.impact
         return obj
 
 class EstimationUpdate(BaseModel):
@@ -377,6 +431,8 @@ class EstimationUpdate(BaseModel):
     project_type: Optional[str] = None
     expected_delivery: Optional[date] = None
     notes: Optional[str] = None
+    project_goals: Optional[str] = None
+    target_customer: Optional[str] = None
 
 
 class EstimationRevise(BaseModel):
@@ -397,6 +453,13 @@ class EstimationRevise(BaseModel):
     expected_delivery: Optional[date] = None
     working_days: int = 20
     team_allocations: list[TeamAllocationItem] = []
+    expected_releases: int = 1
+    project_goals: Optional[str] = None
+    target_customer: Optional[str] = None
+    team_id: Optional[int] = None
+    risk_item_ids: list[int] = []
+    document_type_ids: list[int] = []
+    document_counts: dict[str, int] = {}
 
 
 class EstimationStatusUpdate(BaseModel):
@@ -457,7 +520,10 @@ class CalculationResultOut(BaseModel):
     total_tester_hours: float
     total_leader_hours: float
     pr_fix_hours: float
+    pr_no_test_hours: float = 0
     study_hours: float
+    release_extra_hours: float = 0
+    documentation_hours: float = 0
     buffer_hours: float
     grand_total_hours: float
     grand_total_days: float
@@ -485,6 +551,30 @@ class WebhookNotificationOut(BaseModel):
 
 class UnreadCountOut(BaseModel):
     unread_count: int
+
+
+# ── Public Holidays ────────────────────────────────
+
+class PublicHolidayCreate(BaseModel):
+    date: date
+    name: str
+    country: str = ""
+    is_recurring: bool = False
+
+class PublicHolidayOut(BaseModel):
+    id: int
+    date: date
+    name: str
+    country: str = ""
+    is_recurring: bool = False
+
+    model_config = {"from_attributes": True}
+
+class PublicHolidayUpdate(BaseModel):
+    date: Optional[date] = None
+    name: Optional[str] = None
+    country: Optional[str] = None
+    is_recurring: Optional[bool] = None
 
 
 # ── Teams ────────────────────────────────────────────────
@@ -530,6 +620,70 @@ class TaskPresetOut(BaseModel):
     product_type: Optional[str] = None
     description: Optional[str] = None
     task_template_ids: list[int] = []
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Document Types ──────────────────────────────────────
+
+class DocumentTypeCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    category: str = "Report"
+    base_effort_hours: float = 4.0
+    task_template_id: Optional[int] = None
+
+class DocumentTypeUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    base_effort_hours: Optional[float] = None
+    is_active: Optional[bool] = None
+    task_template_id: Optional[int] = None
+
+class DocumentTypeOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    category: str
+    base_effort_hours: float
+    is_active: bool
+    task_template_id: Optional[int] = None
+    task_template_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Risk Items ──────────────────────────────────────────
+
+class RiskItemCreate(BaseModel):
+    name: str
+    category: str = "General"
+    description: Optional[str] = None
+    likelihood: str = "MEDIUM"
+    impact: str = "MEDIUM"
+    mitigation: Optional[str] = None
+
+class RiskItemUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    likelihood: Optional[str] = None
+    impact: Optional[str] = None
+    mitigation: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class RiskItemOut(BaseModel):
+    id: int
+    name: str
+    category: str
+    description: Optional[str] = None
+    likelihood: str
+    impact: str
+    mitigation: Optional[str] = None
+    is_active: bool = True
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

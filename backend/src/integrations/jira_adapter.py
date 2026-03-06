@@ -32,8 +32,10 @@ class JiraAdapter(BaseAdapter):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         self.jql_filter = self.additional_config.get("jql_filter", "")
-        self.issue_type = self.additional_config.get("issue_type", "Task")
+        self.issue_type = self.additional_config.get("issue_type", "")
         self.project_key = self.additional_config.get("project_key", "")
+        self.subtask_type = self.additional_config.get("subtask_type", "Sub-task")
+        self.task_export_type = self.additional_config.get("task_export_type", "")
         self.xray_enabled = self.additional_config.get("xray_enabled", False)
         self.xray_project_key = self.additional_config.get("xray_project_key", "")
         self.is_cloud = self.additional_config.get("is_cloud", False)
@@ -74,13 +76,20 @@ class JiraAdapter(BaseAdapter):
             # Cloud: email + API token as Basic Auth
             creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
             headers["Authorization"] = f"Basic {creds}"
-        elif self.auth_mode == "pat" or (self.api_key and not self.username):
-            # DC/Server: Personal Access Token (Bearer)
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        elif self.username and self.api_key:
-            # DC/Server: username + password (Basic Auth)
+        elif self.auth_mode == "basic":
+            # DC/Server: explicit Basic Auth (username + password)
             creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
             headers["Authorization"] = f"Basic {creds}"
+        elif self.auth_mode == "pat":
+            # DC/Server: explicit Personal Access Token (Bearer)
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        elif self.username and self.api_key:
+            # Auto-detect: username present → Basic Auth
+            creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
+            headers["Authorization"] = f"Basic {creds}"
+        elif self.api_key:
+            # Auto-detect: no username → assume PAT (Bearer)
+            headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
     def _url(self, path: str) -> str:
@@ -96,40 +105,87 @@ class JiraAdapter(BaseAdapter):
 
     def test_connection(self) -> ConnectionTestResult:
         """Test connection by fetching current user and server info."""
-        if not self.base_url or not self.api_key:
-            return ConnectionTestResult(False, "Jira URL or API key not configured.")
+        if not self.base_url:
+            return ConnectionTestResult(False, "Jira URL is not configured.")
+        if not self.api_key:
+            return ConnectionTestResult(False, "Jira API key / token is not configured.")
+
+        auth_desc = "Bearer/PAT" if "Bearer" in self._headers().get("Authorization", "") else "Basic"
+
         try:
             resp = self._request("GET", self._url("myself"))
-            if resp.status_code == 200:
-                user = resp.json()
-                display = user.get("displayName", user.get("name", "Unknown"))
-
-                # Detect deployment type via serverInfo (DC/Server expose this)
-                deploy_type = "Cloud" if self.is_cloud else "Server/DC"
-                try:
-                    info_resp = self._request(
-                        "GET",
-                        f"{self.base_url.rstrip('/')}/rest/api/2/serverInfo",
-                    )
-                    if info_resp.status_code == 200:
-                        info = info_resp.json()
-                        version = info.get("version", "")
-                        dt = info.get("deploymentType", "")
-                        if dt:
-                            deploy_type = dt.replace("_", " ").title()
-                        if version:
-                            deploy_type += f" v{version}"
-                except Exception:
-                    pass
-
-                return ConnectionTestResult(
-                    True,
-                    f"Connected as: {display} ({deploy_type})",
-                    details={"account_id": user.get("accountId", user.get("key"))},
-                )
-            return ConnectionTestResult(False, f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except http_requests.exceptions.SSLError as e:
+            hint = (
+                "SSL certificate verification failed. "
+                "If this Jira instance uses a self-signed certificate, "
+                "disable 'Verify SSL' in Deployment Settings."
+            )
+            return ConnectionTestResult(False, f"{hint}\n\nDetail: {e}")
+        except http_requests.exceptions.ConnectTimeout:
+            return ConnectionTestResult(
+                False,
+                f"Connection timed out after {self.timeout}s reaching {self.base_url}. "
+                "Check that the URL is reachable from this server.",
+            )
+        except http_requests.exceptions.ConnectionError as e:
+            return ConnectionTestResult(
+                False,
+                f"Cannot connect to {self.base_url}. "
+                "Check the URL, network access, and firewall rules.\n\n"
+                f"Detail: {e}",
+            )
         except Exception as e:
             return ConnectionTestResult(False, f"Connection failed: {e}")
+
+        if resp.status_code == 401:
+            return ConnectionTestResult(
+                False,
+                f"Authentication failed (HTTP 401) using {auth_desc} auth. "
+                "Check your credentials and auth mode setting. "
+                "For Jira DC with a Personal Access Token, set Auth Mode to 'pat'.",
+            )
+        if resp.status_code == 403:
+            return ConnectionTestResult(
+                False,
+                f"Access forbidden (HTTP 403) using {auth_desc} auth. "
+                "The credentials may be valid but lack permission for this resource. "
+                "Ensure the account/token has appropriate Jira permissions.",
+            )
+        if resp.status_code == 404:
+            return ConnectionTestResult(
+                False,
+                f"API endpoint not found (HTTP 404) at {self._url('myself')}. "
+                "If Jira runs under a context path (e.g. /jira), "
+                "include it in the Base URL: https://host/jira",
+            )
+        if resp.status_code != 200:
+            return ConnectionTestResult(
+                False, f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+
+        user = resp.json()
+        display = user.get("displayName", user.get("name", "Unknown"))
+
+        # Detect deployment type via serverInfo (DC/Server expose this)
+        deploy_type = "Cloud" if self.is_cloud else "Server/DC"
+        try:
+            info_resp = self._request("GET", self._url("serverInfo"))
+            if info_resp.status_code == 200:
+                info = info_resp.json()
+                version = info.get("version", "")
+                dt = info.get("deploymentType", "")
+                if dt:
+                    deploy_type = dt.replace("_", " ").title()
+                if version:
+                    deploy_type += f" v{version}"
+        except Exception:
+            pass
+
+        return ConnectionTestResult(
+            True,
+            f"Connected as: {display} ({deploy_type}) [auth: {auth_desc}]",
+            details={"account_id": user.get("accountId", user.get("key"))},
+        )
 
     def import_requests(self) -> SyncResult:
         """Import issues from Jira using JQL filter."""
@@ -230,9 +286,15 @@ class JiraAdapter(BaseAdapter):
                         "originalEstimate": f"{hours:.0f}h",
                     }
                 else:
-                    update_fields[target] = effort_hours_val
+                    update_fields[target] = float(effort_hours_val or 0)
             if "feasibility" in fm:
-                update_fields[fm["feasibility"]] = estimation_data.get("feasibility_status", "")
+                # Map feasibility status to a numeric value for Jira number fields
+                feasibility_str = estimation_data.get("feasibility_status", "")
+                _feasibility_num = {"FEASIBLE": 1, "AT_RISK": 2, "NOT_FEASIBLE": 3}
+                if fm["feasibility"].startswith("customfield_"):
+                    update_fields[fm["feasibility"]] = _feasibility_num.get(feasibility_str, 0)
+                else:
+                    update_fields[fm["feasibility"]] = feasibility_str
             if "estimation_number" in fm:
                 update_fields[fm["estimation_number"]] = estimation_data.get("estimation_number", "")
 
@@ -241,7 +303,8 @@ class JiraAdapter(BaseAdapter):
             total = float(effort_hours_val or 0)
             status = estimation_data.get("feasibility_status", "N/A")
 
-            # Update fields
+            # Update fields — send each field individually to avoid one bad field blocking all
+            errors: list[str] = []
             if update_fields:
                 resp = self._request(
                     "PUT",
@@ -249,12 +312,18 @@ class JiraAdapter(BaseAdapter):
                     json={"fields": update_fields},
                 )
                 if resp.status_code not in (200, 204):
-                    return SyncResult(
-                        system=self.system_name,
-                        direction="EXPORT",
-                        status=SyncStatus.FAILED,
-                        errors=[f"Field update failed: HTTP {resp.status_code}: {resp.text[:200]}"],
-                    )
+                    # Retry fields individually to identify which one fails
+                    for field_key, field_val in update_fields.items():
+                        payload = {"fields": {field_key: field_val}}
+                        r2 = self._request(
+                            "PUT",
+                            self._url(f"issue/{external_id}"),
+                            json=payload,
+                        )
+                        if r2.status_code not in (200, 204):
+                            errors.append(
+                                f"Field {field_key} failed: HTTP {r2.status_code}: {r2.text[:150]}"
+                            )
 
             # Add comment
             comment_body = (
@@ -268,12 +337,177 @@ class JiraAdapter(BaseAdapter):
                 json={"body": comment_body},
             )
 
+            if errors:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.PARTIAL,
+                    items_processed=1,
+                    items_updated=1,
+                    errors=errors,
+                )
             return SyncResult(
                 system=self.system_name,
                 direction="EXPORT",
                 status=SyncStatus.SUCCESS,
                 items_processed=1,
                 items_updated=1,
+            )
+        except Exception as e:
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.FAILED,
+                errors=[str(e)],
+            )
+
+    def create_task_breakdown(self, estimation_data: dict) -> SyncResult:
+        """Create sub-tasks in Jira for each estimation task.
+
+        If a parent issue (external_id) is provided, tasks are created as
+        sub-tasks under it.  Otherwise, tasks are created as standalone issues
+        in the configured project_key.
+        """
+        external_id = estimation_data.get("external_id")  # parent Jira issue key
+
+        tasks = estimation_data.get("tasks", [])
+        if not tasks:
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.SKIPPED,
+                errors=["No tasks to export."],
+            )
+
+        try:
+            project_key = None
+            has_parent = False
+
+            # Try to resolve project key from parent issue
+            if external_id:
+                try:
+                    parent_resp = self._request(
+                        "GET", self._url(f"issue/{external_id}?fields=project")
+                    )
+                    if parent_resp.status_code == 200:
+                        project_key = parent_resp.json()["fields"]["project"]["key"]
+                        has_parent = True
+                except Exception:
+                    pass
+
+            # Fallback to configured project_key
+            if not project_key:
+                project_key = self.project_key
+
+            if not project_key:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.FAILED,
+                    errors=[
+                        "Cannot determine Jira project. "
+                        "Either link the estimation to a Jira issue or "
+                        "configure a default Project Key in Jira integration settings."
+                    ],
+                )
+
+            # Resolve issue type for standalone tasks
+            task_type_name = self.task_export_type or self.issue_type
+            if not task_type_name:
+                # Auto-detect: query project's issue types
+                try:
+                    meta_resp = self._request(
+                        "GET", self._url(f"issue/createmeta?projectKeys={project_key}")
+                    )
+                    if meta_resp.status_code == 200:
+                        projects = meta_resp.json().get("projects", [])
+                        if projects:
+                            issue_types = projects[0].get("issuetypes", [])
+                            # Prefer "Task" or "Todo", skip sub-task types
+                            for preferred in ("Task", "Todo", "Story"):
+                                for it in issue_types:
+                                    if it.get("name") == preferred and not it.get("subtask"):
+                                        task_type_name = it["name"]
+                                        break
+                                if task_type_name:
+                                    break
+                            # If none matched, use first non-subtask type
+                            if not task_type_name:
+                                for it in issue_types:
+                                    if not it.get("subtask"):
+                                        task_type_name = it["name"]
+                                        break
+                except Exception:
+                    pass
+                if not task_type_name:
+                    task_type_name = "Task"
+            est_num = estimation_data.get("estimation_number", "")
+            created = 0
+            errors: list[str] = []
+
+            for task in tasks:
+                task_name = task.get("task_name", task.get("name", "Task"))
+                calc_hours = task.get("calculated_hours", 0)
+                leader_hours = task.get("leader_hours", 0)
+                task_type = task.get("task_type", "")
+                total_hours = calc_hours + leader_hours
+
+                summary = f"[{est_num}] {task_name}"
+                desc_lines = [
+                    f"Task Type: {task_type}",
+                    f"Tester Hours: {calc_hours:.1f}h",
+                    f"Leader Hours: {leader_hours:.1f}h",
+                    f"Total: {total_hours:.1f}h",
+                ]
+                if task.get("is_new_feature_study"):
+                    desc_lines.append("(New Feature Study)")
+                if task.get("notes"):
+                    desc_lines.append(f"Notes: {task['notes']}")
+
+                issue_data: dict[str, Any] = {
+                    "fields": {
+                        "project": {"key": project_key},
+                        "summary": summary,
+                        "description": "\n".join(desc_lines),
+                    }
+                }
+
+                if has_parent and external_id:
+                    # Create as sub-task under parent
+                    issue_data["fields"]["parent"] = {"key": external_id}
+                    issue_data["fields"]["issuetype"] = {"name": sub_task_type}
+                else:
+                    # Create as standalone task in project
+                    issue_data["fields"]["issuetype"] = {"name": task_type_name}
+
+                # Set time tracking if available
+                if total_hours > 0:
+                    issue_data["fields"]["timetracking"] = {
+                        "originalEstimate": f"{total_hours:.0f}h",
+                    }
+
+                resp = self._request("POST", self._url("issue"), json=issue_data)
+                if resp.status_code == 201:
+                    created += 1
+                else:
+                    errors.append(f"Failed to create '{task_name}': HTTP {resp.status_code}: {resp.text[:150]}")
+
+            if errors and created == 0:
+                return SyncResult(
+                    system=self.system_name,
+                    direction="EXPORT",
+                    status=SyncStatus.FAILED,
+                    items_processed=len(tasks),
+                    items_created=created,
+                    errors=errors,
+                )
+            return SyncResult(
+                system=self.system_name,
+                direction="EXPORT",
+                status=SyncStatus.SUCCESS if not errors else SyncStatus.PARTIAL,
+                items_processed=len(tasks),
+                items_created=created,
+                errors=errors,
             )
         except Exception as e:
             return SyncResult(

@@ -138,6 +138,7 @@ async def estimations_list_page() -> None:
                 rows.append({
                     "id": e["id"],
                     "number": _version_label(e),
+                    "request_number": e.get("request_number") or "",
                     "project_name": e.get("project_name", ""),
                     "project_type": e.get("project_type", ""),
                     "grand_total_hours": round(e.get("grand_total_hours", 0), 1),
@@ -149,6 +150,7 @@ async def estimations_list_page() -> None:
 
             cols = [
                 {"name": "number", "label": "#", "field": "number", "align": "left", "sortable": True},
+                {"name": "request_number", "label": "Request", "field": "request_number", "align": "left", "sortable": True},
                 {"name": "project_name", "label": "Project", "field": "project_name", "align": "left", "sortable": True},
                 {"name": "project_type", "label": "Type", "field": "project_type", "align": "left", "sortable": True},
                 {"name": "grand_total_hours", "label": "Total Hours", "field": "grand_total_hours", "align": "right", "sortable": True},
@@ -227,7 +229,10 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         # Step 1
         "project_name": "",
         "project_type": "EVOLUTION",
+        "product_type_filter": "All",
         "description": "",
+        "project_goals": "",
+        "target_customer": "",
         # Step 2
         "feature_ids": [],
         "new_feature_ids": [],
@@ -248,7 +253,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "working_days": 20,
         "team_size": 1,
         "has_leader": False,
+        "expected_releases": 1,
         "team_allocations": [],
+        "team_id": None,
+        "risk_item_ids": [],
+        "document_type_ids": [],
+        "document_counts": {},
         # Step 7 (calculation result)
         "calc_result": None,
     }
@@ -273,13 +283,26 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         except Exception:
             return []
 
-    all_features, all_duts, all_profiles, all_hist, all_team_members = await asyncio.gather(
+    all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs = await asyncio.gather(
         _safe_get("/features"),
         _safe_get("/dut-types"),
         _safe_get("/profiles"),
         _safe_get("/historical-projects"),
         _safe_get("/team-members"),
+        _safe_get("/teams"),
+        _safe_get("/risk-items"),
+        _safe_get("/configuration"),
     )
+    _config_map: dict[str, str] = {c.get("key", ""): c.get("value", "") for c in _all_configs if isinstance(c, dict)}
+    _pr_priority_list = [p.strip() for p in _config_map.get("pr_priority_list", "LOW,MEDIUM,HIGH,CRITICAL").split(",") if p.strip()]
+
+    # Derive product types from features, DUTs, and profiles for filtering
+    _product_types_set: set[str] = set()
+    for _item in [*all_features, *all_duts, *all_profiles]:
+        _pt = _item.get("product_type")
+        if _pt:
+            _product_types_set.add(_pt)
+    product_types: list[str] = sorted(_product_types_set)
 
     # ------------------------------------------------------------------ #
     # Page title                                                           #
@@ -335,14 +358,50 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     lambda e: state.update({"description": e.args}),
                 )
 
+                goals_input = ui.textarea(
+                    "Project Goals (optional)",
+                    value=state["project_goals"],
+                    placeholder="What are the main goals of this project?",
+                ).classes("w-full q-mt-sm")
+                goals_input.on(
+                    "update:model-value",
+                    lambda e: state.update({"project_goals": e.args}),
+                )
+
+                customer_input = ui.input(
+                    "Target Customer (optional)",
+                    value=state["target_customer"],
+                    placeholder="e.g. Vodafone, Deutsche Telekom",
+                ).classes("w-full q-mt-sm")
+                customer_input.on(
+                    "update:model-value",
+                    lambda e: state.update({"target_customer": e.args}),
+                )
+
+                ui.separator().classes("q-mt-md")
+                ui.label("Product Type Filter").classes("text-subtitle2")
+                ui.label(
+                    "Select a product type to filter Features, DUTs, and Profiles in subsequent steps."
+                ).classes("text-caption text-grey q-mb-xs")
+                pt_filter_select = ui.select(
+                    options=["All"] + product_types,
+                    value=state["product_type_filter"],
+                    label="Product Type",
+                ).classes("w-64")
+
                 with ui.stepper_navigation():
                     def _go_step2() -> None:
                         state["project_name"] = name_input.value or ""
                         state["project_type"] = type_select.value or "EVOLUTION"
+                        state["product_type_filter"] = pt_filter_select.value or "All"
                         state["description"] = desc_input.value or ""
+                        state["project_goals"] = goals_input.value or ""
+                        state["target_customer"] = customer_input.value or ""
                         if not state["project_name"].strip():
                             ui.notify("Project Name is required.", type="warning")
                             return
+                        # Rebuild feature list with current product type filter
+                        _rebuild_feature_list()
                         stepper.next()
 
                     ui.button("Next", on_click=_go_step2).props("color=primary icon-right=arrow_forward")
@@ -355,89 +414,119 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     "Select the features under test. Toggle 'New' for features that require study time."
                 ).classes("text-body2 text-grey q-mb-md")
 
-                # Group features by category
-                features_by_cat: dict[str, list[dict]] = {}
-                for feat in all_features:
-                    cat = feat.get("category") or "Other"
-                    features_by_cat.setdefault(cat, []).append(feat)
+                pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
 
                 # We need checkbox refs to read values on navigation
                 feature_checkbox_refs: dict[int, ui.checkbox] = {}
                 new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
 
-                if not all_features:
-                    ui.label("No features found. Add features in the Feature Catalog first.").classes(
-                        "text-warning"
-                    )
-                else:
-                    # -- Select All checkbox --
-                    _programmatic_select_all = [False]
-                    all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
-                    select_all_cb = ui.checkbox(
-                        f"Select all ({len(all_features)} features)",
-                        value=all_pre_selected,
-                    ).classes("text-weight-bold q-mb-sm")
+                features_container = ui.column().classes("w-full")
 
-                    def _toggle_select_all(e):
-                        if _programmatic_select_all[0]:
+                # -- Select All checkbox (outside container so it persists) --
+                _programmatic_select_all = [False]
+
+                def _rebuild_feature_list() -> None:
+                    """Rebuild the feature checkbox list based on the product type filter from Step 1."""
+                    # Collect current selections before clearing
+                    for _fid, _cb in feature_checkbox_refs.items():
+                        if _cb.value and _fid not in state["feature_ids"]:
+                            state["feature_ids"].append(_fid)
+                        elif not _cb.value and _fid in state["feature_ids"]:
+                            state["feature_ids"].remove(_fid)
+                    for _fid, _cb in new_feat_checkbox_refs.items():
+                        if _cb.value and _fid not in state["new_feature_ids"]:
+                            state["new_feature_ids"].append(_fid)
+                        elif not _cb.value and _fid in state["new_feature_ids"]:
+                            state["new_feature_ids"].remove(_fid)
+
+                    feature_checkbox_refs.clear()
+                    new_feat_checkbox_refs.clear()
+                    features_container.clear()
+
+                    selected_pt = state.get("product_type_filter") or "All"
+                    if selected_pt and selected_pt != "All":
+                        visible_features = [f for f in all_features if f.get("product_type") == selected_pt]
+                        pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
+                    else:
+                        visible_features = list(all_features)
+                        pt_info_label.set_text("")
+
+                    # Group visible features by category
+                    vis_by_cat: dict[str, list[dict]] = {}
+                    for feat in visible_features:
+                        cat = feat.get("category") or "Other"
+                        vis_by_cat.setdefault(cat, []).append(feat)
+
+                    with features_container:
+                        if not visible_features:
+                            ui.label("No features match the selected product type.").classes("text-grey")
                             return
-                        checked = e.value
-                        for _fid, _cb in feature_checkbox_refs.items():
-                            _cb.value = checked
-                            if not checked and _fid in new_feat_checkbox_refs:
-                                new_feat_checkbox_refs[_fid].value = False
 
-                    select_all_cb.on_value_change(_toggle_select_all)
+                        all_pre_selected = all(f["id"] in state["feature_ids"] for f in visible_features)
+                        select_all_cb = ui.checkbox(
+                            f"Select all ({len(visible_features)} features)",
+                            value=all_pre_selected,
+                        ).classes("text-weight-bold q-mb-sm")
 
-                    def _update_select_all_state() -> None:
-                        """Sync Select All checkbox when an individual feature is toggled."""
-                        all_checked = all(cb.value for cb in feature_checkbox_refs.values())
-                        if select_all_cb.value != all_checked:
-                            _programmatic_select_all[0] = True
-                            select_all_cb.value = all_checked
-                            _programmatic_select_all[0] = False
+                        def _toggle_select_all(e):
+                            if _programmatic_select_all[0]:
+                                return
+                            checked = e.value
+                            for _fid, _cb in feature_checkbox_refs.items():
+                                _cb.value = checked
+                                if not checked and _fid in new_feat_checkbox_refs:
+                                    new_feat_checkbox_refs[_fid].value = False
 
-                    ui.separator()
+                        select_all_cb.on_value_change(_toggle_select_all)
 
-                    for cat_name, cat_features in features_by_cat.items():
-                        ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
+                        def _update_select_all_state() -> None:
+                            if not feature_checkbox_refs:
+                                return
+                            all_checked = all(cb.value for cb in feature_checkbox_refs.values())
+                            if select_all_cb.value != all_checked:
+                                _programmatic_select_all[0] = True
+                                select_all_cb.value = all_checked
+                                _programmatic_select_all[0] = False
 
-                        # Column headers
-                        with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
-                            ui.label("Feature").classes("text-caption text-grey")
-                            ui.label("Complexity").classes("text-caption text-grey text-center")
-                            ui.label("New?").classes("text-caption text-grey text-center")
+                        ui.separator()
 
-                            for feat in cat_features:
-                                fid = feat["id"]
-                                fname = feat.get("name", f"Feature {fid}")
-                                fweight = feat.get("complexity_weight", 1.0)
-                                has_tests = feat.get("has_existing_tests", False)
+                        for cat_name, cat_features in vis_by_cat.items():
+                            ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                                cb = ui.checkbox(
-                                    fname,
-                                    value=(fid in state["feature_ids"]),
-                                )
-                                feature_checkbox_refs[fid] = cb
+                            with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                                ui.label("Feature").classes("text-caption text-grey")
+                                ui.label("Complexity").classes("text-caption text-grey text-center")
+                                ui.label("New?").classes("text-caption text-grey text-center")
 
-                                ui.label(f"x{fweight:.1f}").classes("text-center")
+                                for feat in cat_features:
+                                    fid = feat["id"]
+                                    fname = feat.get("name", f"Feature {fid}")
+                                    fweight = feat.get("complexity_weight", 1.0)
 
-                                new_cb = ui.checkbox(
-                                    "New",
-                                    value=(fid in state["new_feature_ids"]),
-                                ).props("dense color=orange").classes("text-caption")
-                                new_feat_checkbox_refs[fid] = new_cb
+                                    cb = ui.checkbox(
+                                        fname,
+                                        value=(fid in state["feature_ids"]),
+                                    )
+                                    feature_checkbox_refs[fid] = cb
 
-                                # Disable "New" toggle unless parent is checked
-                                def _make_sync(f_id: int, n_cb: ui.checkbox):
-                                    def _sync(e) -> None:
-                                        if not feature_checkbox_refs[f_id].value:
-                                            n_cb.value = False
-                                        _update_select_all_state()
+                                    ui.label(f"x{fweight:.1f}").classes("text-center")
 
-                                    return _sync
+                                    new_cb = ui.checkbox(
+                                        "New",
+                                        value=(fid in state["new_feature_ids"]),
+                                    ).props("dense color=orange").classes("text-caption")
+                                    new_feat_checkbox_refs[fid] = new_cb
 
-                                cb.on("update:model-value", _make_sync(fid, new_cb))
+                                    def _make_sync(f_id: int, n_cb: ui.checkbox):
+                                        def _sync(e) -> None:
+                                            if not feature_checkbox_refs[f_id].value:
+                                                n_cb.value = False
+                                            _update_select_all_state()
+                                        return _sync
+
+                                    cb.on("update:model-value", _make_sync(fid, new_cb))
+
+                _rebuild_feature_list()
 
                 def _collect_features() -> None:
                     state["feature_ids"] = [
@@ -513,6 +602,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                     def _next_step3() -> None:
                         _collect_refs()
+                        # Rebuild DUT/Profile lists with current product type filter
+                        _rebuild_dut_prof_lists()
                         stepper.next()
 
                     ui.button("Back", on_click=_back_step3).props("flat")
@@ -528,10 +619,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     "Select the DUTs and Profiles to test, then tick the combinations you actually need."
                 ).classes("text-body2 text-grey q-mb-md")
 
+                dut_pt_info = ui.label("").classes("text-caption text-primary q-mb-sm")
+
                 dut_cb_refs: dict[int, ui.checkbox] = {}
                 prof_cb_refs: dict[int, ui.checkbox] = {}
                 matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
                 matrix_container = ui.column().classes("w-full q-mt-md")
+                dut_container = ui.column().classes("w-full")
+                prof_container = ui.column().classes("w-full")
 
                 def _rebuild_matrix() -> None:
                     """Repaint the DUT×Profile combination grid."""
@@ -581,38 +676,69 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                         )
                                     matrix_cb_refs[key] = cb
 
-                # Render DUT checkboxes
-                if not all_duts:
-                    ui.label("No DUT types found.").classes("text-grey")
-                else:
-                    ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
-                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                        for dut in all_duts:
-                            did = dut["id"]
-                            cb = ui.checkbox(
-                                dut.get("name", f"DUT {did}"),
-                                value=(did in state["dut_ids"]),
-                            )
-                            dut_cb_refs[did] = cb
-                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+                def _rebuild_dut_prof_lists() -> None:
+                    """Rebuild DUT and Profile checkbox lists filtered by product type."""
+                    # Preserve current selections
+                    for _did, _cb in dut_cb_refs.items():
+                        if _cb.value and _did not in state["dut_ids"]:
+                            state["dut_ids"].append(_did)
+                        elif not _cb.value and _did in state["dut_ids"]:
+                            state["dut_ids"].remove(_did)
+                    for _pid, _cb in prof_cb_refs.items():
+                        if _cb.value and _pid not in state["profile_ids"]:
+                            state["profile_ids"].append(_pid)
+                        elif not _cb.value and _pid in state["profile_ids"]:
+                            state["profile_ids"].remove(_pid)
 
-                # Render Profile checkboxes
-                if not all_profiles:
-                    ui.label("No profiles found.").classes("text-grey")
-                else:
-                    ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
-                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                        for prof in all_profiles:
-                            pid = prof["id"]
-                            cb = ui.checkbox(
-                                prof.get("name", f"Profile {pid}"),
-                                value=(pid in state["profile_ids"]),
-                            )
-                            prof_cb_refs[pid] = cb
-                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+                    dut_cb_refs.clear()
+                    prof_cb_refs.clear()
+                    dut_container.clear()
+                    prof_container.clear()
 
-                # Initial matrix render if coming back to this step with prior state
-                _rebuild_matrix()
+                    selected_pt = state.get("product_type_filter") or "All"
+                    if selected_pt and selected_pt != "All":
+                        visible_duts = [d for d in all_duts if d.get("product_type") == selected_pt or not d.get("product_type")]
+                        visible_profs = [p for p in all_profiles if p.get("product_type") == selected_pt or not p.get("product_type")]
+                        dut_pt_info.set_text(f"Filtered by product type: {selected_pt} (items without product type are also shown)")
+                    else:
+                        visible_duts = list(all_duts)
+                        visible_profs = list(all_profiles)
+                        dut_pt_info.set_text("")
+
+                    with dut_container:
+                        if not visible_duts:
+                            ui.label("No DUT types found.").classes("text-grey")
+                        else:
+                            ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
+                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                                for dut in visible_duts:
+                                    did = dut["id"]
+                                    cb = ui.checkbox(
+                                        dut.get("name", f"DUT {did}"),
+                                        value=(did in state["dut_ids"]),
+                                    )
+                                    dut_cb_refs[did] = cb
+                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                    with prof_container:
+                        if not visible_profs:
+                            ui.label("No profiles found.").classes("text-grey")
+                        else:
+                            ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
+                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                                for prof in visible_profs:
+                                    pid = prof["id"]
+                                    cb = ui.checkbox(
+                                        prof.get("name", f"Profile {pid}"),
+                                        value=(pid in state["profile_ids"]),
+                                    )
+                                    prof_cb_refs[pid] = cb
+                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                    _rebuild_matrix()
+
+                # Initial render
+                _rebuild_dut_prof_lists()
 
                 def _collect_matrix() -> None:
                     state["dut_ids"] = [
@@ -660,6 +786,16 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 ui.label(
                     "Enter the expected number of PR fixes by complexity. These add fixed effort per PR."
                 ).classes("text-body2 text-grey q-mb-md")
+
+                with ui.card().classes("w-full q-pa-sm q-mb-md").props("flat bordered"):
+                    ui.label("PR Fix Calculation:").classes("text-caption text-weight-bold")
+                    for _info_line in [
+                        "Each PR is validated per DUT (scales with DUT count)",
+                        "Simple: 2h x DUT count, Medium: 4h x DUT count, Complex: 8h x DUT count",
+                        "Total PR Fix Hours = (simple x 2 + medium x 4 + complex x 8) x DUT_count [x profile_count if enabled]",
+                        "Configurable via 'pr_fix_base_hours' and 'pr_scales_with_profile' settings",
+                    ]:
+                        ui.label(f"  {_info_line}").classes("text-caption text-grey")
 
                 pr_simple_input = ui.number(
                     "Simple PRs (2 h each)",
@@ -711,58 +847,228 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         pr_details_container.clear()
                         with pr_details_container:
                             for idx, pr in enumerate(pr_detail_rows):
-                                with ui.row().classes("items-center q-gutter-sm w-full"):
-                                    _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
-                                    _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
-                                    _cx = ui.select(
-                                        options=["simple", "medium", "complex"],
-                                        value=pr.get("complexity", "simple"),
-                                        label="Complexity",
-                                    ).classes("w-32")
-                                    _st = ui.select(
-                                        options=["Open", "Merged", "Closed"],
-                                        value=pr.get("status", "Open"),
-                                        label="Status",
-                                    ).classes("w-28")
+                                with ui.card().classes("w-full q-pa-xs q-mb-xs").props("flat bordered"):
+                                    with ui.row().classes("items-center q-gutter-sm w-full"):
+                                        _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
+                                        _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                        _pri = ui.select(
+                                            options=_pr_priority_list,
+                                            value=pr.get("priority", _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]),
+                                            label="Priority",
+                                        ).classes("w-28")
+                                        _cx = ui.select(
+                                            options=["simple", "medium", "complex"],
+                                            value=pr.get("complexity", "simple"),
+                                            label="Complexity",
+                                        ).classes("w-32")
+                                        _st_options = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
+                                        _st_val = pr.get("status", "Open")
+                                        if _st_val not in _st_options:
+                                            _st_options.append(_st_val)
+                                        _st = ui.select(
+                                            options=_st_options,
+                                            value=_st_val,
+                                            label="Status",
+                                        ).classes("w-28")
 
-                                    def _make_remove(i: int):
-                                        def _remove():
-                                            pr_detail_rows.pop(i)
-                                            _render_pr_details()
-                                        return _remove
+                                        def _make_remove(i: int):
+                                            def _remove():
+                                                pr_detail_rows.pop(i)
+                                                _render_pr_details()
+                                            return _remove
 
-                                    ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+                                        ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+
+                                    with ui.row().classes("items-center q-gutter-sm w-full"):
+                                        _desc = ui.input(
+                                            "Description",
+                                            value=pr.get("description", ""),
+                                            placeholder="Brief issue description",
+                                        ).classes("flex-1")
+                                        _ta = ui.switch(
+                                            "Test Available",
+                                            value=pr.get("test_available", True),
+                                        ).classes("q-ml-md")
 
                                     # Bind updates back to data
-                                    def _make_updater(i: int, n=_num, l=_link, c=_cx, s=_st):
+                                    def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
                                         def _upd(_=None):
                                             if i < len(pr_detail_rows):
                                                 pr_detail_rows[i] = {
                                                     "pr_number": n.value or "",
                                                     "link": l.value or "",
+                                                    "priority": p.value or "",
                                                     "complexity": c.value or "simple",
                                                     "status": s.value or "Open",
+                                                    "description": d.value or "",
+                                                    "test_available": bool(ta.value),
                                                 }
                                         return _upd
 
                                     updater = _make_updater(idx)
                                     _num.on("update:model-value", updater)
                                     _link.on("update:model-value", updater)
+                                    _pri.on("update:model-value", updater)
                                     _cx.on("update:model-value", updater)
                                     _st.on("update:model-value", updater)
+                                    _desc.on("update:model-value", updater)
+                                    _ta.on("update:model-value", updater)
 
                     def _add_pr_detail() -> None:
-                        pr_detail_rows.append({"pr_number": "", "link": "", "complexity": "simple", "status": "Open"})
+                        _default_pri = _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]
+                        pr_detail_rows.append({"pr_number": "", "link": "", "priority": _default_pri, "complexity": "simple", "status": "Open", "description": "", "test_available": True})
                         _render_pr_details()
 
-                    ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+
+                        async def _import_from_jira(
+                            _pr_rows=pr_detail_rows,
+                            _render=_render_pr_details,
+                        ) -> None:
+                            """Open dialog to fetch and import PR items from Jira."""
+                            try:
+                                jira_config = await api_get("/integrations/JIRA")
+                                if not jira_config.get("enabled"):
+                                    ui.notify("Jira integration is not enabled.", type="warning")
+                                    return
+                            except Exception:
+                                ui.notify("Jira integration not configured.", type="warning")
+                                return
+
+                            with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
+                                ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
+
+                                jira_items_table = ui.table(
+                                    columns=[
+                                        {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
+                                        {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
+                                        {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
+                                        {"name": "status", "label": "Status", "field": "status", "align": "left"},
+                                    ],
+                                    rows=[],
+                                    row_key="key",
+                                    selection="multiple",
+                                    pagination={"rowsPerPage": 15},
+                                ).classes("w-full")
+
+                                async def _fetch_jira_prs() -> None:
+                                    try:
+                                        items = await api_get("/integrations/JIRA/pr-items")
+                                        jira_items_table.rows = items if isinstance(items, list) else []
+                                        jira_items_table.update()
+                                        ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
+                                    except Exception as exc:
+                                        ui.notify(f"Failed to fetch: {exc}", type="negative")
+
+                                ui.button("Fetch PR Items", icon="refresh", on_click=_fetch_jira_prs).props("color=secondary flat dense")
+
+                                async def _import_selected() -> None:
+                                    selected = jira_items_table.selected
+                                    if not selected:
+                                        ui.notify("No items selected.", type="warning")
+                                        return
+                                    # Fetch Jira base URL once for building links
+                                    _jira_base = ""
+                                    try:
+                                        jira_cfg = await api_get("/integrations/JIRA")
+                                        _jira_base = (jira_cfg.get("base_url") or "").rstrip("/")
+                                    except Exception:
+                                        pass
+                                    imported = 0
+                                    for item in selected:
+                                        key = item.get("key", "")
+                                        existing_nums = {r.get("pr_number") for r in _pr_rows}
+                                        if key and key not in existing_nums:
+                                            priority = (item.get("priority") or "Medium").lower()
+                                            complexity = "simple"
+                                            if priority in ("high", "highest", "critical", "blocker"):
+                                                complexity = "complex"
+                                            elif priority in ("medium",):
+                                                complexity = "medium"
+                                            jira_link = f"{_jira_base}/browse/{key}" if _jira_base else ""
+                                            _pr_rows.append({
+                                                "pr_number": key,
+                                                "link": jira_link,
+                                                "description": item.get("summary", ""),
+                                                "priority": item.get("priority", "Medium"),
+                                                "complexity": complexity,
+                                                "status": item.get("status", "Open"),
+                                                "test_available": True,
+                                            })
+                                            imported += 1
+                                    _render()
+                                    ui.notify(f"Imported {imported} PR item(s).", type="positive")
+                                    dlg.close()
+
+                                with ui.row().classes("q-mt-md gap-2"):
+                                    ui.button("Import Selected", icon="download", on_click=_import_selected).props("color=primary")
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                            await _fetch_jira_prs()
+                            dlg.open()
+
+                        ui.button("Import from Jira", icon="bug_report", on_click=_import_from_jira).props("flat dense color=secondary")
+
                     _render_pr_details()
+
+                # -- Documentation Deliverables --
+                ui.separator().classes("q-mt-lg")
+                with ui.expansion("Documentation Deliverables", icon="description").classes("w-full"):
+                    ui.label(
+                        "Select document types to be created and specify the count for each. "
+                        "Document effort hours are added to the total estimation."
+                    ).classes("text-body2 text-grey q-mb-sm")
+
+                    doc_types_container = ui.column().classes("w-full")
+                    doc_cb_refs: dict[int, ui.checkbox] = {}
+                    doc_count_refs: dict[int, ui.number] = {}
+
+                    async def _load_doc_types() -> None:
+                        try:
+                            doc_types = await api_get("/document-types")
+                        except Exception:
+                            doc_types = []
+                        doc_types_container.clear()
+                        doc_cb_refs.clear()
+                        doc_count_refs.clear()
+                        saved_ids = state.get("document_type_ids", [])
+                        saved_counts = state.get("document_counts", {})
+                        with doc_types_container:
+                            if not doc_types:
+                                ui.label("No document types configured.").classes("text-grey")
+                                return
+                            with ui.grid(columns="1fr 120px 200px").classes("w-full q-pl-md items-center"):
+                                ui.label("Document Type").classes("text-caption text-grey")
+                                ui.label("Count").classes("text-caption text-grey text-center")
+                                ui.label("Base Hours (each)").classes("text-caption text-grey")
+                                for dt in doc_types:
+                                    did = dt["id"]
+                                    cb = ui.checkbox(
+                                        dt.get("name", ""),
+                                        value=(did in saved_ids),
+                                    )
+                                    doc_cb_refs[did] = cb
+                                    cnt = ui.number(
+                                        "",
+                                        value=int(saved_counts.get(str(did), 1)),
+                                        min=1, step=1, precision=0,
+                                    ).props("dense").classes("w-20")
+                                    doc_count_refs[did] = cnt
+                                    ui.label(f"{dt.get('base_effort_hours', 0):.1f}h").classes("text-caption")
+
+                    await _load_doc_types()
 
                 def _collect_prs() -> None:
                     state["pr_simple"] = int(pr_simple_input.value or 0)
                     state["pr_medium"] = int(pr_medium_input.value or 0)
                     state["pr_complex"] = int(pr_complex_input.value or 0)
                     state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
+                    # Collect document types
+                    state["document_type_ids"] = [did for did, cb in doc_cb_refs.items() if cb.value]
+                    state["document_counts"] = {
+                        str(did): int(cnt.value or 1) for did, cnt in doc_count_refs.items()
+                    }
 
                 with ui.stepper_navigation():
                     def _back_step5() -> None:
@@ -787,13 +1093,25 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 ).classes("text-body2 text-grey q-mb-md")
 
                 with ui.row().classes("w-full q-gutter-md"):
-                    start_date_input = ui.date(
+                    with ui.input(
+                        "Start Date (optional)",
                         value=state.get("start_date") or "",
-                    ).classes("flex-1").props("label='Start Date (optional)'")
+                    ).classes("flex-1") as start_date_input:
+                        with ui.menu() as start_menu:
+                            with ui.date().bind_value(start_date_input) as _start_dp:
+                                _start_dp.on("update:model-value", lambda: start_menu.close())
+                        with start_date_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
 
-                    delivery_input = ui.date(
-                        value=state["delivery_date"] or "",
-                    ).classes("flex-1").props("label='Deadline (optional)'")
+                    with ui.input(
+                        "Deadline (optional)",
+                        value=state.get("delivery_date") or "",
+                    ).classes("flex-1") as delivery_input:
+                        with ui.menu() as delivery_menu:
+                            with ui.date().bind_value(delivery_input) as _delivery_dp:
+                                _delivery_dp.on("update:model-value", lambda: delivery_menu.close())
+                        with delivery_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", delivery_menu.open).classes("cursor-pointer")
 
                 working_days_input = ui.number(
                     "Working Days Available",
@@ -851,10 +1169,61 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     value=state["has_leader"],
                 ).classes("q-mt-sm")
 
+                releases_input = ui.number(
+                    "Expected Releases",
+                    value=state["expected_releases"],
+                    min=1,
+                    step=1,
+                    precision=0,
+                ).classes("w-full q-mt-sm").tooltip(
+                    "Number of releases within this estimation period. "
+                    "Each additional release adds extra effort for regression and deployment."
+                )
+
+                # Team selector
+                if all_teams:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Team (optional)").classes("text-subtitle2 q-mt-sm")
+                    team_options = {t["id"]: t.get("name", f"Team {t['id']}") for t in all_teams}
+                    team_select = ui.select(
+                        options={None: "-- No Team --", **team_options},
+                        value=state.get("team_id"),
+                        label="Select Team",
+                        with_input=True,
+                        clearable=True,
+                    ).classes("w-full q-mb-sm")
+
+                    def _on_team_selected(e) -> None:
+                        selected_team_id = e.args
+                        state["team_id"] = selected_team_id if selected_team_id else None
+                        if selected_team_id and all_team_members:
+                            # Auto-populate allocation rows from team members
+                            team_members = [m for m in all_team_members if m.get("team_id") == selected_team_id]
+                            alloc_rows.clear()
+                            for m in team_members:
+                                alloc_rows.append({
+                                    "team_member_id": m["id"],
+                                    "role": m.get("role", "TESTER"),
+                                    "allocated_hours": 0,
+                                })
+                            _render_alloc()
+
+                    team_select.on("update:model-value", _on_team_selected)
+
                 # Team allocation picker
                 if all_team_members:
                     ui.separator().classes("q-mt-md")
                     ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+
+                    with ui.card().classes("w-full q-pa-sm q-mb-sm").props("flat bordered"):
+                        ui.label("How team parameters affect the calculation:").classes("text-caption text-weight-bold")
+                        for line in [
+                            "Team Size and Include Leader determine capacity (= working_days x (testers + leader) x hours/day) for feasibility.",
+                            "Feasibility: <=80% = Feasible, 80-100% = At Risk, >100% = Not Feasible.",
+                            "Team Allocation below is optional planning metadata — it records who works on the estimation but does not change calculated totals.",
+                        ]:
+                            ui.label(f"- {line}").classes("text-caption text-grey")
+
                     ui.label(
                         "Select team members and assign roles/hours."
                     ).classes("text-body2 text-grey q-mb-sm")
@@ -922,6 +1291,32 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     )
                     _render_alloc()
 
+                # Risk items selection
+                risk_cb_refs: dict[int, ui.checkbox] = {}
+                if all_risk_items:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Risk Items (optional)").classes("text-subtitle2 q-mt-sm")
+                    ui.label("Select applicable risks for this estimation.").classes("text-body2 text-grey q-mb-sm")
+
+                    # Group risk items by category
+                    risks_by_cat: dict[str, list[dict]] = {}
+                    for ri in all_risk_items:
+                        rcat = ri.get("category") or "General"
+                        risks_by_cat.setdefault(rcat, []).append(ri)
+
+                    for rcat_name, rcat_items in risks_by_cat.items():
+                        ui.label(rcat_name).classes("text-caption text-weight-bold text-primary q-mt-xs")
+                        for ri in rcat_items:
+                            rid = ri["id"]
+                            rlabel = ri.get("name", f"Risk {rid}")
+                            if ri.get("likelihood") or ri.get("impact"):
+                                rlabel += f"  [{ri.get('likelihood', '?')}/{ri.get('impact', '?')}]"
+                            rcb = ui.checkbox(
+                                rlabel,
+                                value=(rid in state.get("risk_item_ids", [])),
+                            )
+                            risk_cb_refs[rid] = rcb
+
                 def _collect_delivery() -> None:
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
@@ -930,10 +1325,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     state["working_days"] = int(working_days_input.value or 20)
                     state["team_size"] = int(team_size_input.value or 1)
                     state["has_leader"] = bool(leader_toggle.value)
+                    state["expected_releases"] = int(releases_input.value or 1)
                     if all_team_members:
                         state["team_allocations"] = [
                             a for a in alloc_rows if a.get("team_member_id")
                         ]
+                    state["risk_item_ids"] = [
+                        rid for rid, rcb in risk_cb_refs.items() if rcb.value
+                    ]
 
                 with ui.stepper_navigation():
                     def _back_step6() -> None:
@@ -1005,6 +1404,19 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     f"{state['team_size']} tester(s)"
                                     + (" + leader" if state["has_leader"] else "")
                                 ).classes("text-body2")
+                            releases = state.get("expected_releases", 1)
+                            if releases and releases > 1:
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Expected Releases").classes("text-caption text-grey")
+                                    ui.label(str(releases)).classes("text-body2")
+                            if state.get("project_goals"):
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Project Goals").classes("text-caption text-grey")
+                                    ui.label(state["project_goals"]).classes("text-body2")
+                            if state.get("target_customer"):
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Target Customer").classes("text-caption text-grey")
+                                    ui.label(state["target_customer"]).classes("text-body2")
 
                 def _render_result(res: dict) -> None:
                     """Render calculation results returned from the API."""
@@ -1026,7 +1438,13 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             _hours_card("Tester Hours", res.get("total_tester_hours", 0), "person")
                             _hours_card("Leader Hours", res.get("total_leader_hours", 0), "manage_accounts")
                             _hours_card("PR Fix Hours", res.get("pr_fix_hours", 0), "bug_report")
+                            if res.get("pr_no_test_hours", 0) > 0:
+                                _hours_card("PR Test Creation", res["pr_no_test_hours"], "science")
                             _hours_card("Study Hours", res.get("study_hours", 0), "school")
+                            if res.get("release_extra_hours", 0) > 0:
+                                _hours_card("Release Extra Hours", res["release_extra_hours"], "rocket_launch")
+                            if res.get("documentation_hours", 0) > 0:
+                                _hours_card("Documentation Hours", res["documentation_hours"], "description")
                             _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
                             _hours_card(
                                 "Grand Total Hours",
@@ -1092,6 +1510,10 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
                         "delivery_date": state["delivery_date"],
+                        "expected_releases": state.get("expected_releases", 1),
+                        "risk_item_ids": state.get("risk_item_ids", []),
+                        "document_type_ids": state.get("document_type_ids", []),
+                        "document_counts": state.get("document_counts", {}),
                     }
                     try:
                         result = await api_post("/estimations/calculate", json=payload)
@@ -1131,6 +1553,13 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "request_id": linked_request_id,
                         "created_by": user.get("username"),
                         "team_allocations": state.get("team_allocations", []),
+                        "expected_releases": state.get("expected_releases", 1),
+                        "project_goals": state.get("project_goals") or None,
+                        "target_customer": state.get("target_customer") or None,
+                        "team_id": state.get("team_id"),
+                        "risk_item_ids": state.get("risk_item_ids", []),
+                        "document_type_ids": state.get("document_type_ids", []),
+                        "document_counts": state.get("document_counts", {}),
                     }
                     try:
                         saved = await api_post("/estimations", json=payload)
@@ -1213,6 +1642,226 @@ async def estimation_detail_page(estimation_id: int) -> None:
                     on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}/edit"),
                 ).props("color=orange outline dense")
 
+            # Export to Jira/Redmine button — only when linked to an external request
+            if est.get("request_id"):
+                async def _do_export() -> None:
+                    try:
+                        result = await api_post(f"/estimations/{estimation_id}/export")
+                        status = result.get("status", "unknown")
+                        errors = result.get("errors", [])
+                        if errors:
+                            ui.notify(f"Export completed with errors: {', '.join(errors)}", type="warning")
+                        else:
+                            ui.notify(f"Export successful (status: {status}).", type="positive")
+                    except Exception as exc:
+                        ui.notify(f"Export failed: {exc}", type="negative")
+
+                ui.button(
+                    "Export to External System",
+                    icon="cloud_upload",
+                    on_click=_do_export,
+                ).props("color=accent outline dense")
+
+            # Export Task Breakdown — works with or without linked request
+            async def _open_export_tasks_dialog() -> None:
+                # Pre-resolve external_id from linked request
+                _linked_ext_id = ""
+                _linked_source = ""
+                if est.get("request_id"):
+                    try:
+                        req_data = await api_get(f"/requests/{est['request_id']}")
+                        _linked_ext_id = req_data.get("external_id") or ""
+                        _linked_source = req_data.get("request_source") or ""
+                    except Exception:
+                        pass
+
+                with ui.dialog() as dlg, ui.card().classes("w-[420px]"):
+                    ui.label("Export Task Breakdown").classes("text-h6 q-mb-sm")
+                    ui.label("Create sub-tasks in Jira or Redmine for each estimation task.").classes("text-caption text-grey q-mb-md")
+                    sys_select = ui.select(
+                        label="Target System",
+                        options=["JIRA", "REDMINE"],
+                        value=_linked_source if _linked_source in ("JIRA", "REDMINE") else "JIRA",
+                    ).classes("w-full")
+                    with ui.row().classes("w-full items-end gap-1"):
+                        issue_input = ui.input(
+                            label="Parent Issue Key (optional)",
+                            placeholder="e.g. PROJ-123 or leave empty",
+                        ).classes("flex-grow")
+                        if _linked_ext_id:
+                            def _fill_from_request(ext=_linked_ext_id):
+                                issue_input.value = ext
+                            ui.button(
+                                icon="link", on_click=_fill_from_request
+                            ).props("flat dense round").tooltip(f"Use linked request: {_linked_ext_id}")
+                    ui.label("If empty, tasks are created as standalone issues in the configured project.").classes("text-caption text-grey q-mb-md")
+
+                    async def _do_export_tasks() -> None:
+                        payload = {"target_system": sys_select.value}
+                        if issue_input.value and issue_input.value.strip():
+                            payload["issue_key"] = issue_input.value.strip()
+                        try:
+                            result = await api_post(f"/estimations/{estimation_id}/export-tasks", json=payload)
+                            created = result.get("items_created", 0)
+                            total = result.get("items_processed", 0)
+                            errors = result.get("errors", [])
+                            dlg.close()
+                            if errors:
+                                ui.notify(f"Task export: {created}/{total} created. Errors: {', '.join(errors[:3])}", type="warning")
+                            else:
+                                ui.notify(f"Task breakdown exported: {created}/{total} tasks created in {sys_select.value}.", type="positive")
+                        except Exception as exc:
+                            ui.notify(f"Task export failed: {exc}", type="negative")
+
+                    with ui.row().classes("w-full justify-end gap-2 q-mt-sm"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+                        ui.button("Export", icon="account_tree", on_click=_do_export_tasks).props("color=teal")
+                dlg.open()
+
+            ui.button(
+                "Export Task Breakdown",
+                icon="account_tree",
+                on_click=_open_export_tasks_dialog,
+            ).props("color=teal outline dense")
+
+            # Compare Versions button — only if estimation has more than 1 version
+            if version > 1:
+                async def _open_version_diff_dialog() -> None:
+                    """Load version history and show comparison dialog."""
+                    try:
+                        versions_list = await api_get(f"/estimations/{estimation_id}/versions")
+                    except Exception as exc:
+                        ui.notify(f"Failed to load versions: {exc}", type="negative")
+                        return
+
+                    with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[900px] max-h-[85vh]"):
+                        ui.label("Compare Versions").classes("text-h6 q-mb-md")
+
+                        with ui.row().classes("items-end gap-4 q-mb-md"):
+                            ver_options = {v["version"]: f"v{v['version']} — {v.get('grand_total_hours', 0):.1f}h ({v.get('status', '')})" for v in versions_list}
+                            ver_a_select = ui.select(
+                                options=ver_options,
+                                value=versions_list[0]["version"] if versions_list else 1,
+                                label="Version A",
+                            ).classes("w-64")
+                            ver_b_select = ui.select(
+                                options=ver_options,
+                                value=versions_list[-1]["version"] if versions_list else 1,
+                                label="Version B",
+                            ).classes("w-64")
+
+                        diff_container = ui.column().classes("w-full")
+
+                        async def _run_diff(
+                            _va=ver_a_select,
+                            _vb=ver_b_select,
+                            _container=diff_container,
+                        ) -> None:
+                            va = _va.value
+                            vb = _vb.value
+                            if va == vb:
+                                ui.notify("Select two different versions.", type="warning")
+                                return
+                            try:
+                                diff = await api_get(f"/estimations/{estimation_id}/versions/{va}/diff/{vb}")
+                            except Exception as exc:
+                                ui.notify(f"Diff failed: {exc}", type="negative")
+                                return
+
+                            _container.clear()
+                            with _container:
+                                changes = diff.get("changes", [])
+                                if changes:
+                                    ui.label("Field Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
+                                    diff_rows = []
+                                    for c in changes:
+                                        va_val = c.get("version_a")
+                                        vb_val = c.get("version_b")
+                                        # Format numbers
+                                        if isinstance(va_val, float):
+                                            va_val = f"{va_val:,.1f}"
+                                        if isinstance(vb_val, float):
+                                            vb_val = f"{vb_val:,.1f}"
+                                        diff_rows.append({
+                                            "field": c["field"],
+                                            "version_a": str(va_val) if va_val is not None else "—",
+                                            "version_b": str(vb_val) if vb_val is not None else "—",
+                                        })
+                                    ui.table(
+                                        columns=[
+                                            {"name": "field", "label": "Field", "field": "field", "align": "left"},
+                                            {"name": "version_a", "label": f"v{va}", "field": "version_a", "align": "right"},
+                                            {"name": "version_b", "label": f"v{vb}", "field": "version_b", "align": "right"},
+                                        ],
+                                        rows=diff_rows,
+                                        row_key="field",
+                                    ).classes("w-full q-mb-md")
+
+                                # Modified tasks
+                                modified = diff.get("modified_tasks", [])
+                                if modified:
+                                    ui.label("Modified Tasks").classes("text-subtitle1 text-weight-medium q-mt-sm")
+                                    mod_rows = []
+                                    for m in modified:
+                                        delta = (m.get("hours_b", 0) or 0) - (m.get("hours_a", 0) or 0)
+                                        mod_rows.append({
+                                            "task": m["task_name"],
+                                            "hours_a": f"{m.get('hours_a', 0):.1f}",
+                                            "hours_b": f"{m.get('hours_b', 0):.1f}",
+                                            "delta": f"{delta:+.1f}",
+                                        })
+                                    ui.table(
+                                        columns=[
+                                            {"name": "task", "label": "Task", "field": "task", "align": "left"},
+                                            {"name": "hours_a", "label": f"v{va} Hours", "field": "hours_a", "align": "right"},
+                                            {"name": "hours_b", "label": f"v{vb} Hours", "field": "hours_b", "align": "right"},
+                                            {"name": "delta", "label": "Delta", "field": "delta", "align": "right"},
+                                        ],
+                                        rows=mod_rows,
+                                        row_key="task",
+                                    ).classes("w-full q-mb-md")
+
+                                # Added / removed tasks
+                                added = diff.get("added_tasks", [])
+                                removed = diff.get("removed_tasks", [])
+                                if added:
+                                    ui.label(f"Added Tasks (v{vb})").classes("text-subtitle2 text-positive q-mt-sm")
+                                    for t in added:
+                                        ui.label(f"  + {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
+                                if removed:
+                                    ui.label(f"Removed Tasks (v{va})").classes("text-subtitle2 text-negative q-mt-sm")
+                                    for t in removed:
+                                        ui.label(f"  - {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
+
+                                # Input changes
+                                input_changes = diff.get("input_changes", {})
+                                if input_changes:
+                                    ui.label("Input Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
+                                    for key, vals in input_changes.items():
+                                        label = key.replace("_", " ").title()
+                                        added_ids = vals.get("added", [])
+                                        removed_ids = vals.get("removed", [])
+                                        if added_ids:
+                                            ui.label(f"  {label} added: {added_ids}").classes("text-body2 text-positive")
+                                        if removed_ids:
+                                            ui.label(f"  {label} removed: {removed_ids}").classes("text-body2 text-negative")
+
+                                if not changes and not modified and not added and not removed and not input_changes:
+                                    ui.label("No differences found between the two versions.").classes("text-grey q-mt-md")
+
+                        ui.button("Compare", icon="compare_arrows", on_click=_run_diff).props("color=primary")
+
+                        ui.separator().classes("q-mt-md")
+                        ui.button("Close", on_click=dlg.close).props("flat")
+
+                    dlg.open()
+
+                ui.button(
+                    "Compare Versions",
+                    icon="compare_arrows",
+                    on_click=_open_version_diff_dialog,
+                ).props("outline dense color=secondary")
+
         # ------------------------------------------------------------------ #
         # Info cards                                                           #
         # ------------------------------------------------------------------ #
@@ -1249,6 +1898,39 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 with ui.card().classes("q-pa-md"):
                     ui.label("Created").classes("text-caption text-grey")
                     ui.label(str(est["created_at"])[:10]).classes("text-body1")
+            releases = est.get("expected_releases", 1)
+            if releases and releases > 1:
+                with ui.card().classes("q-pa-md"):
+                    ui.label("Expected Releases").classes("text-caption text-grey")
+                    ui.label(str(releases)).classes("text-body1")
+
+        if est.get("project_goals") or est.get("target_customer") or est.get("team_name"):
+            with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
+                if est.get("team_name"):
+                    with ui.card().classes("q-pa-md"):
+                        ui.label("Team").classes("text-caption text-grey")
+                        ui.label(est["team_name"]).classes("text-body1")
+                if est.get("project_goals"):
+                    with ui.card().classes("q-pa-md"):
+                        ui.label("Project Goals").classes("text-caption text-grey")
+                        ui.label(est["project_goals"]).classes("text-body1")
+                if est.get("target_customer"):
+                    with ui.card().classes("q-pa-md"):
+                        ui.label("Target Customer").classes("text-caption text-grey")
+                        ui.label(est["target_customer"]).classes("text-body1")
+
+        # ------------------------------------------------------------------ #
+        # Risks                                                                #
+        # ------------------------------------------------------------------ #
+        est_risks = est.get("risks") or []
+        if est_risks:
+            ui.label("Associated Risks").classes("text-h6 q-mb-sm")
+            with ui.row().classes("flex-wrap q-gutter-xs q-mb-md"):
+                for risk in est_risks:
+                    risk_name = risk.get("risk_item_name") or risk.get("name") or f"Risk #{risk.get('risk_item_id', '?')}"
+                    risk_cat = risk.get("category") or ""
+                    chip_label = f"{risk_cat}: {risk_name}" if risk_cat else risk_name
+                    ui.chip(chip_label, icon="warning").props("color=warning outline dense")
 
         # ------------------------------------------------------------------ #
         # Assignee                                                             #
@@ -1315,10 +1997,19 @@ async def estimation_detail_page(estimation_id: int) -> None:
             _hours_card("Tester Hours", est.get("total_tester_hours", 0), "person")
             _hours_card("Leader Hours", est.get("total_leader_hours", 0), "manage_accounts")
             _hours_card("PR Fix Hours", est.get("pr_fix_hours", 0), "bug_report")
+            if est.get("pr_no_test_hours", 0) > 0:
+                _hours_card("PR Test Creation", est["pr_no_test_hours"], "science")
             _hours_card("Study Hours", est.get("study_hours", 0), "school")
+            if est.get("release_extra_hours", 0) > 0:
+                _hours_card("Release Extra Hours", est["release_extra_hours"], "rocket_launch")
+            if est.get("documentation_hours", 0) > 0:
+                _hours_card("Documentation Hours", est["documentation_hours"], "description")
             _hours_card("Buffer Hours", est.get("buffer_hours", 0), "security")
             _hours_card("Grand Total Hours", est.get("grand_total_hours", 0), "summarize")
             _hours_card("Grand Total Days", est.get("grand_total_days", 0), "calendar_today")
+            _ww = round(est.get("grand_total_days", 0) / 5.0, 1) if est.get("grand_total_days", 0) else 0
+            if _ww > 0:
+                _hours_card("Working Weeks", _ww, "date_range")
 
         # ------------------------------------------------------------------ #
         # Task breakdown table                                                 #
@@ -1355,6 +2046,118 @@ async def estimation_detail_page(estimation_id: int) -> None:
             ui.label("No task breakdown available.").classes("text-grey q-mb-md")
 
         # ------------------------------------------------------------------ #
+        # Document Deliverables                                                #
+        # ------------------------------------------------------------------ #
+        _doc_deliverables = est.get("document_deliverables") or []
+        if _doc_deliverables:
+            ui.label("Document Deliverables").classes("text-h6 q-mb-sm")
+            doc_cols = [
+                {"name": "name",           "label": "Document Type",  "field": "name",             "align": "left",  "sortable": True},
+                {"name": "category",       "label": "Category",       "field": "category",         "align": "left",  "sortable": True},
+                {"name": "linked_task",    "label": "Linked Task",    "field": "linked_task",      "align": "left"},
+                {"name": "count",          "label": "Count",          "field": "count",            "align": "right"},
+                {"name": "total_hours",    "label": "Total Hours",    "field": "total_hours",      "align": "right"},
+                {"name": "effective_hours", "label": "Effective Hours","field": "effective_hours",  "align": "right"},
+                {"name": "overlap_note",   "label": "Note",           "field": "overlap_note",     "align": "left"},
+            ]
+            # Replace None linked_task / overlap_note with display-friendly values
+            _doc_rows = []
+            for dd in _doc_deliverables:
+                _doc_rows.append({
+                    **dd,
+                    "linked_task": dd.get("linked_task") or "—",
+                    "overlap_note": dd.get("overlap_note") or "",
+                })
+            doc_tbl = ui.table(
+                columns=doc_cols,
+                rows=_doc_rows,
+                row_key="name",
+                pagination={"rowsPerPage": 20},
+            ).classes("w-full shadow-1 q-mb-md")
+            # Highlight rows with overlap deduction
+            doc_tbl.add_slot(
+                "body-cell-overlap_note",
+                r"""
+                <q-td :props="props">
+                    <span v-if="props.value" class="text-orange">{{ props.value }}</span>
+                    <span v-else></span>
+                </q-td>
+                """,
+            )
+            # Show documentation hours total
+            ui.label(f"Documentation Hours Total: {est.get('documentation_hours', 0):.1f}h").classes(
+                "text-body2 text-bold q-mb-md"
+            )
+
+        # ------------------------------------------------------------------ #
+        # PR Fixes breakdown                                                   #
+        # ------------------------------------------------------------------ #
+        _wizard = {}
+        try:
+            _wizard = _json.loads(est.get("wizard_inputs_json") or "{}")
+        except Exception:
+            pass
+        _pr_fixes = _wizard.get("pr_fixes", {})
+        _pr_simple = _pr_fixes.get("simple", 0)
+        _pr_medium = _pr_fixes.get("medium", 0)
+        _pr_complex = _pr_fixes.get("complex", 0)
+        _pr_details = _wizard.get("pr_details", [])
+        _pr_total = est.get("pr_fix_count", 0)
+
+        if _pr_total > 0 or _pr_details:
+            ui.label("PR Fixes").classes("text-h6 q-mb-sm")
+            with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                with ui.card().classes("q-pa-sm"):
+                    ui.label("Simple").classes("text-caption text-grey")
+                    ui.label(f"{_pr_simple} × 2h = {_pr_simple * 2}h").classes("text-body2")
+                with ui.card().classes("q-pa-sm"):
+                    ui.label("Medium").classes("text-caption text-grey")
+                    ui.label(f"{_pr_medium} × 4h = {_pr_medium * 4}h").classes("text-body2")
+                with ui.card().classes("q-pa-sm"):
+                    ui.label("Complex").classes("text-caption text-grey")
+                    ui.label(f"{_pr_complex} × 8h = {_pr_complex * 8}h").classes("text-body2")
+                with ui.card().classes("q-pa-sm"):
+                    ui.label("Total PR Hours").classes("text-caption text-grey")
+                    ui.label(f"{est.get('pr_fix_hours', 0):.1f}h").classes("text-body2 text-bold")
+
+            if _pr_details:
+                pr_detail_cols = [
+                    {"name": "pr_number",      "label": "PR #",           "field": "pr_number",      "align": "left"},
+                    {"name": "link",           "label": "Link",           "field": "link",           "align": "left"},
+                    {"name": "description",    "label": "Description",    "field": "description",    "align": "left"},
+                    {"name": "priority",       "label": "Priority",       "field": "priority",       "align": "left"},
+                    {"name": "complexity",     "label": "Complexity",     "field": "complexity",     "align": "left"},
+                    {"name": "status",         "label": "Status",         "field": "status",         "align": "left"},
+                    {"name": "test_available", "label": "Test Available", "field": "test_available", "align": "center"},
+                ]
+                pr_tbl = ui.table(
+                    columns=pr_detail_cols,
+                    rows=_pr_details,
+                    row_key="pr_number",
+                ).classes("w-full shadow-1 q-mb-md")
+                # Make links clickable
+                pr_tbl.add_slot(
+                    "body-cell-link",
+                    r"""
+                    <q-td :props="props">
+                        <a v-if="props.value" :href="props.value" target="_blank" class="text-primary">
+                            {{ props.value }}
+                        </a>
+                        <span v-else>—</span>
+                    </q-td>
+                    """,
+                )
+                pr_tbl.add_slot(
+                    "body-cell-test_available",
+                    r"""
+                    <q-td :props="props">
+                        <q-badge :color="props.value === false ? 'negative' : 'positive'"
+                                 :label="props.value === false ? 'No' : 'Yes'" />
+                    </q-td>
+                    """,
+                )
+
+        # ------------------------------------------------------------------ #
         # Team Allocation                                                      #
         # ------------------------------------------------------------------ #
         team_allocs = est.get("team_allocations") or []
@@ -1379,16 +2182,21 @@ async def estimation_detail_page(estimation_id: int) -> None:
 
         async def _do_status_transition(target: str) -> None:
             try:
-                updated = await api_post(
+                await api_post(
                     f"/estimations/{estimation_id}/status",
                     json={"status": target},
                 )
-                est_state["data"] = updated
                 ui.notify(f"Status changed to {target}.", type="positive")
-                # Rebuild the transition buttons to reflect new state
-                _rebuild_status_buttons()
+                # Reload the page to reflect new state (edit button, etc.)
+                ui.navigate.to(f"/estimation/{estimation_id}")
             except Exception as exc:
                 ui.notify(f"Status update failed: {exc}", type="negative")
+                # Refresh data so buttons reflect actual current status
+                try:
+                    est_state["data"] = await api_get(f"/estimations/{estimation_id}")
+                    _rebuild_status_buttons()
+                except Exception:
+                    pass
 
         _STATUS_BTN_PROPS: dict[str, str] = {
             "FINAL":    "color=primary",
@@ -1546,13 +2354,26 @@ async def edit_estimation_page(estimation_id: int) -> None:
             except Exception:
                 return []
 
-        all_features, all_duts, all_profiles, all_hist, all_team_members = await asyncio.gather(
+        all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs = await asyncio.gather(
             _safe_get("/features"),
             _safe_get("/dut-types"),
             _safe_get("/profiles"),
             _safe_get("/historical-projects"),
             _safe_get("/team-members"),
+            _safe_get("/teams"),
+            _safe_get("/risk-items"),
+            _safe_get("/configuration"),
         )
+        _config_map: dict[str, str] = {c.get("key", ""): c.get("value", "") for c in _all_configs if isinstance(c, dict)}
+        _pr_priority_list = [p.strip() for p in _config_map.get("pr_priority_list", "LOW,MEDIUM,HIGH,CRITICAL").split(",") if p.strip()]
+
+        # Derive product types from features, DUTs, and profiles for filtering
+        _product_types_set: set[str] = set()
+        for _item in [*all_features, *all_duts, *all_profiles]:
+            _pt = _item.get("product_type")
+            if _pt:
+                _product_types_set.add(_pt)
+        product_types: list[str] = sorted(_product_types_set)
 
         # Pre-fill state from saved inputs
         existing_allocs = [
@@ -1562,7 +2383,10 @@ async def edit_estimation_page(estimation_id: int) -> None:
         state: dict[str, Any] = {
             "project_name": est.get("project_name", ""),
             "project_type": est.get("project_type", "EVOLUTION"),
+            "product_type_filter": saved_inputs.get("product_type_filter", "All"),
             "description": "",
+            "project_goals": est.get("project_goals", "") or "",
+            "target_customer": est.get("target_customer", "") or "",
             "feature_ids": saved_inputs.get("feature_ids", []),
             "new_feature_ids": saved_inputs.get("new_feature_ids", []),
             "reference_project_ids": saved_inputs.get("reference_project_ids", []),
@@ -1578,7 +2402,12 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "working_days": saved_inputs.get("working_days", 20),
             "team_size": saved_inputs.get("team_size", 1),
             "has_leader": saved_inputs.get("has_leader", False),
+            "expected_releases": saved_inputs.get("expected_releases", est.get("expected_releases", 1)),
             "team_allocations": existing_allocs,
+            "team_id": est.get("team_id"),
+            "risk_item_ids": [r.get("risk_item_id") for r in (est.get("risks") or [])],
+            "document_type_ids": saved_inputs.get("document_type_ids", []),
+            "document_counts": saved_inputs.get("document_counts", {}),
             "calc_result": None,
         }
 
@@ -1600,13 +2429,43 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 ).classes("w-full q-mt-sm")
                 type_select.on("update:model-value", lambda e: state.update({"project_type": e.args}))
 
+                goals_input = ui.textarea(
+                    "Project Goals (optional)",
+                    value=state["project_goals"],
+                    placeholder="What are the main goals of this project?",
+                ).classes("w-full q-mt-sm")
+                goals_input.on("update:model-value", lambda e: state.update({"project_goals": e.args}))
+
+                customer_input = ui.input(
+                    "Target Customer (optional)",
+                    value=state["target_customer"],
+                    placeholder="e.g. Vodafone, Deutsche Telekom",
+                ).classes("w-full q-mt-sm")
+                customer_input.on("update:model-value", lambda e: state.update({"target_customer": e.args}))
+
+                ui.separator().classes("q-mt-md")
+                ui.label("Product Type Filter").classes("text-subtitle2")
+                ui.label(
+                    "Select a product type to filter Features, DUTs, and Profiles in subsequent steps."
+                ).classes("text-caption text-grey q-mb-xs")
+                pt_filter_select = ui.select(
+                    options=["All"] + product_types,
+                    value=state["product_type_filter"],
+                    label="Product Type",
+                ).classes("w-64")
+
                 with ui.stepper_navigation():
                     def _go_s2():
                         state["project_name"] = name_input.value or ""
                         state["project_type"] = type_select.value or "EVOLUTION"
+                        state["product_type_filter"] = pt_filter_select.value or "All"
+                        state["project_goals"] = goals_input.value or ""
+                        state["target_customer"] = customer_input.value or ""
                         if not state["project_name"].strip():
                             ui.notify("Project Name is required.", type="warning")
                             return
+                        # Rebuild feature list with current product type filter
+                        _rebuild_feature_list()
                         stepper.next()
                     ui.button("Next", on_click=_go_s2).props("color=primary icon-right=arrow_forward")
 
@@ -1614,79 +2473,113 @@ async def edit_estimation_page(estimation_id: int) -> None:
             with ui.step("Features"):
                 ui.label("Select features under test.").classes("text-body2 text-grey q-mb-md")
 
-                features_by_cat: dict[str, list[dict]] = {}
-                for feat in all_features:
-                    cat = feat.get("category") or "Other"
-                    features_by_cat.setdefault(cat, []).append(feat)
+                pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
 
                 feature_checkbox_refs: dict[int, ui.checkbox] = {}
                 new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
 
-                if not all_features:
-                    ui.label("No features found.").classes("text-warning")
-                else:
-                    # -- Select All checkbox --
-                    _programmatic_select_all = [False]
-                    all_pre_selected = all(f["id"] in state["feature_ids"] for f in all_features)
-                    select_all_cb = ui.checkbox(
-                        f"Select all ({len(all_features)} features)",
-                        value=all_pre_selected,
-                    ).classes("text-weight-bold q-mb-sm")
+                features_container = ui.column().classes("w-full")
+                _programmatic_select_all = [False]
 
-                    def _toggle_select_all(e):
-                        if _programmatic_select_all[0]:
+                def _rebuild_feature_list() -> None:
+                    # Preserve current selections before clearing
+                    for _fid, _cb in feature_checkbox_refs.items():
+                        if _cb.value and _fid not in state["feature_ids"]:
+                            state["feature_ids"].append(_fid)
+                        elif not _cb.value and _fid in state["feature_ids"]:
+                            state["feature_ids"].remove(_fid)
+                    for _fid, _cb in new_feat_checkbox_refs.items():
+                        if _cb.value and _fid not in state["new_feature_ids"]:
+                            state["new_feature_ids"].append(_fid)
+                        elif not _cb.value and _fid in state["new_feature_ids"]:
+                            state["new_feature_ids"].remove(_fid)
+
+                    feature_checkbox_refs.clear()
+                    new_feat_checkbox_refs.clear()
+                    features_container.clear()
+
+                    selected_pt = state.get("product_type_filter") or "All"
+                    if selected_pt and selected_pt != "All":
+                        visible_features = [f for f in all_features if f.get("product_type") == selected_pt]
+                        pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
+                    else:
+                        visible_features = list(all_features)
+                        pt_info_label.set_text("")
+
+                    vis_by_cat: dict[str, list[dict]] = {}
+                    for feat in visible_features:
+                        cat = feat.get("category") or "Other"
+                        vis_by_cat.setdefault(cat, []).append(feat)
+
+                    with features_container:
+                        if not visible_features:
+                            ui.label("No features match the selected product type.").classes("text-grey")
                             return
-                        checked = e.value
-                        for _fid, _cb in feature_checkbox_refs.items():
-                            _cb.value = checked
-                            if not checked and _fid in new_feat_checkbox_refs:
-                                new_feat_checkbox_refs[_fid].value = False
 
-                    select_all_cb.on_value_change(_toggle_select_all)
+                        all_pre_selected = all(f["id"] in state["feature_ids"] for f in visible_features)
+                        select_all_cb = ui.checkbox(
+                            f"Select all ({len(visible_features)} features)",
+                            value=all_pre_selected,
+                        ).classes("text-weight-bold q-mb-sm")
 
-                    def _update_select_all_state() -> None:
-                        all_checked = all(cb.value for cb in feature_checkbox_refs.values())
-                        if select_all_cb.value != all_checked:
-                            _programmatic_select_all[0] = True
-                            select_all_cb.value = all_checked
-                            _programmatic_select_all[0] = False
+                        def _toggle_select_all(e):
+                            if _programmatic_select_all[0]:
+                                return
+                            checked = e.value
+                            for _fid, _cb in feature_checkbox_refs.items():
+                                _cb.value = checked
+                                if not checked and _fid in new_feat_checkbox_refs:
+                                    new_feat_checkbox_refs[_fid].value = False
 
-                    ui.separator()
+                        select_all_cb.on_value_change(_toggle_select_all)
 
-                    for cat_name, cat_features in features_by_cat.items():
-                        ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
+                        def _update_select_all_state() -> None:
+                            if not feature_checkbox_refs:
+                                return
+                            all_checked = all(cb.value for cb in feature_checkbox_refs.values())
+                            if select_all_cb.value != all_checked:
+                                _programmatic_select_all[0] = True
+                                select_all_cb.value = all_checked
+                                _programmatic_select_all[0] = False
 
-                        with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
-                            ui.label("Feature").classes("text-caption text-grey")
-                            ui.label("Complexity").classes("text-caption text-grey text-center")
-                            ui.label("New?").classes("text-caption text-grey text-center")
+                        ui.separator()
 
-                            for feat in cat_features:
-                                fid = feat["id"]
-                                fname = feat.get("name", f"Feature {fid}")
-                                fweight = feat.get("complexity_weight", 1.0)
+                        for cat_name, cat_features in vis_by_cat.items():
+                            ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                                cb = ui.checkbox(
-                                    fname,
-                                    value=(fid in state["feature_ids"]),
-                                )
-                                feature_checkbox_refs[fid] = cb
+                            with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                                ui.label("Feature").classes("text-caption text-grey")
+                                ui.label("Complexity").classes("text-caption text-grey text-center")
+                                ui.label("New?").classes("text-caption text-grey text-center")
 
-                                ui.label(f"x{fweight:.1f}").classes("text-center")
+                                for feat in cat_features:
+                                    fid = feat["id"]
+                                    fname = feat.get("name", f"Feature {fid}")
+                                    fweight = feat.get("complexity_weight", 1.0)
 
-                                new_cb = ui.checkbox(
-                                    "New",
-                                    value=(fid in state["new_feature_ids"]),
-                                ).props("dense color=orange").classes("text-caption")
-                                new_feat_checkbox_refs[fid] = new_cb
+                                    cb = ui.checkbox(
+                                        fname,
+                                        value=(fid in state["feature_ids"]),
+                                    )
+                                    feature_checkbox_refs[fid] = cb
 
-                                def _make_sync(f_id: int, n_cb: ui.checkbox):
-                                    def _sync(e):
-                                        if not feature_checkbox_refs[f_id].value:
-                                            n_cb.value = False
-                                        _update_select_all_state()
-                                    return _sync
-                                cb.on("update:model-value", _make_sync(fid, new_cb))
+                                    ui.label(f"x{fweight:.1f}").classes("text-center")
+
+                                    new_cb = ui.checkbox(
+                                        "New",
+                                        value=(fid in state["new_feature_ids"]),
+                                    ).props("dense color=orange").classes("text-caption")
+                                    new_feat_checkbox_refs[fid] = new_cb
+
+                                    def _make_sync(f_id: int, n_cb: ui.checkbox):
+                                        def _sync(e):
+                                            if not feature_checkbox_refs[f_id].value:
+                                                n_cb.value = False
+                                            _update_select_all_state()
+                                        return _sync
+                                    cb.on("update:model-value", _make_sync(fid, new_cb))
+
+                _rebuild_feature_list()
 
                 def _collect_features():
                     state["feature_ids"] = [fid for fid, cb in feature_checkbox_refs.items() if cb.value]
@@ -1736,6 +2629,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         stepper.previous()
                     def _next_s3():
                         _collect_refs()
+                        # Rebuild DUT/Profile lists with current product type filter
+                        _rebuild_dut_prof_lists()
                         stepper.next()
                     ui.button("Back", on_click=_back_s3).props("flat")
                     ui.button("Next", on_click=_next_s3).props("color=primary icon-right=arrow_forward")
@@ -1743,10 +2638,15 @@ async def edit_estimation_page(estimation_id: int) -> None:
             # Step 4 — DUT x Profile Matrix
             with ui.step("DUT x Profile Matrix"):
                 ui.label("Select DUTs and Profiles, then tick the combinations.").classes("text-body2 text-grey q-mb-md")
+
+                dut_pt_info = ui.label("").classes("text-caption text-primary q-mb-sm")
+
                 dut_cb_refs: dict[int, ui.checkbox] = {}
                 prof_cb_refs: dict[int, ui.checkbox] = {}
                 matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
                 matrix_container = ui.column().classes("w-full q-mt-md")
+                dut_container = ui.column().classes("w-full")
+                prof_container = ui.column().classes("w-full")
 
                 def _rebuild_matrix():
                     matrix_container.clear()
@@ -1761,11 +2661,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
                         n_cols = len(sel_profs) + 1
                         with ui.grid(columns=n_cols).classes("w-full items-center"):
-                            # Header row
                             ui.label("DUT \\ Profile").classes("text-caption text-grey text-weight-bold")
                             for prof in sel_profs:
                                 ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center text-weight-bold")
-                            # Data rows
                             for dut in sel_duts:
                                 ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption")
                                 for prof in sel_profs:
@@ -1774,29 +2672,60 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                     cb = ui.checkbox("", value=pre_checked).props("dense")
                                     matrix_cb_refs[key] = cb
 
-                if not all_duts:
-                    ui.label("No DUT types found.").classes("text-grey")
-                else:
-                    ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
-                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                        for dut in all_duts:
-                            did = dut["id"]
-                            cb = ui.checkbox(dut.get("name", f"DUT {did}"), value=(did in state["dut_ids"]))
-                            dut_cb_refs[did] = cb
-                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+                def _rebuild_dut_prof_lists() -> None:
+                    for _did, _cb in dut_cb_refs.items():
+                        if _cb.value and _did not in state["dut_ids"]:
+                            state["dut_ids"].append(_did)
+                        elif not _cb.value and _did in state["dut_ids"]:
+                            state["dut_ids"].remove(_did)
+                    for _pid, _cb in prof_cb_refs.items():
+                        if _cb.value and _pid not in state["profile_ids"]:
+                            state["profile_ids"].append(_pid)
+                        elif not _cb.value and _pid in state["profile_ids"]:
+                            state["profile_ids"].remove(_pid)
 
-                if not all_profiles:
-                    ui.label("No profiles found.").classes("text-grey")
-                else:
-                    ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
-                    with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                        for prof in all_profiles:
-                            pid = prof["id"]
-                            cb = ui.checkbox(prof.get("name", f"Profile {pid}"), value=(pid in state["profile_ids"]))
-                            prof_cb_refs[pid] = cb
-                            cb.on("update:model-value", lambda _: _rebuild_matrix())
+                    dut_cb_refs.clear()
+                    prof_cb_refs.clear()
+                    dut_container.clear()
+                    prof_container.clear()
 
-                _rebuild_matrix()
+                    selected_pt = state.get("product_type_filter") or "All"
+                    if selected_pt and selected_pt != "All":
+                        visible_duts = [d for d in all_duts if d.get("product_type") == selected_pt or not d.get("product_type")]
+                        visible_profs = [p for p in all_profiles if p.get("product_type") == selected_pt or not p.get("product_type")]
+                        dut_pt_info.set_text(f"Filtered by product type: {selected_pt} (items without product type are also shown)")
+                    else:
+                        visible_duts = list(all_duts)
+                        visible_profs = list(all_profiles)
+                        dut_pt_info.set_text("")
+
+                    with dut_container:
+                        if not visible_duts:
+                            ui.label("No DUT types found.").classes("text-grey")
+                        else:
+                            ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
+                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                                for dut in visible_duts:
+                                    did = dut["id"]
+                                    cb = ui.checkbox(dut.get("name", f"DUT {did}"), value=(did in state["dut_ids"]))
+                                    dut_cb_refs[did] = cb
+                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                    with prof_container:
+                        if not visible_profs:
+                            ui.label("No profiles found.").classes("text-grey")
+                        else:
+                            ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
+                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
+                                for prof in visible_profs:
+                                    pid = prof["id"]
+                                    cb = ui.checkbox(prof.get("name", f"Profile {pid}"), value=(pid in state["profile_ids"]))
+                                    prof_cb_refs[pid] = cb
+                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+
+                    _rebuild_matrix()
+
+                _rebuild_dut_prof_lists()
 
                 def _collect_matrix():
                     state["dut_ids"] = [did for did, cb in dut_cb_refs.items() if cb.value]
@@ -1825,6 +2754,17 @@ async def edit_estimation_page(estimation_id: int) -> None:
             # Step 5 — PR Fixes
             with ui.step("PR Fixes"):
                 ui.label("Enter the expected PR fixes.").classes("text-body2 text-grey q-mb-md")
+
+                with ui.card().classes("w-full q-pa-sm q-mb-md").props("flat bordered"):
+                    ui.label("PR Fix Calculation:").classes("text-caption text-weight-bold")
+                    for _info_line in [
+                        "Each PR is validated per DUT (scales with DUT count)",
+                        "Simple: 2h x DUT count, Medium: 4h x DUT count, Complex: 8h x DUT count",
+                        "Total PR Fix Hours = (simple x 2 + medium x 4 + complex x 8) x DUT_count [x profile_count if enabled]",
+                        "Configurable via 'pr_fix_base_hours' and 'pr_scales_with_profile' settings",
+                    ]:
+                        ui.label(f"  {_info_line}").classes("text-caption text-grey")
+
                 pr_simple_input = ui.number("Simple PRs (2 h each)", value=state["pr_simple"], min=0, step=1, precision=0).classes("w-full")
                 pr_medium_input = ui.number("Medium PRs (4 h each)", value=state["pr_medium"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
                 pr_complex_input = ui.number("Complex PRs (8 h each)", value=state["pr_complex"], min=0, step=1, precision=0).classes("w-full q-mt-sm")
@@ -1840,42 +2780,175 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         pr_details_container.clear()
                         with pr_details_container:
                             for idx, pr in enumerate(pr_detail_rows):
-                                with ui.row().classes("items-center q-gutter-sm w-full"):
-                                    _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
-                                    _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
-                                    _cx = ui.select(options=["simple", "medium", "complex"], value=pr.get("complexity", "simple"), label="Complexity").classes("w-32")
-                                    _st = ui.select(options=["Open", "Merged", "Closed"], value=pr.get("status", "Open"), label="Status").classes("w-28")
+                                with ui.card().classes("w-full q-pa-xs q-mb-xs").props("flat bordered"):
+                                    with ui.row().classes("items-center q-gutter-sm w-full"):
+                                        _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
+                                        _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                        _pri = ui.select(options=_pr_priority_list, value=pr.get("priority", _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]), label="Priority").classes("w-28")
+                                        _cx = ui.select(options=["simple", "medium", "complex"], value=pr.get("complexity", "simple"), label="Complexity").classes("w-32")
+                                        _st_options_e = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
+                                        _st_val_e = pr.get("status", "Open")
+                                        if _st_val_e not in _st_options_e:
+                                            _st_options_e.append(_st_val_e)
+                                        _st = ui.select(options=_st_options_e, value=_st_val_e, label="Status").classes("w-28")
 
-                                    def _make_remove(i: int):
-                                        def _remove():
-                                            pr_detail_rows.pop(i)
-                                            _render_pr_details()
-                                        return _remove
-                                    ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+                                        def _make_remove(i: int):
+                                            def _remove():
+                                                pr_detail_rows.pop(i)
+                                                _render_pr_details()
+                                            return _remove
+                                        ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
 
-                                    def _make_updater(i: int, n=_num, l=_link, c=_cx, s=_st):
+                                    with ui.row().classes("items-center q-gutter-sm w-full"):
+                                        _desc = ui.input("Description", value=pr.get("description", ""), placeholder="Brief issue description").classes("flex-1")
+                                        _ta = ui.switch("Test Available", value=pr.get("test_available", True)).classes("q-ml-md")
+
+                                    def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
                                         def _upd(_=None):
                                             if i < len(pr_detail_rows):
-                                                pr_detail_rows[i] = {"pr_number": n.value or "", "link": l.value or "", "complexity": c.value or "simple", "status": s.value or "Open"}
+                                                pr_detail_rows[i] = {"pr_number": n.value or "", "link": l.value or "", "priority": p.value or "", "complexity": c.value or "simple", "status": s.value or "Open", "description": d.value or "", "test_available": bool(ta.value)}
                                         return _upd
                                     updater = _make_updater(idx)
                                     _num.on("update:model-value", updater)
                                     _link.on("update:model-value", updater)
+                                    _pri.on("update:model-value", updater)
                                     _cx.on("update:model-value", updater)
                                     _st.on("update:model-value", updater)
+                                    _desc.on("update:model-value", updater)
+                                    _ta.on("update:model-value", updater)
+                                    _ta.on("update:model-value", updater)
 
                     def _add_pr_detail() -> None:
-                        pr_detail_rows.append({"pr_number": "", "link": "", "complexity": "simple", "status": "Open"})
+                        _default_pri = _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]
+                        pr_detail_rows.append({"pr_number": "", "link": "", "priority": _default_pri, "complexity": "simple", "status": "Open", "description": "", "test_available": True})
                         _render_pr_details()
 
-                    ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+
+                        async def _import_from_jira_edit(
+                            _pr_rows=pr_detail_rows,
+                            _render=_render_pr_details,
+                        ) -> None:
+                            try:
+                                jira_config = await api_get("/integrations/JIRA")
+                                if not jira_config.get("enabled"):
+                                    ui.notify("Jira integration is not enabled.", type="warning")
+                                    return
+                            except Exception:
+                                ui.notify("Jira integration not configured.", type="warning")
+                                return
+
+                            with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
+                                ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
+                                jira_items_table = ui.table(
+                                    columns=[
+                                        {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
+                                        {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
+                                        {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
+                                        {"name": "status", "label": "Status", "field": "status", "align": "left"},
+                                    ],
+                                    rows=[],
+                                    row_key="key",
+                                    selection="multiple",
+                                    pagination={"rowsPerPage": 15},
+                                ).classes("w-full")
+
+                                async def _fetch() -> None:
+                                    try:
+                                        items = await api_get("/integrations/JIRA/pr-items")
+                                        jira_items_table.rows = items if isinstance(items, list) else []
+                                        jira_items_table.update()
+                                        ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
+                                    except Exception as exc:
+                                        ui.notify(f"Failed to fetch: {exc}", type="negative")
+
+                                ui.button("Fetch PR Items", icon="refresh", on_click=_fetch).props("color=secondary flat dense")
+
+                                def _do_import() -> None:
+                                    selected = jira_items_table.selected
+                                    if not selected:
+                                        ui.notify("No items selected.", type="warning")
+                                        return
+                                    imported = 0
+                                    for item in selected:
+                                        key = item.get("key", "")
+                                        existing_nums = {r.get("pr_number") for r in _pr_rows}
+                                        if key and key not in existing_nums:
+                                            priority = (item.get("priority") or "Medium").lower()
+                                            complexity = "simple"
+                                            if priority in ("high", "highest", "critical", "blocker"):
+                                                complexity = "complex"
+                                            elif priority in ("medium",):
+                                                complexity = "medium"
+                                            _pr_rows.append({
+                                                "pr_number": key,
+                                                "link": "",
+                                                "description": item.get("summary", ""),
+                                                "priority": item.get("priority", "Medium"),
+                                                "complexity": complexity,
+                                                "status": item.get("status", "Open"),
+                                                "test_available": True,
+                                            })
+                                            imported += 1
+                                    _render()
+                                    ui.notify(f"Imported {imported} PR item(s).", type="positive")
+                                    dlg.close()
+
+                                with ui.row().classes("q-mt-md gap-2"):
+                                    ui.button("Import Selected", icon="download", on_click=_do_import).props("color=primary")
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                            await _fetch()
+                            dlg.open()
+
+                        ui.button("Import from Jira", icon="bug_report", on_click=_import_from_jira_edit).props("flat dense color=secondary")
+
                     _render_pr_details()
+
+                # -- Documentation Deliverables (edit) --
+                ui.separator().classes("q-mt-lg")
+                with ui.expansion("Documentation Deliverables", icon="description").classes("w-full"):
+                    ui.label("Select documents to create and specify count.").classes("text-body2 text-grey q-mb-sm")
+                    doc_types_container = ui.column().classes("w-full")
+                    doc_cb_refs: dict[int, ui.checkbox] = {}
+                    doc_count_refs: dict[int, ui.number] = {}
+
+                    async def _load_doc_types() -> None:
+                        try:
+                            doc_types = await api_get("/document-types")
+                        except Exception:
+                            doc_types = []
+                        doc_types_container.clear()
+                        doc_cb_refs.clear()
+                        doc_count_refs.clear()
+                        saved_ids = state.get("document_type_ids", [])
+                        saved_counts = state.get("document_counts", {})
+                        with doc_types_container:
+                            if not doc_types:
+                                ui.label("No document types configured.").classes("text-grey")
+                                return
+                            with ui.grid(columns="1fr 120px 200px").classes("w-full q-pl-md items-center"):
+                                ui.label("Document Type").classes("text-caption text-grey")
+                                ui.label("Count").classes("text-caption text-grey text-center")
+                                ui.label("Base Hours (each)").classes("text-caption text-grey")
+                                for dt in doc_types:
+                                    did = dt["id"]
+                                    cb = ui.checkbox(dt.get("name", ""), value=(did in saved_ids))
+                                    doc_cb_refs[did] = cb
+                                    cnt = ui.number("", value=int(saved_counts.get(str(did), 1)), min=1, step=1, precision=0).props("dense").classes("w-20")
+                                    doc_count_refs[did] = cnt
+                                    ui.label(f"{dt.get('base_effort_hours', 0):.1f}h").classes("text-caption")
+
+                    await _load_doc_types()
 
                 def _collect_prs():
                     state["pr_simple"] = int(pr_simple_input.value or 0)
                     state["pr_medium"] = int(pr_medium_input.value or 0)
                     state["pr_complex"] = int(pr_complex_input.value or 0)
                     state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
+                    state["document_type_ids"] = [did for did, cb in doc_cb_refs.items() if cb.value]
+                    state["document_counts"] = {str(did): int(cnt.value or 1) for did, cnt in doc_count_refs.items()}
 
                 with ui.stepper_navigation():
                     def _back_s5():
@@ -1890,8 +2963,27 @@ async def edit_estimation_page(estimation_id: int) -> None:
             # Step 6 — Delivery & Team
             with ui.step("Delivery & Team"):
                 ui.label("Specify start date, deadline, and team capacity.").classes("text-body2 text-grey q-mb-md")
-                start_date_input = ui.date(value=state.get("start_date") or "").classes("w-full").props("label='Start Date (optional)'")
-                delivery_input = ui.date(value=state["delivery_date"] or "").classes("w-full q-mt-sm").props("label='Deadline (optional)'")
+                with ui.row().classes("w-full q-gutter-md"):
+                    with ui.input(
+                        "Start Date (optional)",
+                        value=state.get("start_date") or "",
+                    ).classes("flex-1") as start_date_input:
+                        with ui.menu() as start_menu:
+                            with ui.date().bind_value(start_date_input) as _start_dp:
+                                _start_dp.on("update:model-value", lambda: start_menu.close())
+                        with start_date_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
+
+                    with ui.input(
+                        "Deadline (optional)",
+                        value=state.get("delivery_date") or "",
+                    ).classes("flex-1") as delivery_input:
+                        with ui.menu() as delivery_menu:
+                            with ui.date().bind_value(delivery_input) as _delivery_dp:
+                                _delivery_dp.on("update:model-value", lambda: delivery_menu.close())
+                        with delivery_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", delivery_menu.open).classes("cursor-pointer")
+
                 working_days_input = ui.number("Working Days Available", value=state["working_days"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
 
                 auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
@@ -1921,10 +3013,60 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 team_size_input = ui.number("Team Size (testers)", value=state["team_size"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
                 leader_toggle = ui.switch("Include Test Leader effort", value=state["has_leader"]).classes("q-mt-sm")
 
+                releases_input = ui.number(
+                    "Expected Releases",
+                    value=state["expected_releases"],
+                    min=1,
+                    step=1,
+                    precision=0,
+                ).classes("w-full q-mt-sm").tooltip(
+                    "Number of releases within this estimation period. "
+                    "Each additional release adds extra effort for regression and deployment."
+                )
+
+                # Team selector
+                if all_teams:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Team (optional)").classes("text-subtitle2 q-mt-sm")
+                    team_options = {t["id"]: t.get("name", f"Team {t['id']}") for t in all_teams}
+                    team_select = ui.select(
+                        options={None: "-- No Team --", **team_options},
+                        value=state.get("team_id"),
+                        label="Select Team",
+                        with_input=True,
+                        clearable=True,
+                    ).classes("w-full q-mb-sm")
+
+                    def _on_team_selected(e) -> None:
+                        selected_team_id = e.args
+                        state["team_id"] = selected_team_id if selected_team_id else None
+                        if selected_team_id and all_team_members:
+                            team_members = [m for m in all_team_members if m.get("team_id") == selected_team_id]
+                            alloc_rows.clear()
+                            for m in team_members:
+                                alloc_rows.append({
+                                    "team_member_id": m["id"],
+                                    "role": m.get("role", "TESTER"),
+                                    "allocated_hours": 0,
+                                })
+                            _render_alloc()
+
+                    team_select.on("update:model-value", _on_team_selected)
+
                 # Team allocation picker
                 if all_team_members:
                     ui.separator().classes("q-mt-md")
                     ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+
+                    with ui.card().classes("w-full q-pa-sm q-mb-sm").props("flat bordered"):
+                        ui.label("How team parameters affect the calculation:").classes("text-caption text-weight-bold")
+                        for line in [
+                            "Team Size and Include Leader determine capacity (= working_days x (testers + leader) x hours/day) for feasibility.",
+                            "Feasibility: <=80% = Feasible, 80-100% = At Risk, >100% = Not Feasible.",
+                            "Team Allocation below is optional planning metadata — it records who works on the estimation but does not change calculated totals.",
+                        ]:
+                            ui.label(f"- {line}").classes("text-caption text-grey")
+
                     tm_options = {
                         m["id"]: f"{m.get('name', '')} ({m.get('role', '')})"
                         for m in all_team_members
@@ -1963,6 +3105,31 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     ui.button("Add Team Member", icon="add", on_click=_add_alloc).props("flat dense color=primary")
                     _render_alloc()
 
+                # Risk items selection
+                risk_cb_refs: dict[int, ui.checkbox] = {}
+                if all_risk_items:
+                    ui.separator().classes("q-mt-md")
+                    ui.label("Risk Items (optional)").classes("text-subtitle2 q-mt-sm")
+                    ui.label("Select applicable risks for this estimation.").classes("text-body2 text-grey q-mb-sm")
+
+                    risks_by_cat: dict[str, list[dict]] = {}
+                    for ri in all_risk_items:
+                        rcat = ri.get("category") or "General"
+                        risks_by_cat.setdefault(rcat, []).append(ri)
+
+                    for rcat_name, rcat_items in risks_by_cat.items():
+                        ui.label(rcat_name).classes("text-caption text-weight-bold text-primary q-mt-xs")
+                        for ri in rcat_items:
+                            rid = ri["id"]
+                            rlabel = ri.get("name", f"Risk {rid}")
+                            if ri.get("likelihood") or ri.get("impact"):
+                                rlabel += f"  [{ri.get('likelihood', '?')}/{ri.get('impact', '?')}]"
+                            rcb = ui.checkbox(
+                                rlabel,
+                                value=(rid in state.get("risk_item_ids", [])),
+                            )
+                            risk_cb_refs[rid] = rcb
+
                 def _collect_delivery():
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
@@ -1971,8 +3138,12 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     state["working_days"] = int(working_days_input.value or 20)
                     state["team_size"] = int(team_size_input.value or 1)
                     state["has_leader"] = bool(leader_toggle.value)
+                    state["expected_releases"] = int(releases_input.value or 1)
                     if all_team_members:
                         state["team_allocations"] = [a for a in alloc_rows if a.get("team_member_id")]
+                    state["risk_item_ids"] = [
+                        rid for rid, rcb in risk_cb_refs.items() if rcb.value
+                    ]
 
                 with ui.stepper_navigation():
                     def _back_s6():
@@ -2017,6 +3188,19 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             with ui.card().classes("q-pa-sm"):
                                 ui.label("Team").classes("text-caption text-grey")
                                 ui.label(f"{state['team_size']} tester(s)" + (" + leader" if state["has_leader"] else "")).classes("text-body2")
+                            releases = state.get("expected_releases", 1)
+                            if releases and releases > 1:
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Expected Releases").classes("text-caption text-grey")
+                                    ui.label(str(releases)).classes("text-body2")
+                            if state.get("project_goals"):
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Project Goals").classes("text-caption text-grey")
+                                    ui.label(state["project_goals"]).classes("text-body2")
+                            if state.get("target_customer"):
+                                with ui.card().classes("q-pa-sm"):
+                                    ui.label("Target Customer").classes("text-caption text-grey")
+                                    ui.label(state["target_customer"]).classes("text-body2")
 
                 def _render_result(res: dict):
                     result_container.clear()
@@ -2033,7 +3217,13 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             _hours_card("Tester Hours", res.get("total_tester_hours", 0), "person")
                             _hours_card("Leader Hours", res.get("total_leader_hours", 0), "manage_accounts")
                             _hours_card("PR Fix Hours", res.get("pr_fix_hours", 0), "bug_report")
+                            if res.get("pr_no_test_hours", 0) > 0:
+                                _hours_card("PR Test Creation", res["pr_no_test_hours"], "science")
                             _hours_card("Study Hours", res.get("study_hours", 0), "school")
+                            if res.get("release_extra_hours", 0) > 0:
+                                _hours_card("Release Extra Hours", res["release_extra_hours"], "rocket_launch")
+                            if res.get("documentation_hours", 0) > 0:
+                                _hours_card("Documentation Hours", res["documentation_hours"], "description")
                             _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
                             _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
                             _hours_card("Grand Total Days", res.get("grand_total_days", 0), "calendar_today")
@@ -2063,6 +3253,10 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
                         "delivery_date": state["delivery_date"],
+                        "expected_releases": state.get("expected_releases", 1),
+                        "risk_item_ids": state.get("risk_item_ids", []),
+                        "document_type_ids": state.get("document_type_ids", []),
+                        "document_counts": state.get("document_counts", {}),
                     }
                     try:
                         result = await api_post("/estimations/calculate", json=payload)
@@ -2097,6 +3291,13 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "start_date": state.get("start_date"),
                         "expected_delivery": state["delivery_date"],
                         "team_allocations": state.get("team_allocations", []),
+                        "expected_releases": state.get("expected_releases", 1),
+                        "project_goals": state.get("project_goals") or None,
+                        "target_customer": state.get("target_customer") or None,
+                        "team_id": state.get("team_id"),
+                        "risk_item_ids": state.get("risk_item_ids", []),
+                        "document_type_ids": state.get("document_type_ids", []),
+                        "document_counts": state.get("document_counts", {}),
                     }
                     try:
                         saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
