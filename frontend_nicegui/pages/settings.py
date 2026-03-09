@@ -60,6 +60,7 @@ SECTION_KEYS: dict[str, list[str]] = {
     ],
     "Data Management": [
         "dut_categories",
+        "feature_categories",
     ],
     "Email / SMTP": [],   # dynamic: keys starting with "smtp_"
     "LDAP": [],           # dynamic: keys starting with "ldap_"

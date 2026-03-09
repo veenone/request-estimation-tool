@@ -18,7 +18,7 @@ from frontend_nicegui.app import (
     sidebar,
 )
 
-CATEGORIES = ["Telecom", "Security", "Platform", "Other"]
+_DEFAULT_CATEGORIES = ["Telecom", "Security", "Platform", "Other"]
 
 _COLUMNS = [
     {"name": "id",                 "label": "ID",          "field": "id",                 "align": "left", "sortable": True},
@@ -40,7 +40,11 @@ async def features_page() -> None:
 
     sidebar()
 
-    # Fetch product types from config
+    # Fetch categories and product types from config
+    try:
+        categories: list[str] = await api_get("/feature-categories")
+    except Exception:
+        categories = list(_DEFAULT_CATEGORIES)
     try:
         product_types: list[str] = await api_get("/configuration/product_types")
     except Exception:
@@ -63,6 +67,16 @@ async def features_page() -> None:
             row_key="id",
             pagination={"rowsPerPage": 20},
         ).classes("w-full shadow-1")
+
+        # Render category as a badge
+        table.add_slot(
+            "body-cell-category",
+            r"""
+            <q-td :props="props">
+                <q-badge outline color="primary" :label="props.value || '—'" />
+            </q-td>
+            """,
+        )
 
         # Render boolean as readable text
         table.add_slot(
@@ -95,12 +109,12 @@ async def features_page() -> None:
             <q-td :props="props">
                 <q-btn
                     dense flat round icon="edit" color="primary" size="sm"
-                    @click="$parent.$emit('edit-row', props.row)"
+                    @click="() => $parent.$emit('edit-row', props.row)"
                     class="q-mr-xs"
                 />
                 <q-btn
                     dense flat round icon="delete" color="negative" size="sm"
-                    @click="$parent.$emit('delete-row', props.row)"
+                    @click="() => $parent.$emit('delete-row', props.row)"
                 />
             </q-td>
             """,
@@ -134,9 +148,9 @@ async def features_page() -> None:
 
                 name_input = ui.input("Name *").classes("w-full")
                 category_select = ui.select(
-                    CATEGORIES,
+                    categories,
                     label="Category",
-                    value=CATEGORIES[0],
+                    value=categories[0] if categories else "",
                 ).classes("w-full")
                 complexity_input = ui.number(
                     "Complexity Weight",
@@ -205,10 +219,14 @@ async def features_page() -> None:
                 ui.label("Edit Feature").classes("text-h6 q-mb-sm")
 
                 name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
+                row_cat = row.get("category", "")
+                edit_cat_options = list(categories)
+                if row_cat and row_cat not in edit_cat_options:
+                    edit_cat_options.append(row_cat)
                 category_select = ui.select(
-                    CATEGORIES,
+                    edit_cat_options,
                     label="Category",
-                    value=row.get("category", CATEGORIES[0]),
+                    value=row_cat or (edit_cat_options[0] if edit_cat_options else ""),
                 ).classes("w-full")
                 complexity_input = ui.number(
                     "Complexity Weight",
@@ -304,6 +322,70 @@ async def features_page() -> None:
         table.on("delete-row", lambda e: show_delete_dialog(e.args))
 
         # ------------------------------------------------------------------ #
+        # Manage Categories dialog                                             #
+        # ------------------------------------------------------------------ #
+        async def show_manage_categories_dialog() -> None:
+            with ui.dialog() as cat_dialog, ui.card().classes("w-96"):
+                ui.label("Manage Feature Categories").classes("text-h6 q-mb-sm")
+
+                cat_list_container = ui.column().classes("w-full q-gutter-y-xs")
+
+                def _rebuild_list_sync() -> None:
+                    cat_list_container.clear()
+                    with cat_list_container:
+                        if not categories:
+                            ui.label("No categories defined.").classes("text-grey text-italic")
+                        for cat_name in list(categories):
+                            with ui.row().classes("items-center w-full"):
+                                ui.label(cat_name).classes("text-body1 q-mr-auto")
+                                ui.button(
+                                    icon="delete", on_click=lambda _, c=cat_name: _remove(c)
+                                ).props("flat dense round color=negative size=sm")
+
+                async def _save_categories() -> None:
+                    try:
+                        await api_put(
+                            "/configuration/feature_categories",
+                            json={"value": ",".join(categories)},
+                        )
+                    except Exception as exc:
+                        ui.notify(f"Failed to save categories: {exc}", type="negative")
+
+                async def _remove(name: str) -> None:
+                    categories.remove(name)
+                    await _save_categories()
+                    _rebuild_list_sync()
+                    category_filter_select.set_options(["All"] + categories)
+                    ui.notify(f"Removed '{name}'.", type="info")
+
+                async def _add() -> None:
+                    val = str(new_cat_input.value or "").strip()
+                    if not val:
+                        ui.notify("Enter a category name.", type="warning")
+                        return
+                    if val in categories:
+                        ui.notify(f"'{val}' already exists.", type="warning")
+                        return
+                    categories.append(val)
+                    await _save_categories()
+                    new_cat_input.value = ""
+                    _rebuild_list_sync()
+                    category_filter_select.set_options(["All"] + categories)
+                    ui.notify(f"Added '{val}'.", type="positive")
+
+                _rebuild_list_sync()
+
+                ui.separator().classes("q-my-sm")
+                with ui.row().classes("items-center w-full q-gutter-sm"):
+                    new_cat_input = ui.input("New category").classes("q-mr-auto")
+                    ui.button("Add", icon="add", on_click=_add).props("color=primary dense")
+
+                with ui.row().classes("q-mt-md justify-end w-full"):
+                    ui.button("Close", on_click=cat_dialog.close).props("flat")
+
+            cat_dialog.open()
+
+        # ------------------------------------------------------------------ #
         # Toolbar: category filter + Add button                                #
         # ------------------------------------------------------------------ #
         with ui.row().classes("items-center q-gutter-sm q-mb-md"):
@@ -313,8 +395,8 @@ async def features_page() -> None:
                 state["filter_category"] = e.value if e.value else "All"
                 await refresh()
 
-            ui.select(
-                ["All"] + CATEGORIES,
+            category_filter_select = ui.select(
+                ["All"] + categories,
                 label="Category",
                 value="All",
                 on_change=on_category_change,
@@ -330,6 +412,12 @@ async def features_page() -> None:
                 value="All",
                 on_change=on_product_type_change,
             ).classes("w-48")
+
+            ui.button(
+                "Manage Categories",
+                icon="settings",
+                on_click=show_manage_categories_dialog,
+            ).props("flat dense")
 
             ui.space()
 

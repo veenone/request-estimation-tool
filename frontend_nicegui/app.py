@@ -193,6 +193,27 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def has_permission(perm: str) -> bool:
+    """Check if the current user has a specific RBAC permission."""
+    user = current_user()
+    if not user:
+        return False
+    role = (user.get("role") or "").upper()
+    if role == "ADMIN":
+        return True
+    cache = _safe_storage().get("_rbac_cache")
+    if cache:
+        import json as _json
+        for item in cache:
+            if item.get("key") == "rbac_matrix":
+                try:
+                    parsed = _json.loads(item.get("value", "{}"))
+                    return perm in parsed.get(role, [])
+                except Exception:
+                    return False
+    return False
+
+
 async def api_get(path: str, params: dict | None = None) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{API_URL}{path}", headers=auth_headers(), params=params)
@@ -218,6 +239,8 @@ async def api_delete(path: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.delete(f"{API_URL}{path}", headers=auth_headers())
         r.raise_for_status()
+        if r.status_code == 204 or not r.content:
+            return {}
         return r.json()
 
 

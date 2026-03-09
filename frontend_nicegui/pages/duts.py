@@ -14,6 +14,7 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     api_put,
+    has_permission,
     is_authenticated,
     sidebar,
 )
@@ -241,7 +242,38 @@ async def duts_page() -> None:
         # ------------------------------------------------------------------ #
         # Toolbar: Add button                                                   #
         # ------------------------------------------------------------------ #
-        with ui.row().classes("justify-end q-mb-md"):
+        with ui.row().classes("items-center q-mb-md"):
+            if has_permission("reinit_registries"):
+                async def _reinit_duts() -> None:
+                    with ui.dialog() as confirm_dlg, ui.card().classes("w-80"):
+                        ui.label("Reinitialize DUT Registry").classes("text-h6")
+                        ui.label(
+                            "This will delete ALL DUT types and reset IDs to start from 1. "
+                            "This cannot be undone."
+                        ).classes("text-body2 q-mt-sm")
+
+                        async def _confirm() -> None:
+                            try:
+                                await api_post("/dut-types/reinit")
+                                confirm_dlg.close()
+                                ui.notify("DUT registry reinitialized.", type="positive")
+                                await refresh()
+                            except Exception as exc:
+                                ui.notify(f"Error: {exc}", type="negative")
+
+                        with ui.row().classes("q-mt-md justify-end w-full"):
+                            ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
+                            ui.button("Delete All", on_click=_confirm).props("color=negative")
+                    confirm_dlg.open()
+
+                ui.button(
+                    "Reinit Registry",
+                    icon="restart_alt",
+                    on_click=_reinit_duts,
+                ).props("flat color=negative")
+
+            ui.space()
+
             ui.button(
                 "Add DUT Type",
                 icon="add",

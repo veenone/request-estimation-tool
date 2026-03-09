@@ -575,6 +575,10 @@ def _ensure_config_keys(session: Session) -> None:
             "",
             "Task template ID linked to PR test creation effort (optional)",
         ),
+        "feature_categories": (
+            "Telecom,Security,Platform,Other",
+            "Comma-separated list of feature categories for dropdown menus",
+        ),
     }
     for key, (value, desc) in _keys.items():
         existing = session.query(Configuration).filter(Configuration.key == key).first()

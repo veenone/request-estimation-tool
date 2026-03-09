@@ -141,29 +141,49 @@ async def assets_page() -> None:
                 ui.notify("No assets selected.", type="warning")
                 return
 
+            # Fetch existing DUT names to detect duplicates upfront
+            try:
+                existing_duts: list[dict] = await api_get("/dut-types")
+                existing_names: set[str] = {d.get("name", "").lower() for d in existing_duts}
+            except Exception:
+                existing_names = set()
+
             success_count = 0
-            fail_count = 0
+            skipped_names: list[str] = []
+            failed_names: list[str] = []
+
             for asset in selected:
+                name = asset.get("name", "Unknown")
+                if name.lower() in existing_names:
+                    skipped_names.append(name)
+                    continue
                 try:
                     await api_post(
                         "/dut-types",
                         json={
-                            "name": asset.get("name", "Unknown"),
+                            "name": name,
                             "category": asset.get("category", "Other"),
+                            "complexity_multiplier": 1.0,
                         },
                     )
                     success_count += 1
-                except Exception:
-                    fail_count += 1
+                    existing_names.add(name.lower())
+                except Exception as exc:
+                    failed_names.append(f"{name}: {exc}")
 
             if success_count > 0:
                 ui.notify(
                     f"Successfully imported {success_count} asset(s) as DUT entries.",
                     type="positive",
                 )
-            if fail_count > 0:
+            if skipped_names:
                 ui.notify(
-                    f"Failed to import {fail_count} asset(s).",
+                    f"Skipped {len(skipped_names)} duplicate(s): {', '.join(skipped_names)}",
+                    type="warning",
+                )
+            if failed_names:
+                ui.notify(
+                    f"Failed {len(failed_names)}: {'; '.join(failed_names)}",
                     type="negative",
                 )
 

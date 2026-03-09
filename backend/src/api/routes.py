@@ -636,6 +636,25 @@ def delete_dut_type(dut_id: int, user: User = Depends(RequireRole("APPROVER")), 
     db.commit()
 
 
+@router.post("/dut-types/reinit")
+def reinit_dut_types(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)):
+    """Delete all DUT types and reset the auto-increment ID counter."""
+    from sqlalchemy import text
+    db.query(DutType).delete()
+    db.commit()
+    # Reset autoincrement for SQLite and MySQL
+    try:
+        db.execute(text("DELETE FROM sqlite_sequence WHERE name='dut_types'"))
+        db.commit()
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE dut_types AUTO_INCREMENT = 1"))
+            db.commit()
+        except Exception:
+            pass
+    return {"status": "ok", "message": "DUT registry cleared, ID counter reset to 1"}
+
+
 # ── Test Profiles ────────────────────────────────────────
 
 @router.get("/profiles", response_model=list[TestProfileOut])
@@ -843,6 +862,13 @@ def list_configuration(user: User = Depends(get_current_user), db: Session = Dep
 def get_dut_categories(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Return the configured DUT categories as a list of strings."""
     raw = _get_config_value(db, "dut_categories", "SIM,eSIM,UICC,IoT Device,Mobile Device,Other")
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+@router.get("/feature-categories", response_model=list[str])
+def get_feature_categories(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return the configured feature categories as a list of strings."""
+    raw = _get_config_value(db, "feature_categories", "Telecom,Security,Platform,Other")
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 

@@ -57,6 +57,7 @@ _PERMISSIONS: list[tuple[str, str]] = [
     ("View Requests",        "view_requests"),
     ("Manage Requests",      "manage_requests"),
     ("LDAP Sync",            "ldap_sync"),
+    ("Reinit Registries",    "reinit_registries"),
 ]
 
 # Sensible built-in defaults (used when no rbac_matrix key exists in the DB)
