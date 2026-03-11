@@ -233,6 +233,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "description": "",
         "project_goals": "",
         "target_customer": "",
+        "project_reference": "",
         # Step 2
         "feature_ids": [],
         "new_feature_ids": [],
@@ -283,7 +284,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         except Exception:
             return []
 
-    all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs = await asyncio.gather(
+    all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs, _all_estimations = await asyncio.gather(
         _safe_get("/features"),
         _safe_get("/dut-types"),
         _safe_get("/profiles"),
@@ -292,9 +293,18 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         _safe_get("/teams"),
         _safe_get("/risk-items"),
         _safe_get("/configuration"),
+        _safe_get("/estimations"),
     )
     _config_map: dict[str, str] = {c.get("key", ""): c.get("value", "") for c in _all_configs if isinstance(c, dict)}
     _pr_priority_list = [p.strip() for p in _config_map.get("pr_priority_list", "LOW,MEDIUM,HIGH,CRITICAL").split(",") if p.strip()]
+    _project_types = [p.strip() for p in _config_map.get("project_types", "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST").split(",") if p.strip()]
+    # Build options for project reference: estimation_number + project_name
+    _est_ref_options: dict[str, str] = {}
+    for _e in (_all_estimations or []):
+        _num = _e.get("estimation_number") or ""
+        _pname = _e.get("project_name") or ""
+        _label = f"{_num} — {_pname}" if _num else _pname
+        _est_ref_options[_label] = _label
 
     # Derive product types from features, DUTs, and profiles for filtering
     _product_types_set: set[str] = set()
@@ -339,13 +349,31 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 )
 
                 type_select = ui.select(
-                    options=["NEW", "EVOLUTION", "SUPPORT"],
+                    options=_project_types,
                     label="Project Type",
                     value=state["project_type"],
                 ).classes("w-full q-mt-sm")
                 type_select.on(
                     "update:model-value",
                     lambda e: state.update({"project_type": e.args}),
+                )
+
+                # Project Reference — shown only for CHANGE_REQUEST
+                _ref_opts = list(_est_ref_options.keys())
+                _ref_val = state.get("project_reference", "") or None
+                if _ref_val and _ref_val not in _ref_opts:
+                    _ref_opts.append(_ref_val)
+                ref_input = ui.select(
+                    options=_ref_opts,
+                    label="Project Reference *",
+                    value=_ref_val,
+                    with_input=True,
+                    new_value_mode="add-unique",
+                ).classes("w-full q-mt-sm")
+                ref_input.bind_visibility_from(type_select, "value", backward=lambda v: v == "CHANGE_REQUEST")
+                ref_input.on(
+                    "update:model-value",
+                    lambda e: state.update({"project_reference": e.args}),
                 )
 
                 desc_input = ui.textarea(
@@ -397,8 +425,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         state["description"] = desc_input.value or ""
                         state["project_goals"] = goals_input.value or ""
                         state["target_customer"] = customer_input.value or ""
+                        state["project_reference"] = ref_input.value or ""
                         if not state["project_name"].strip():
                             ui.notify("Project Name is required.", type="warning")
+                            return
+                        if state["project_type"] == "CHANGE_REQUEST" and not state["project_reference"].strip():
+                            ui.notify("Project Reference is required for Change Request.", type="warning")
                             return
                         # Rebuild feature list with current product type filter
                         _rebuild_feature_list()
@@ -710,30 +742,42 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             ui.label("No DUT types found.").classes("text-grey")
                         else:
                             ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
-                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                                for dut in visible_duts:
-                                    did = dut["id"]
-                                    cb = ui.checkbox(
-                                        dut.get("name", f"DUT {did}"),
-                                        value=(did in state["dut_ids"]),
-                                    )
-                                    dut_cb_refs[did] = cb
-                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 250px; overflow-y: auto;"):
+                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                    for dut in visible_duts:
+                                        did = dut["id"]
+                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                cb = ui.checkbox(
+                                                    "",
+                                                    value=(did in state["dut_ids"]),
+                                                ).props("dense")
+                                                dut_cb_refs[did] = cb
+                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(dut.get("name", f"DUT {did}")).classes("text-body2")
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(dut.get("category", "")).classes("text-caption text-grey")
 
                     with prof_container:
                         if not visible_profs:
                             ui.label("No profiles found.").classes("text-grey")
                         else:
                             ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
-                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                                for prof in visible_profs:
-                                    pid = prof["id"]
-                                    cb = ui.checkbox(
-                                        prof.get("name", f"Profile {pid}"),
-                                        value=(pid in state["profile_ids"]),
-                                    )
-                                    prof_cb_refs[pid] = cb
-                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 200px; overflow-y: auto;"):
+                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                    for prof in visible_profs:
+                                        pid = prof["id"]
+                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                cb = ui.checkbox(
+                                                    "",
+                                                    value=(pid in state["profile_ids"]),
+                                                ).props("dense")
+                                                prof_cb_refs[pid] = cb
+                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(prof.get("name", f"Profile {pid}")).classes("text-body2")
 
                     _rebuild_matrix()
 
@@ -851,14 +895,22 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     with ui.row().classes("items-center q-gutter-sm w-full"):
                                         _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
                                         _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                        _pri_opts = list(_pr_priority_list)
+                                        _pri_val = pr.get("priority", _pri_opts[1] if len(_pri_opts) > 1 else _pri_opts[0])
+                                        if _pri_val not in _pri_opts:
+                                            _pri_opts.append(_pri_val)
                                         _pri = ui.select(
-                                            options=_pr_priority_list,
-                                            value=pr.get("priority", _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]),
+                                            options=_pri_opts,
+                                            value=_pri_val,
                                             label="Priority",
                                         ).classes("w-28")
+                                        _cx_opts = ["simple", "medium", "complex"]
+                                        _cx_val = pr.get("complexity", "simple")
+                                        if _cx_val not in _cx_opts:
+                                            _cx_opts.append(_cx_val)
                                         _cx = ui.select(
-                                            options=["simple", "medium", "complex"],
-                                            value=pr.get("complexity", "simple"),
+                                            options=_cx_opts,
+                                            value=_cx_val,
                                             label="Complexity",
                                         ).classes("w-32")
                                         _st_options = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
@@ -1556,6 +1608,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "expected_releases": state.get("expected_releases", 1),
                         "project_goals": state.get("project_goals") or None,
                         "target_customer": state.get("target_customer") or None,
+                        "project_reference": state.get("project_reference") or None,
                         "team_id": state.get("team_id"),
                         "risk_item_ids": state.get("risk_item_ids", []),
                         "document_type_ids": state.get("document_type_ids", []),
@@ -1904,12 +1957,16 @@ async def estimation_detail_page(estimation_id: int) -> None:
                     ui.label("Expected Releases").classes("text-caption text-grey")
                     ui.label(str(releases)).classes("text-body1")
 
-        if est.get("project_goals") or est.get("target_customer") or est.get("team_name"):
+        if est.get("project_goals") or est.get("target_customer") or est.get("team_name") or est.get("project_reference"):
             with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
                 if est.get("team_name"):
                     with ui.card().classes("q-pa-md"):
                         ui.label("Team").classes("text-caption text-grey")
                         ui.label(est["team_name"]).classes("text-body1")
+                if est.get("project_reference"):
+                    with ui.card().classes("q-pa-md"):
+                        ui.label("Project Reference").classes("text-caption text-grey")
+                        ui.label(est["project_reference"]).classes("text-body1")
                 if est.get("project_goals"):
                     with ui.card().classes("q-pa-md"):
                         ui.label("Project Goals").classes("text-caption text-grey")
@@ -2018,6 +2075,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
         if tasks:
             ui.label("Task Breakdown").classes("text-h6 q-mb-sm")
             task_cols = [
+                {"name": "feature",   "label": "Feature",    "field": "feature_name",     "align": "left",  "sortable": True},
                 {"name": "task_name", "label": "Task",       "field": "task_name",        "align": "left",  "sortable": True},
                 {"name": "task_type", "label": "Type",       "field": "task_type",        "align": "left",  "sortable": True},
                 {"name": "base_hours","label": "Base h",     "field": "base_hours",       "align": "right", "sortable": True},
@@ -2030,6 +2088,15 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 row_key="id",
                 pagination={"rowsPerPage": 20},
             ).classes("w-full shadow-1 q-mb-md")
+            tbl.add_slot(
+                "body-cell-feature",
+                r"""
+                <q-td :props="props">
+                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
+                    <span v-else class="text-grey-5 text-italic">Global</span>
+                </q-td>
+                """,
+            )
             tbl.add_slot(
                 "body-cell-new_study",
                 r"""
@@ -2354,7 +2421,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
             except Exception:
                 return []
 
-        all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs = await asyncio.gather(
+        all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs, _all_estimations = await asyncio.gather(
             _safe_get("/features"),
             _safe_get("/dut-types"),
             _safe_get("/profiles"),
@@ -2363,9 +2430,17 @@ async def edit_estimation_page(estimation_id: int) -> None:
             _safe_get("/teams"),
             _safe_get("/risk-items"),
             _safe_get("/configuration"),
+            _safe_get("/estimations"),
         )
         _config_map: dict[str, str] = {c.get("key", ""): c.get("value", "") for c in _all_configs if isinstance(c, dict)}
         _pr_priority_list = [p.strip() for p in _config_map.get("pr_priority_list", "LOW,MEDIUM,HIGH,CRITICAL").split(",") if p.strip()]
+        _project_types = [p.strip() for p in _config_map.get("project_types", "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST").split(",") if p.strip()]
+        _est_ref_options: dict[str, str] = {}
+        for _e in (_all_estimations or []):
+            _num = _e.get("estimation_number") or ""
+            _pname = _e.get("project_name") or ""
+            _label = f"{_num} — {_pname}" if _num else _pname
+            _est_ref_options[_label] = _label
 
         # Derive product types from features, DUTs, and profiles for filtering
         _product_types_set: set[str] = set()
@@ -2387,6 +2462,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "description": "",
             "project_goals": est.get("project_goals", "") or "",
             "target_customer": est.get("target_customer", "") or "",
+            "project_reference": est.get("project_reference", "") or "",
             "feature_ids": saved_inputs.get("feature_ids", []),
             "new_feature_ids": saved_inputs.get("new_feature_ids", []),
             "reference_project_ids": saved_inputs.get("reference_project_ids", []),
@@ -2422,12 +2498,31 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 ui.label("Edit the basic project details.").classes("text-body2 text-grey q-mb-md")
                 name_input = ui.input("Project Name *", value=state["project_name"]).classes("w-full")
                 name_input.on("update:model-value", lambda e: state.update({"project_name": e.args}))
+                _pt_opts = list(_project_types)
+                _pt_val = state["project_type"]
+                if _pt_val and _pt_val not in _pt_opts:
+                    _pt_opts.append(_pt_val)
                 type_select = ui.select(
-                    options=["NEW", "EVOLUTION", "SUPPORT"],
+                    options=_pt_opts,
                     label="Project Type",
-                    value=state["project_type"],
+                    value=_pt_val,
                 ).classes("w-full q-mt-sm")
                 type_select.on("update:model-value", lambda e: state.update({"project_type": e.args}))
+
+                # Project Reference — shown only for CHANGE_REQUEST
+                _ref_opts = list(_est_ref_options.keys())
+                _ref_val = state.get("project_reference", "") or None
+                if _ref_val and _ref_val not in _ref_opts:
+                    _ref_opts.append(_ref_val)
+                ref_input = ui.select(
+                    options=_ref_opts,
+                    label="Project Reference *",
+                    value=_ref_val,
+                    with_input=True,
+                    new_value_mode="add-unique",
+                ).classes("w-full q-mt-sm")
+                ref_input.bind_visibility_from(type_select, "value", backward=lambda v: v == "CHANGE_REQUEST")
+                ref_input.on("update:model-value", lambda e: state.update({"project_reference": e.args}))
 
                 goals_input = ui.textarea(
                     "Project Goals (optional)",
@@ -2461,8 +2556,12 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         state["product_type_filter"] = pt_filter_select.value or "All"
                         state["project_goals"] = goals_input.value or ""
                         state["target_customer"] = customer_input.value or ""
+                        state["project_reference"] = ref_input.value or ""
                         if not state["project_name"].strip():
                             ui.notify("Project Name is required.", type="warning")
+                            return
+                        if state["project_type"] == "CHANGE_REQUEST" and not state["project_reference"].strip():
+                            ui.notify("Project Reference is required for Change Request.", type="warning")
                             return
                         # Rebuild feature list with current product type filter
                         _rebuild_feature_list()
@@ -2704,24 +2803,36 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             ui.label("No DUT types found.").classes("text-grey")
                         else:
                             ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
-                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                                for dut in visible_duts:
-                                    did = dut["id"]
-                                    cb = ui.checkbox(dut.get("name", f"DUT {did}"), value=(did in state["dut_ids"]))
-                                    dut_cb_refs[did] = cb
-                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 250px; overflow-y: auto;"):
+                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                    for dut in visible_duts:
+                                        did = dut["id"]
+                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                cb = ui.checkbox("", value=(did in state["dut_ids"])).props("dense")
+                                                dut_cb_refs[did] = cb
+                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(dut.get("name", f"DUT {did}")).classes("text-body2")
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(dut.get("category", "")).classes("text-caption text-grey")
 
                     with prof_container:
                         if not visible_profs:
                             ui.label("No profiles found.").classes("text-grey")
                         else:
                             ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
-                            with ui.row().classes("flex-wrap q-gutter-sm q-mb-md"):
-                                for prof in visible_profs:
-                                    pid = prof["id"]
-                                    cb = ui.checkbox(prof.get("name", f"Profile {pid}"), value=(pid in state["profile_ids"]))
-                                    prof_cb_refs[pid] = cb
-                                    cb.on("update:model-value", lambda _: _rebuild_matrix())
+                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 200px; overflow-y: auto;"):
+                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                    for prof in visible_profs:
+                                        pid = prof["id"]
+                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                cb = ui.checkbox("", value=(pid in state["profile_ids"])).props("dense")
+                                                prof_cb_refs[pid] = cb
+                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                            with ui.element("td").style("padding: 2px 4px;"):
+                                                ui.label(prof.get("name", f"Profile {pid}")).classes("text-body2")
 
                     _rebuild_matrix()
 
@@ -2784,8 +2895,16 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                     with ui.row().classes("items-center q-gutter-sm w-full"):
                                         _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
                                         _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
-                                        _pri = ui.select(options=_pr_priority_list, value=pr.get("priority", _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]), label="Priority").classes("w-28")
-                                        _cx = ui.select(options=["simple", "medium", "complex"], value=pr.get("complexity", "simple"), label="Complexity").classes("w-32")
+                                        _pri_opts_e = list(_pr_priority_list)
+                                        _pri_val_e = pr.get("priority", _pri_opts_e[1] if len(_pri_opts_e) > 1 else _pri_opts_e[0])
+                                        if _pri_val_e not in _pri_opts_e:
+                                            _pri_opts_e.append(_pri_val_e)
+                                        _pri = ui.select(options=_pri_opts_e, value=_pri_val_e, label="Priority").classes("w-28")
+                                        _cx_opts_e = ["simple", "medium", "complex"]
+                                        _cx_val_e = pr.get("complexity", "simple")
+                                        if _cx_val_e not in _cx_opts_e:
+                                            _cx_opts_e.append(_cx_val_e)
+                                        _cx = ui.select(options=_cx_opts_e, value=_cx_val_e, label="Complexity").classes("w-32")
                                         _st_options_e = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
                                         _st_val_e = pr.get("status", "Open")
                                         if _st_val_e not in _st_options_e:
@@ -3294,6 +3413,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "expected_releases": state.get("expected_releases", 1),
                         "project_goals": state.get("project_goals") or None,
                         "target_customer": state.get("target_customer") or None,
+                        "project_reference": state.get("project_reference") or None,
                         "team_id": state.get("team_id"),
                         "risk_item_ids": state.get("risk_item_ids", []),
                         "document_type_ids": state.get("document_type_ids", []),

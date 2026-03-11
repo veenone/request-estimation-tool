@@ -51,6 +51,8 @@ class TaskInput:
     complexity_weight: float = 1.0
     is_new_feature_study: bool = False
     template_id: int | None = None
+    feature_id: int | None = None
+    feature_name: str | None = None
 
 
 @dataclass
@@ -66,6 +68,8 @@ class TaskResult:
     calculated_hours: float
     is_new_feature_study: bool = False
     template_id: int | None = None
+    feature_id: int | None = None
+    feature_name: str | None = None
 
 
 @dataclass
@@ -155,6 +159,8 @@ def calculate_task_effort(
         calculated_hours=calculated,
         is_new_feature_study=task.is_new_feature_study,
         template_id=task.template_id,
+        feature_id=task.feature_id,
+        feature_name=task.feature_name,
     )
 
 

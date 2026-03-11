@@ -29,6 +29,7 @@ from ..database.models import (
     RiskItem,
     TaskPreset,
     TaskTemplate,
+    TaskTemplateFeature,
     Team,
     TeamMember,
     TestProfile,
@@ -560,19 +561,61 @@ def delete_feature(feature_id: int, user: User = Depends(RequireRole("APPROVER")
 def list_task_templates(feature_id: int | None = None, product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(TaskTemplate)
     if feature_id is not None:
-        q = q.filter(TaskTemplate.feature_id == feature_id)
+        q = q.filter(TaskTemplate.features.any(Feature.id == feature_id))
     if product_type:
         q = q.filter((TaskTemplate.product_type == product_type) | (TaskTemplate.product_type.is_(None)))
-    return q.all()
+    templates = q.all()
+    results = []
+    for tmpl in templates:
+        out = TaskTemplateOut.model_validate(tmpl)
+        out.feature_hours = _resolve_feature_hours(tmpl, db)
+        results.append(out)
+    return results
+
+
+def _resolve_feature_hours(tmpl: TaskTemplate, db) -> dict[str, float]:
+    """Build feature_hours dict {feature_id_str: base_hours_override} for a template."""
+    links = db.query(TaskTemplateFeature).filter(
+        TaskTemplateFeature.task_template_id == tmpl.id,
+        TaskTemplateFeature.base_hours_override.isnot(None),
+    ).all()
+    return {str(lnk.feature_id): lnk.base_hours_override for lnk in links}
+
+
+def _set_feature_links(tmpl: TaskTemplate, fids: list[int], feature_hours: dict[str, float], db) -> None:
+    """Set the many-to-many feature links with optional per-feature base_hours."""
+    # Remove existing links
+    db.query(TaskTemplateFeature).filter(TaskTemplateFeature.task_template_id == tmpl.id).delete()
+    db.flush()
+    # Create new links
+    for fid in fids:
+        override = feature_hours.get(str(fid))
+        db.add(TaskTemplateFeature(
+            task_template_id=tmpl.id,
+            feature_id=fid,
+            base_hours_override=override,
+        ))
+    db.flush()
+    # Refresh the relationship
+    db.expire(tmpl, ["features"])
 
 
 @router.post("/task-templates", response_model=TaskTemplateOut, status_code=201)
 def create_task_template(data: TaskTemplateCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
-    tmpl = TaskTemplate(**data.model_dump())
+    # Resolve feature_ids (new) or feature_id (legacy)
+    fids = data.feature_ids if data.feature_ids else ([data.feature_id] if data.feature_id else [])
+    dump = data.model_dump(exclude={"feature_ids", "feature_hours"})
+    dump["feature_id"] = fids[0] if len(fids) == 1 else None
+    tmpl = TaskTemplate(**dump)
     db.add(tmpl)
+    db.flush()
+    if fids:
+        _set_feature_links(tmpl, fids, data.feature_hours or {}, db)
     db.commit()
     db.refresh(tmpl)
-    return tmpl
+    result = TaskTemplateOut.model_validate(tmpl)
+    result.feature_hours = _resolve_feature_hours(tmpl, db)
+    return result
 
 
 @router.put("/task-templates/{template_id}", response_model=TaskTemplateOut)
@@ -580,11 +623,19 @@ def update_task_template(template_id: int, data: TaskTemplateUpdate, user: User 
     tmpl = db.get(TaskTemplate, template_id)
     if not tmpl:
         raise HTTPException(404, "Task template not found")
-    for key, val in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+    fids = update_data.pop("feature_ids", None)
+    fhours = update_data.pop("feature_hours", None)
+    for key, val in update_data.items():
         setattr(tmpl, key, val)
+    if fids is not None:
+        _set_feature_links(tmpl, fids, fhours or {}, db)
+        tmpl.feature_id = fids[0] if len(fids) == 1 else None
     db.commit()
     db.refresh(tmpl)
-    return tmpl
+    result = TaskTemplateOut.model_validate(tmpl)
+    result.feature_hours = _resolve_feature_hours(tmpl, db)
+    return result
 
 
 @router.delete("/task-templates/{template_id}", status_code=204)
@@ -872,6 +923,13 @@ def get_feature_categories(user: User = Depends(get_current_user), db: Session =
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+@router.get("/project-types", response_model=list[str])
+def get_project_types(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return the configured project types as a list of strings."""
+    raw = _get_config_value(db, "project_types", "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST")
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 @router.get("/configuration/product_types", response_model=list[str])
 def get_product_types(db: Session = Depends(get_db)):
     """Return the configured product types as a list of strings."""
@@ -909,6 +967,75 @@ def update_configuration(key: str, data: ConfigurationUpdate, user: User = Depen
 
 # ── Estimations ──────────────────────────────────────────
 
+
+def _expand_templates_to_tasks(
+    templates: list,
+    features: list,
+    selected_feature_ids: list[int],
+    new_feature_ids: list[int],
+    db=None,
+) -> list[TaskInput]:
+    """Expand task templates into TaskInput list.
+
+    Global templates (no linked features) produce one task.
+    Feature-linked templates produce one task per selected feature they're linked to.
+    Per-feature base_hours_override from task_template_features is used when available.
+    """
+    task_inputs: list[TaskInput] = []
+    selected_set = set(selected_feature_ids)
+    feature_map = {f.id: f for f in features}
+
+    # Pre-load all per-feature hour overrides for these templates
+    override_map: dict[tuple[int, int], float] = {}
+    if db is not None:
+        tmpl_ids = [t.id for t in templates]
+        if tmpl_ids:
+            links = db.query(TaskTemplateFeature).filter(
+                TaskTemplateFeature.task_template_id.in_(tmpl_ids),
+                TaskTemplateFeature.base_hours_override.isnot(None),
+            ).all()
+            for lnk in links:
+                override_map[(lnk.task_template_id, lnk.feature_id)] = lnk.base_hours_override
+
+    for tmpl in templates:
+        linked_fids = [f.id for f in tmpl.features]
+        if not linked_fids:
+            # Global template — one task, no feature association
+            task_inputs.append(TaskInput(
+                name=tmpl.name,
+                task_type=tmpl.task_type,
+                base_effort_hours=tmpl.base_effort_hours,
+                scales_with_dut=tmpl.scales_with_dut,
+                scales_with_profile=tmpl.scales_with_profile,
+                complexity_weight=1.0,
+                is_new_feature_study=False,
+                template_id=tmpl.id,
+            ))
+        else:
+            # One task per selected feature this template is linked to
+            for fid in linked_fids:
+                if fid in selected_set:
+                    feat = feature_map.get(fid)
+                    if not feat:
+                        continue
+                    is_study = fid in new_feature_ids
+                    # Use per-feature base_hours override if set, else template default
+                    base_hrs = override_map.get((tmpl.id, fid), tmpl.base_effort_hours)
+                    task_inputs.append(TaskInput(
+                        name=tmpl.name,
+                        task_type=tmpl.task_type,
+                        base_effort_hours=base_hrs,
+                        scales_with_dut=tmpl.scales_with_dut,
+                        scales_with_profile=tmpl.scales_with_profile,
+                        complexity_weight=feat.complexity_weight,
+                        is_new_feature_study=is_study,
+                        template_id=tmpl.id,
+                        feature_id=fid,
+                        feature_name=feat.name,
+                    ))
+    return task_inputs
+
+
 @router.post("/estimations/calculate", response_model=CalculationResultOut)
 def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Run calculation from wizard inputs without persisting to DB."""
@@ -925,27 +1052,13 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
     if feature_ids:
         features = db.query(Feature).filter(Feature.id.in_(feature_ids)).all()
         templates = db.query(TaskTemplate).filter(
-            (TaskTemplate.feature_id.in_(feature_ids)) | (TaskTemplate.feature_id.is_(None))
+            TaskTemplate.features.any(Feature.id.in_(feature_ids)) | ~TaskTemplate.features.any()
         ).all()
     else:
         features = []
-        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
+        templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    task_inputs: list[TaskInput] = []
-    for tmpl in templates:
-        feature = next((f for f in features if f.id == tmpl.feature_id), None)
-        cw = feature.complexity_weight if feature else 1.0
-        is_study = tmpl.feature_id is not None and tmpl.feature_id in new_feature_ids
-        task_inputs.append(TaskInput(
-            name=tmpl.name,
-            task_type=tmpl.task_type,
-            base_effort_hours=tmpl.base_effort_hours,
-            scales_with_dut=tmpl.scales_with_dut,
-            scales_with_profile=tmpl.scales_with_profile,
-            complexity_weight=cw,
-            is_new_feature_study=is_study,
-            template_id=tmpl.id,
-        ))
+    task_inputs = _expand_templates_to_tasks(templates, features, feature_ids, new_feature_ids, db)
 
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
@@ -1027,6 +1140,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
                 "task_type": t.task_type,
                 "base_hours": t.base_hours,
                 "calculated_hours": t.calculated_hours,
+                "feature_name": t.feature_name,
             }
             for t in result.tasks
         ],
@@ -1108,32 +1222,18 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
     pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
-    # Resolve features and their task templates
+    # Resolve features and their task templates (many-to-many)
     if data.feature_ids:
         features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
         templates = db.query(TaskTemplate).filter(
-            (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
+            TaskTemplate.features.any(Feature.id.in_(data.feature_ids)) | ~TaskTemplate.features.any()
         ).all()
     else:
         features = []
-        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
+        templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    # Build task inputs
-    task_inputs: list[TaskInput] = []
-    for tmpl in templates:
-        feature = next((f for f in features if f.id == tmpl.feature_id), None)
-        cw = feature.complexity_weight if feature else 1.0
-        is_study = tmpl.id is not None and tmpl.feature_id is not None and tmpl.feature_id in data.new_feature_ids
-        task_inputs.append(TaskInput(
-            name=tmpl.name,
-            task_type=tmpl.task_type,
-            base_effort_hours=tmpl.base_effort_hours,
-            scales_with_dut=tmpl.scales_with_dut,
-            scales_with_profile=tmpl.scales_with_profile,
-            complexity_weight=cw,
-            is_new_feature_study=is_study,
-            template_id=tmpl.id,
-        ))
+    # Build task inputs — one per feature for feature-linked templates
+    task_inputs = _expand_templates_to_tasks(templates, features, data.feature_ids, data.new_feature_ids, db)
 
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
@@ -1205,6 +1305,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         "expected_releases": data.expected_releases,
         "document_type_ids": data.document_type_ids,
         "document_counts": data.document_counts,
+        "project_reference": data.project_reference,
     }
 
     # Calculate documentation hours — deduct linked template hours once per group
@@ -1247,6 +1348,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         expected_releases=data.expected_releases,
         project_goals=data.project_goals,
         target_customer=data.target_customer,
+        project_reference=data.project_reference,
         team_id=data.team_id,
     )
     db.add(estimation)
@@ -1265,6 +1367,8 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             has_leader_support=data.has_leader,
             leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
             is_new_feature_study=task.is_new_feature_study,
+            feature_id=task.feature_id,
+            feature_name=task.feature_name,
         )
         db.add(et)
 
@@ -1316,6 +1420,8 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
             complexity_weight=1.0,
             is_new_feature_study=t.is_new_feature_study,
             template_id=t.task_template_id,
+            feature_id=t.feature_id,
+            feature_name=t.feature_name,
         )
         for t in estimation.tasks
     ]
@@ -1367,6 +1473,7 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
                 "task_type": t.task_type,
                 "base_hours": t.base_hours,
                 "calculated_hours": t.calculated_hours,
+                "feature_name": t.feature_name,
             }
             for t in result.tasks
         ],
@@ -1411,8 +1518,9 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
             for r in refs
         ]
 
-    tasks = [
-        {
+    tasks = []
+    for t in estimation.tasks:
+        td: dict = {
             "task_name": t.task_name,
             "task_type": t.task_type,
             "base_hours": t.base_hours,
@@ -1420,9 +1528,9 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
             "leader_hours": t.leader_hours,
             "is_new_feature_study": t.is_new_feature_study,
             "notes": t.notes or "",
+            "feature_name": t.feature_name,
         }
-        for t in estimation.tasks
-    ]
+        tasks.append(td)
 
     # Resolve DUT/profile names and matrix from wizard_inputs_json
     wizard = json.loads(estimation.wizard_inputs_json) if estimation.wizard_inputs_json else {}
@@ -2071,32 +2179,18 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
     pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
-    # Resolve features and their task templates
+    # Resolve features and their task templates (many-to-many)
     if data.feature_ids:
         features = db.query(Feature).filter(Feature.id.in_(data.feature_ids)).all()
         templates = db.query(TaskTemplate).filter(
-            (TaskTemplate.feature_id.in_(data.feature_ids)) | (TaskTemplate.feature_id.is_(None))
+            TaskTemplate.features.any(Feature.id.in_(data.feature_ids)) | ~TaskTemplate.features.any()
         ).all()
     else:
         features = []
-        templates = db.query(TaskTemplate).filter(TaskTemplate.feature_id.is_(None)).all()
+        templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    # Build task inputs
-    task_inputs: list[TaskInput] = []
-    for tmpl in templates:
-        feature = next((f for f in features if f.id == tmpl.feature_id), None)
-        cw = feature.complexity_weight if feature else 1.0
-        is_study = tmpl.id is not None and tmpl.feature_id is not None and tmpl.feature_id in data.new_feature_ids
-        task_inputs.append(TaskInput(
-            name=tmpl.name,
-            task_type=tmpl.task_type,
-            base_effort_hours=tmpl.base_effort_hours,
-            scales_with_dut=tmpl.scales_with_dut,
-            scales_with_profile=tmpl.scales_with_profile,
-            complexity_weight=cw,
-            is_new_feature_study=is_study,
-            template_id=tmpl.id,
-        ))
+    # Build task inputs — one per feature for feature-linked templates
+    task_inputs = _expand_templates_to_tasks(templates, features, data.feature_ids, data.new_feature_ids, db)
 
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
@@ -2165,6 +2259,7 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         "expected_releases": data.expected_releases,
         "document_type_ids": data.document_type_ids,
         "document_counts": data.document_counts,
+        "project_reference": data.project_reference,
     }
 
     # Calculate documentation hours — deduct linked template hours once per group
@@ -2244,6 +2339,7 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     estimation.expected_releases = data.expected_releases
     estimation.project_goals = data.project_goals
     estimation.target_customer = data.target_customer
+    estimation.project_reference = data.project_reference
     estimation.team_id = data.team_id
     estimation.status = "DRAFT"
     estimation.version = (estimation.version or 1) + 1
@@ -2265,6 +2361,8 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             has_leader_support=data.has_leader,
             leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
             is_new_feature_study=task.is_new_feature_study,
+            feature_id=task.feature_id,
+            feature_name=task.feature_name,
         )
         db.add(et)
 
@@ -3555,6 +3653,80 @@ def delete_public_holiday(
     db.delete(holiday)
     db.commit()
     return {"detail": "Deleted"}
+
+
+@router.post("/public-holidays/import-ics")
+async def import_holidays_ics(
+    file: UploadFile,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    """Import public holidays from an ICS (iCalendar) file."""
+    content = (await file.read()).decode("utf-8", errors="replace")
+
+    imported = 0
+    skipped = 0
+    errors_list: list[str] = []
+
+    # Simple ICS parser — extract VEVENT blocks
+    events = content.split("BEGIN:VEVENT")
+    for event_block in events[1:]:  # skip preamble before first VEVENT
+        end_idx = event_block.find("END:VEVENT")
+        if end_idx == -1:
+            continue
+        block = event_block[:end_idx]
+
+        # Extract DTSTART
+        event_date = None
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DTSTART"):
+                # Handle DTSTART;VALUE=DATE:20260101 and DTSTART:20260101T000000Z
+                val = stripped.split(":", 1)[-1].strip()
+                try:
+                    event_date = date(int(val[:4]), int(val[4:6]), int(val[6:8]))
+                except (ValueError, IndexError):
+                    errors_list.append(f"Invalid date: {val}")
+                break
+
+        # Extract SUMMARY
+        event_name = None
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("SUMMARY"):
+                event_name = stripped.split(":", 1)[-1].strip()
+                break
+
+        if not event_date or not event_name:
+            skipped += 1
+            continue
+
+        # Check for RRULE with YEARLY frequency → recurring
+        is_recurring = "RRULE:" in block and "FREQ=YEARLY" in block
+
+        # Skip duplicates (same date + name)
+        existing = db.query(PublicHoliday).filter(
+            PublicHoliday.date == event_date,
+            PublicHoliday.name == event_name,
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        db.add(PublicHoliday(
+            date=event_date,
+            name=event_name,
+            country="",
+            is_recurring=is_recurring,
+        ))
+        imported += 1
+
+    db.commit()
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors_list,
+    }
 
 
 @router.get("/working-weeks")

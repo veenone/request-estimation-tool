@@ -38,7 +38,7 @@ async def tasks_page():
             product_types = ["Payment", "Telco"]
 
         feature_map = {f["id"]: f["name"] for f in features}
-        feature_options = {0: "(Global - no feature)"} | {f["id"]: f["name"] for f in features}
+        feature_options = {f["id"]: f["name"] for f in features}
 
         # ------------------------------------------------------------------ #
         # Table                                                                #
@@ -80,12 +80,17 @@ async def tasks_page():
         def _build_rows() -> list[dict]:
             rows = []
             for t in templates:
+                fids = t.get("feature_ids", [])
+                # Backward compat: if feature_ids empty, fall back to feature_id
+                if not fids and t.get("feature_id"):
+                    fids = [t["feature_id"]]
+                feat_names = [feature_map.get(fid, "?") for fid in fids]
                 rows.append({
                     "id": t["id"],
                     "name": t["name"],
                     "task_type": t["task_type"],
-                    "feature": feature_map.get(t.get("feature_id"), "Global"),
-                    "feature_id": t.get("feature_id"),
+                    "feature": ", ".join(feat_names) if feat_names else "Global",
+                    "feature_ids": fids,
                     "base_effort_hours": t["base_effort_hours"],
                     "scales_with_dut": "Yes" if t.get("scales_with_dut") else "No",
                     "scales_with_profile": "Yes" if t.get("scales_with_profile") else "No",
@@ -103,7 +108,7 @@ async def tasks_page():
         # Add dialog                                                           #
         # ------------------------------------------------------------------ #
         async def _show_add_dialog():
-            with ui.dialog() as dlg, ui.card().classes("w-96"):
+            with ui.dialog() as dlg, ui.card().classes("w-[520px]"):
                 ui.label("Add Task Template").classes("text-h6 q-mb-md")
                 name_input = ui.input("Name *").classes("w-full")
                 type_select = ui.select(
@@ -113,11 +118,37 @@ async def tasks_page():
                 ).classes("w-full")
                 feat_select = ui.select(
                     options=feature_options,
-                    label="Feature (optional)",
-                    value=0,
+                    label="Features (optional, multi-select)",
+                    value=[],
+                    multiple=True,
                     with_input=True,
                 ).classes("w-full")
-                hours_input = ui.number("Base Effort Hours", value=8, min=0.1, step=0.5).classes("w-full")
+                hours_input = ui.number("Base Effort Hours (default)", value=8, min=0.1, step=0.5).classes("w-full")
+
+                # Per-feature hours override container
+                ui.label("Per-Feature Hours Override").classes("text-caption text-grey q-mt-sm")
+                ui.label("Leave blank to use the default base hours above.").classes("text-caption text-grey-6")
+                feat_hours_container = ui.column().classes("w-full")
+                feat_hours_inputs: dict[int, ui.number] = {}
+
+                def _rebuild_feat_hours():
+                    feat_hours_container.clear()
+                    feat_hours_inputs.clear()
+                    selected = list(feat_select.value or [])
+                    if not selected:
+                        return
+                    with feat_hours_container:
+                        for fid in selected:
+                            fname = feature_map.get(fid, f"Feature {fid}")
+                            inp = ui.number(
+                                f"{fname}", value=None,
+                                min=0.1, step=0.5,
+                                placeholder="default",
+                            ).classes("w-full")
+                            feat_hours_inputs[fid] = inp
+
+                feat_select.on("update:model-value", lambda _: _rebuild_feat_hours())
+
                 dut_switch = ui.switch("Scales with DUT", value=False)
                 prof_switch = ui.switch("Scales with Profile", value=False)
                 para_switch = ui.switch("Is Parallelizable", value=False)
@@ -134,10 +165,16 @@ async def tasks_page():
                     if not name_input.value:
                         ui.notify("Name is required.", type="warning")
                         return
+                    # Build feature_hours dict
+                    fh: dict[str, float] = {}
+                    for fid, inp in feat_hours_inputs.items():
+                        if inp.value is not None and inp.value > 0:
+                            fh[str(fid)] = float(inp.value)
                     payload = {
                         "name": name_input.value,
                         "task_type": type_select.value,
-                        "feature_id": feat_select.value if feat_select.value != 0 else None,
+                        "feature_ids": list(feat_select.value or []),
+                        "feature_hours": fh,
                         "base_effort_hours": float(hours_input.value or 8),
                         "scales_with_dut": dut_switch.value,
                         "scales_with_profile": prof_switch.value,
@@ -170,7 +207,7 @@ async def tasks_page():
                 ui.notify("Template not found.", type="warning")
                 return
 
-            with ui.dialog() as dlg, ui.card().classes("w-96"):
+            with ui.dialog() as dlg, ui.card().classes("w-[520px]"):
                 ui.label("Edit Task Template").classes("text-h6 q-mb-md")
                 name_input = ui.input("Name *", value=tmpl["name"]).classes("w-full")
                 type_select = ui.select(
@@ -178,18 +215,51 @@ async def tasks_page():
                     label="Task Type",
                     value=tmpl["task_type"],
                 ).classes("w-full")
+                # Resolve current feature IDs
+                _cur_fids = tmpl.get("feature_ids", [])
+                if not _cur_fids and tmpl.get("feature_id"):
+                    _cur_fids = [tmpl["feature_id"]]
                 feat_select = ui.select(
                     options=feature_options,
-                    label="Feature (optional)",
-                    value=tmpl.get("feature_id") or 0,
+                    label="Features (optional, multi-select)",
+                    value=_cur_fids,
+                    multiple=True,
                     with_input=True,
                 ).classes("w-full")
                 hours_input = ui.number(
-                    "Base Effort Hours",
+                    "Base Effort Hours (default)",
                     value=tmpl["base_effort_hours"],
                     min=0.1,
                     step=0.5,
                 ).classes("w-full")
+
+                # Per-feature hours override
+                _existing_fh = tmpl.get("feature_hours", {})
+                ui.label("Per-Feature Hours Override").classes("text-caption text-grey q-mt-sm")
+                ui.label("Leave blank to use the default base hours above.").classes("text-caption text-grey-6")
+                feat_hours_container = ui.column().classes("w-full")
+                feat_hours_inputs: dict[int, ui.number] = {}
+
+                def _rebuild_feat_hours():
+                    feat_hours_container.clear()
+                    feat_hours_inputs.clear()
+                    selected = list(feat_select.value or [])
+                    if not selected:
+                        return
+                    with feat_hours_container:
+                        for fid in selected:
+                            fname = feature_map.get(fid, f"Feature {fid}")
+                            cur_val = _existing_fh.get(str(fid))
+                            inp = ui.number(
+                                f"{fname}", value=cur_val,
+                                min=0.1, step=0.5,
+                                placeholder="default",
+                            ).classes("w-full")
+                            feat_hours_inputs[fid] = inp
+
+                feat_select.on("update:model-value", lambda _: _rebuild_feat_hours())
+                _rebuild_feat_hours()  # Show initial overrides
+
                 dut_switch = ui.switch("Scales with DUT", value=bool(tmpl.get("scales_with_dut")))
                 prof_switch = ui.switch("Scales with Profile", value=bool(tmpl.get("scales_with_profile")))
                 para_switch = ui.switch("Is Parallelizable", value=bool(tmpl.get("is_parallelizable")))
@@ -206,10 +276,15 @@ async def tasks_page():
                     if not name_input.value:
                         ui.notify("Name is required.", type="warning")
                         return
+                    fh: dict[str, float] = {}
+                    for fid, inp in feat_hours_inputs.items():
+                        if inp.value is not None and inp.value > 0:
+                            fh[str(fid)] = float(inp.value)
                     payload = {
                         "name": name_input.value,
                         "task_type": type_select.value,
-                        "feature_id": feat_select.value if feat_select.value != 0 else None,
+                        "feature_ids": list(feat_select.value or []),
+                        "feature_hours": fh,
                         "base_effort_hours": float(hours_input.value or 8),
                         "scales_with_dut": dut_switch.value,
                         "scales_with_profile": prof_switch.value,

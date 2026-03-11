@@ -57,10 +57,15 @@ SECTION_KEYS: dict[str, list[str]] = {
         "content_bg_dark",
         "button_color_light",
         "button_color_dark",
+        "calendar_today_bg_light",
+        "calendar_today_bg_dark",
+        "calendar_weekend_bg_light",
+        "calendar_weekend_bg_dark",
     ],
     "Data Management": [
         "dut_categories",
         "feature_categories",
+        "project_types",
     ],
     "Email / SMTP": [],   # dynamic: keys starting with "smtp_"
     "LDAP": [],           # dynamic: keys starting with "ldap_"

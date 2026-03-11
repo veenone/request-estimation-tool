@@ -28,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 14  # v14 adds pr_no_test_hours column to estimations
+SCHEMA_VERSION = 16  # v16 adds base_hours_override on task_template_features
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -488,6 +488,68 @@ def _migrate_v13_to_v14(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v14_to_v15(engine, session: Session) -> None:
+    """Migrate from v14 to v15: project_reference, many-to-many feature↔template, feature tracking."""
+    # 1. Add project_reference to estimations
+    if not _column_exists(engine, "estimations", "project_reference"):
+        session.execute(text(
+            "ALTER TABLE estimations ADD COLUMN project_reference VARCHAR"
+        ))
+
+    # 2. Create task_template_features association table
+    session.execute(text("""
+        CREATE TABLE IF NOT EXISTS task_template_features (
+            task_template_id INTEGER NOT NULL REFERENCES task_templates(id) ON DELETE CASCADE,
+            feature_id INTEGER NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+            PRIMARY KEY (task_template_id, feature_id)
+        )
+    """))
+
+    # 3. Migrate existing feature_id data to the association table
+    session.execute(text("""
+        INSERT OR IGNORE INTO task_template_features (task_template_id, feature_id)
+        SELECT id, feature_id FROM task_templates WHERE feature_id IS NOT NULL
+    """))
+
+    # 4. Add feature_id and feature_name to estimation_tasks
+    if not _column_exists(engine, "estimation_tasks", "feature_id"):
+        session.execute(text(
+            "ALTER TABLE estimation_tasks ADD COLUMN feature_id INTEGER"
+        ))
+    if not _column_exists(engine, "estimation_tasks", "feature_name"):
+        session.execute(text(
+            "ALTER TABLE estimation_tasks ADD COLUMN feature_name VARCHAR"
+        ))
+
+    # 5. Backfill estimation_tasks.feature_name from existing relationships
+    session.execute(text("""
+        UPDATE estimation_tasks SET feature_name = (
+            SELECT f.name FROM task_templates tt
+            JOIN features f ON tt.feature_id = f.id
+            WHERE tt.id = estimation_tasks.task_template_id
+        ) WHERE task_template_id IS NOT NULL AND feature_name IS NULL
+    """))
+    session.execute(text("""
+        UPDATE estimation_tasks SET feature_id = (
+            SELECT tt.feature_id FROM task_templates tt
+            WHERE tt.id = estimation_tasks.task_template_id
+        ) WHERE task_template_id IS NOT NULL AND feature_id IS NULL
+    """))
+
+    _set_schema_version(session, 15)
+    session.commit()
+
+
+def _migrate_v15_to_v16(engine, session: Session) -> None:
+    """Migrate from v15 to v16: add base_hours_override to task_template_features."""
+    if not _column_exists(engine, "task_template_features", "base_hours_override"):
+        session.execute(text(
+            "ALTER TABLE task_template_features ADD COLUMN base_hours_override REAL"
+        ))
+    _set_schema_version(session, 16)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -532,6 +594,10 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v12_to_v13(engine, session)
         if current_version < 14:
             _migrate_v13_to_v14(engine, session)
+        if current_version < 15:
+            _migrate_v14_to_v15(engine, session)
+        if current_version < 16:
+            _migrate_v15_to_v16(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)
@@ -578,6 +644,26 @@ def _ensure_config_keys(session: Session) -> None:
         "feature_categories": (
             "Telecom,Security,Platform,Other",
             "Comma-separated list of feature categories for dropdown menus",
+        ),
+        "calendar_today_bg_light": (
+            "#e0e0e0",
+            "Calendar today cell background color (light mode)",
+        ),
+        "calendar_today_bg_dark": (
+            "#37474f",
+            "Calendar today cell background color (dark mode)",
+        ),
+        "calendar_weekend_bg_light": (
+            "#f0f0f0",
+            "Calendar weekend cell background color (light mode)",
+        ),
+        "calendar_weekend_bg_dark": (
+            "#263238",
+            "Calendar weekend cell background color (dark mode)",
+        ),
+        "project_types": (
+            "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST",
+            "Comma-separated list of project types for estimation wizard",
         ),
     }
     for key, (value, desc) in _keys.items():
@@ -629,12 +715,12 @@ def _load_seed_data(session: Session) -> None:
         session.flush()
         feature_map[f["name"]] = feature
 
-    # Load task templates (global templates with feature_id=None)
+    # Load task templates (with many-to-many feature links)
     for t in data.get("task_templates", []):
         feature_name = t.get("feature_name")
-        feature_id = feature_map[feature_name].id if feature_name and feature_name in feature_map else None
+        linked_feature = feature_map.get(feature_name) if feature_name else None
         template = TaskTemplate(
-            feature_id=feature_id,
+            feature_id=linked_feature.id if linked_feature else None,
             name=t["name"],
             task_type=t["task_type"],
             base_effort_hours=t["base_effort_hours"],
@@ -643,6 +729,8 @@ def _load_seed_data(session: Session) -> None:
             is_parallelizable=t.get("is_parallelizable", False),
             description=t.get("description"),
         )
+        if linked_feature:
+            template.features = [linked_feature]
         session.add(template)
 
     # Load DUT types

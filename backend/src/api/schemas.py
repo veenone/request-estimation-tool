@@ -32,6 +32,8 @@ class FeatureUpdate(BaseModel):
 class TaskTemplateOut(BaseModel):
     id: int
     feature_id: Optional[int] = None
+    feature_ids: list[int] = []
+    feature_hours: dict[str, float] = {}  # {feature_id_str: base_hours_override}
     name: str
     task_type: str
     base_effort_hours: float
@@ -42,6 +44,17 @@ class TaskTemplateOut(BaseModel):
     product_type: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _resolve_features(cls, data, handler):
+        obj = handler(data)
+        if not obj.feature_ids and hasattr(data, "features"):
+            obj.feature_ids = [f.id for f in data.features]
+        # Backward compat: set feature_id to first if exactly one
+        if obj.feature_ids and obj.feature_id is None:
+            obj.feature_id = obj.feature_ids[0] if len(obj.feature_ids) == 1 else None
+        return obj
 
 class FeatureOut(FeatureBase):
     id: int
@@ -54,7 +67,9 @@ class FeatureOut(FeatureBase):
 # ── Task Templates ────────────────────────────────────────
 
 class TaskTemplateCreate(BaseModel):
-    feature_id: Optional[int] = None
+    feature_id: Optional[int] = None  # Legacy single-feature (backward compat)
+    feature_ids: list[int] = []  # Many-to-many feature IDs
+    feature_hours: dict[str, float] = {}  # {feature_id_str: base_hours_override}
     name: str
     task_type: str
     base_effort_hours: float
@@ -73,6 +88,8 @@ class TaskTemplateUpdate(BaseModel):
     is_parallelizable: Optional[bool] = None
     description: Optional[str] = None
     product_type: Optional[str] = None
+    feature_ids: Optional[list[int]] = None  # Many-to-many feature IDs
+    feature_hours: Optional[dict[str, float]] = None  # {feature_id_str: base_hours_override}
 
 
 # ── DUT Types ─────────────────────────────────────────────
@@ -278,6 +295,8 @@ class EstimationTaskOut(BaseModel):
     leader_hours: float
     is_new_feature_study: bool
     notes: Optional[str] = None
+    feature_id: Optional[int] = None
+    feature_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -333,6 +352,7 @@ class EstimationCreate(BaseModel):
     expected_releases: int = 1
     project_goals: Optional[str] = None
     target_customer: Optional[str] = None
+    project_reference: Optional[str] = None
     team_id: Optional[int] = None
     risk_item_ids: list[int] = []
     document_type_ids: list[int] = []
@@ -380,6 +400,7 @@ class EstimationOut(BaseModel):
     expected_releases: int = 1
     project_goals: Optional[str] = None
     target_customer: Optional[str] = None
+    project_reference: Optional[str] = None
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
     approved_by: Optional[str] = None
@@ -433,6 +454,7 @@ class EstimationUpdate(BaseModel):
     notes: Optional[str] = None
     project_goals: Optional[str] = None
     target_customer: Optional[str] = None
+    project_reference: Optional[str] = None
 
 
 class EstimationRevise(BaseModel):
@@ -456,6 +478,7 @@ class EstimationRevise(BaseModel):
     expected_releases: int = 1
     project_goals: Optional[str] = None
     target_customer: Optional[str] = None
+    project_reference: Optional[str] = None
     team_id: Optional[int] = None
     risk_item_ids: list[int] = []
     document_type_ids: list[int] = []

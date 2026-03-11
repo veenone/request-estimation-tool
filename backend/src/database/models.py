@@ -5,12 +5,14 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Column,
     Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     func,
 )
@@ -19,6 +21,22 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+# Many-to-many association: TaskTemplate ↔ Feature (with optional per-feature base_hours override)
+class TaskTemplateFeature(Base):
+    __tablename__ = "task_template_features"
+
+    task_template_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("task_templates.id", ondelete="CASCADE"), primary_key=True,
+    )
+    feature_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("features.id", ondelete="CASCADE"), primary_key=True,
+    )
+    base_hours_override: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    task_template: Mapped["TaskTemplate"] = relationship(viewonly=True)
+    feature: Mapped["Feature"] = relationship(viewonly=True)
 
 
 class Request(Base):
@@ -61,7 +79,15 @@ class Feature(Base):
     study_effort_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    task_templates: Mapped[list["TaskTemplate"]] = relationship(back_populates="feature", cascade="all, delete-orphan")
+    # Many-to-many: features linked to this template
+    task_templates: Mapped[list["TaskTemplate"]] = relationship(
+        secondary="task_template_features", back_populates="features", viewonly=True,
+    )
+    # Legacy one-to-many (kept for backward compat with feature_id FK column)
+    owned_templates: Mapped[list["TaskTemplate"]] = relationship(
+        back_populates="legacy_feature", cascade="all, delete-orphan",
+        foreign_keys="TaskTemplate.feature_id",
+    )
 
 
 class TaskTemplate(Base):
@@ -78,7 +104,14 @@ class TaskTemplate(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    feature: Mapped[Optional["Feature"]] = relationship(back_populates="task_templates")
+    # Many-to-many features
+    features: Mapped[list["Feature"]] = relationship(
+        secondary="task_template_features", back_populates="task_templates",
+    )
+    # Legacy single-feature relationship (backward compat)
+    legacy_feature: Mapped[Optional["Feature"]] = relationship(
+        back_populates="owned_templates", foreign_keys=[feature_id],
+    )
 
 
 class DocumentType(Base):
@@ -174,6 +207,7 @@ class Estimation(Base):
     pr_no_test_hours: Mapped[float] = mapped_column(Float, default=0)
     project_goals: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     target_customer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    project_reference: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     team_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
 
@@ -202,6 +236,8 @@ class EstimationTask(Base):
     leader_hours: Mapped[float] = mapped_column(Float, default=0)
     is_new_feature_study: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    feature_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     estimation: Mapped["Estimation"] = relationship(back_populates="tasks")
     task_template: Mapped[Optional["TaskTemplate"]] = relationship()

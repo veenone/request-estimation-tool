@@ -598,48 +598,54 @@ def sidebar():
         is_dark = _safe_storage().get("dark_mode", True)
         dark = ui.dark_mode(is_dark)
 
-        # Task 14: Inject configurable table header background color
-        _hdr_light = "#E0E0E0"
-        _hdr_dark = "#424242"
+        # Precompute both light and dark theme colors
+        _theme = {
+            "hdr_light": "#E0E0E0", "hdr_dark": "#424242",
+            "sidebar_light": "#FFFFFF", "sidebar_dark": "#1D1D1D",
+            "content_light": "#FAFAFA", "content_dark": "#121212",
+            "button_light": "#1976D2", "button_dark": "#90CAF9",
+        }
         if _cfg_list:
-            for _ci in _cfg_list:
-                if _ci.get("key") == "table_header_bg_light":
-                    _hdr_light = _ci.get("value") or _hdr_light
-                elif _ci.get("key") == "table_header_bg_dark":
-                    _hdr_dark = _ci.get("value") or _hdr_dark
-        _active_hdr = _hdr_dark if is_dark else _hdr_light
-        ui.add_css(f".q-table thead th {{ background-color: {_active_hdr} !important; }}")
-
-        # Inject custom sidebar/content/button colors from config
-        _sidebar_bg = "#1D1D1D" if is_dark else "#FFFFFF"
-        _content_bg = "#121212" if is_dark else "#FAFAFA"
-        _button_color = "#90CAF9" if is_dark else "#1976D2"
-        if _cfg_list:
+            _theme_keys = {
+                "table_header_bg_light": "hdr_light",
+                "table_header_bg_dark": "hdr_dark",
+                "sidebar_bg_light": "sidebar_light",
+                "sidebar_bg_dark": "sidebar_dark",
+                "content_bg_light": "content_light",
+                "content_bg_dark": "content_dark",
+                "button_color_light": "button_light",
+                "button_color_dark": "button_dark",
+            }
             for _ci in _cfg_list:
                 k, v = _ci.get("key", ""), _ci.get("value", "")
-                if not v:
-                    continue
-                if k == "sidebar_bg_light" and not is_dark:
-                    _sidebar_bg = v
-                elif k == "sidebar_bg_dark" and is_dark:
-                    _sidebar_bg = v
-                elif k == "content_bg_light" and not is_dark:
-                    _content_bg = v
-                elif k == "content_bg_dark" and is_dark:
-                    _content_bg = v
-                elif k == "button_color_light" and not is_dark:
-                    _button_color = v
-                elif k == "button_color_dark" and is_dark:
-                    _button_color = v
-        ui.add_css(f"""
-            .q-drawer--left {{ background-color: {_sidebar_bg} !important; }}
-            .q-page {{ background-color: {_content_bg} !important; }}
-            .q-btn--standard.bg-primary {{ background-color: {_button_color} !important; }}
-        """)
+                if v and k in _theme_keys:
+                    _theme[_theme_keys[k]] = v
+
+        def _apply_theme_css(dark_mode: bool) -> None:
+            suffix = "dark" if dark_mode else "light"
+            hdr = _theme[f"hdr_{suffix}"]
+            sidebar_bg = _theme[f"sidebar_{suffix}"]
+            content_bg = _theme[f"content_{suffix}"]
+            btn = _theme[f"button_{suffix}"]
+            ui.run_javascript(f"""
+                document.getElementById('theme-dynamic')?.remove();
+                var s = document.createElement('style');
+                s.id = 'theme-dynamic';
+                s.textContent = `
+                    .q-table thead th {{ background-color: {hdr} !important; }}
+                    .q-drawer--left {{ background-color: {sidebar_bg} !important; }}
+                    .q-page {{ background-color: {content_bg} !important; }}
+                    .q-btn--standard.bg-primary {{ background-color: {btn} !important; }}
+                `;
+                document.head.appendChild(s);
+            """)
+
+        _apply_theme_css(is_dark)
 
         def toggle_theme():
             dark.toggle()
             _safe_storage()["dark_mode"] = dark.value
+            _apply_theme_css(dark.value)
 
         ui.button(icon="brightness_6", on_click=toggle_theme).props("flat round").classes("q-ma-md")
 
