@@ -102,21 +102,23 @@ async def team_page() -> None:
                 format="%.1f",
             ).classes("w-full")
             f_skills = ui.select(
-                label="Skills",
-                options=available_skills,
+                label="Skills (type to add new)",
+                options=list(available_skills),
                 value=[],
                 multiple=True,
-            ).classes("w-full").props("use-chips")
+            ).classes("w-full").props('use-chips use-input new-value-mode="add-unique" input-debounce="0"')
 
-            # Linked user select
+            # Linked user select — sorted ascending, searchable
+            sorted_users = sorted(all_users, key=lambda u: (u.get("display_name") or u.get("username", "")).lower())
             user_options = {0: "(None)"} | {
                 u["id"]: f"{u.get('display_name', u.get('username', ''))}"
-                for u in all_users
+                for u in sorted_users
             }
             f_linked_user = ui.select(
                 label="Linked User (optional)",
                 options=user_options,
                 value=0,
+                with_input=True,
             ).classes("w-full")
 
             async def submit() -> None:
@@ -177,23 +179,27 @@ async def team_page() -> None:
                 step=0.5,
                 format="%.1f",
             ).classes("w-full")
+            # Merge existing skills into available options so they appear in the dropdown
+            all_skill_options = sorted(set(available_skills) | set(existing_skills))
             f_skills = ui.select(
-                label="Skills",
-                options=available_skills,
+                label="Skills (type to add new)",
+                options=all_skill_options,
                 value=existing_skills,
                 multiple=True,
-            ).classes("w-full").props("use-chips")
+            ).classes("w-full").props('use-chips use-input new-value-mode="add-unique" input-debounce="0"')
 
-            # Linked user select
+            # Linked user select — sorted ascending, searchable
+            sorted_users = sorted(all_users, key=lambda u: (u.get("display_name") or u.get("username", "")).lower())
             user_options = {0: "(None)"} | {
                 u["id"]: f"{u.get('display_name', u.get('username', ''))}"
-                for u in all_users
+                for u in sorted_users
             }
             current_linked = member.get("linked_user_id") or 0
             f_linked_user = ui.select(
                 label="Linked User (optional)",
                 options=user_options,
                 value=current_linked,
+                with_input=True,
             ).classes("w-full")
 
             async def submit() -> None:
@@ -372,7 +378,7 @@ async def team_page() -> None:
             columns=columns,
             rows=members,
             row_key="id",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
         ).classes("w-full")
 
         # Render role with a colored chip

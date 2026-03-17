@@ -173,8 +173,9 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
         ["PR Fix Count", str(data.pr_fix_count)],
         ["Team Size", str(data.team_size)],
         ["Test Leader", "Yes" if data.has_leader else "No"],
-        ["Start Date", data.start_date],
-        ["Expected Delivery", data.expected_delivery],
+        ["Project Start Date (T0)", data.start_date],
+        ["Testing Start Date", data.testing_start_date],
+        ["Target Date", data.expected_delivery],
     ])
 
     doc.add_paragraph()
@@ -200,15 +201,21 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
     # ── 5. Task breakdown ──────────────────────────────
     doc.add_heading("Detailed Task Breakdown", level=1)
 
-    task_headers = ["Task Name", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs"]
+    hpd = data.working_hours_per_day
+    task_headers = ["Task Name", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs", "Total Hrs", "Total MD"]
     task_rows = []
     for task in data.tasks:
+        tester_h = task.get("calculated_hours", 0)
+        leader_h = task.get("leader_hours", 0)
+        total_h = tester_h + leader_h
         task_rows.append([
             task.get("task_name", task.get("name", "")),
             task.get("task_type", ""),
             f"{task.get('base_hours', 0):.1f}",
-            f"{task.get('calculated_hours', 0):.1f}",
-            f"{task.get('leader_hours', 0):.1f}",
+            f"{tester_h:.1f}",
+            f"{leader_h:.1f}",
+            f"{total_h:.1f}",
+            f"{total_h / hpd:.1f}",
         ])
     _add_styled_table(doc, task_headers, task_rows)
 
@@ -216,24 +223,24 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
 
     # ── 6. Effort summary ──────────────────────────────
     doc.add_heading("Effort Summary", level=1)
+    hpd = data.working_hours_per_day
     effort_rows = [
-        ["Total Tester Effort", f"{data.total_tester_hours:.1f}"],
-        ["Test Leader Effort", f"{data.total_leader_hours:.1f}"],
-        ["PR Fix Validation", f"{data.pr_fix_hours:.1f}"],
-        ["New Feature Study", f"{data.study_hours:.1f}"],
+        ["Total Tester Effort", f"{data.total_tester_hours:.1f}", f"{data.total_tester_hours / hpd:.1f}"],
+        ["Test Leader Effort", f"{data.total_leader_hours:.1f}", f"{data.total_leader_hours / hpd:.1f}"],
+        ["PR Fix Validation", f"{data.pr_fix_hours:.1f}", f"{data.pr_fix_hours / hpd:.1f}"],
+        ["New Feature Study", f"{data.study_hours:.1f}", f"{data.study_hours / hpd:.1f}"],
     ]
     if getattr(data, "pr_no_test_hours", 0) > 0:
-        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}"])
+        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}", f"{data.pr_no_test_hours / hpd:.1f}"])
     if data.release_extra_hours > 0:
-        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}"])
+        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}", f"{data.release_extra_hours / hpd:.1f}"])
     if data.documentation_hours > 0:
-        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}"])
-    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}"])
-    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}"])
-    effort_rows.append(["Grand Total (Days)", f"{data.grand_total_days:.1f}"])
+        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}", f"{data.documentation_hours / hpd:.1f}"])
+    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}", f"{data.buffer_hours / hpd:.1f}"])
+    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}", f"{data.grand_total_days:.1f}"])
     if getattr(data, "working_weeks", 0) > 0:
-        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}"])
-    _add_styled_table(doc, ["Component", "Hours"], effort_rows)
+        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}", ""])
+    _add_styled_table(doc, ["Component", "Hours", "Person-Days"], effort_rows)
 
     doc.add_paragraph()
 
@@ -253,11 +260,12 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
     # ── 6c. PR Fixes breakdown ──────────────────────────
     if data.pr_fix_count > 0:
         doc.add_heading("PR Fixes Breakdown", level=1)
-        _add_styled_table(doc, ["Complexity", "Count", "Hours Each", "Subtotal"], [
-            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2)],
-            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4)],
-            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8)],
-            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}"],
+        hpd_pr = data.working_hours_per_day
+        _add_styled_table(doc, ["Complexity", "Count", "Hours Each", "Subtotal (h)", "Subtotal (MD)"], [
+            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2), f"{data.pr_simple * 2 / hpd_pr:.1f}"],
+            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4), f"{data.pr_medium * 4 / hpd_pr:.1f}"],
+            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8), f"{data.pr_complex * 8 / hpd_pr:.1f}"],
+            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}", f"{data.pr_fix_hours / hpd_pr:.1f}"],
         ])
 
         if data.pr_details:

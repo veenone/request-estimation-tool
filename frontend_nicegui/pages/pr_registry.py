@@ -56,7 +56,7 @@ async def pr_registry_page() -> None:
             columns=_COLUMNS,
             rows=[],
             row_key="key",
-            pagination={"rowsPerPage": 25},
+            pagination={"rowsPerPage": 15},
         ).classes("w-full shadow-1")
 
         # Add search/filter
@@ -109,5 +109,5 @@ async def pr_registry_page() -> None:
 
         table.on("rowClick", _show_detail)
 
-        # Initial load
-        await _refresh()
+        # Show hint instead of auto-loading from Jira
+        ui.label("Click 'Refresh' to load PR items from Jira.").classes("text-body2 text-grey q-mt-sm")

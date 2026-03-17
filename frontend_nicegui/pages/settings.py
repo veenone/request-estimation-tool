@@ -39,6 +39,8 @@ SECTION_KEYS: dict[str, list[str]] = {
         "pr_hours_complex",
         "pr_no_test_hours",
         "pr_no_test_task_template_id",
+        "release_effort_factor",
+        "release_effort_task_types",
     ],
     "Workflow Automation": [
         "outline_auto_export_states",

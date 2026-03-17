@@ -215,7 +215,8 @@ class OIDCProvider:
                 local_user.display_name = display_name
                 local_user.email = email
                 local_user.external_id = subject
-                local_user.role = role
+                if role is not None:
+                    local_user.role = role
                 local_user.is_active = True
             else:
                 local_user = User(
@@ -224,7 +225,7 @@ class OIDCProvider:
                     email=email,
                     auth_provider="oidc",
                     external_id=subject,
-                    role=role,
+                    role=role or "VIEWER",
                     is_active=True,
                 )
                 self.session.add(local_user)
@@ -261,8 +262,9 @@ class OIDCProvider:
             userinfo: The decoded userinfo JSON payload from the IdP.
 
         Returns:
-            The highest-privilege role that matches, defaulting to
-            ``"VIEWER"`` when no mapping matches.
+            The highest-privilege role that matches, or ``None`` when
+            no mapping matches (so the caller can preserve the existing
+            locally-assigned role).
         """
         role_claim = self.config.get("oidc_role_claim") or "roles"
         raw_roles = userinfo.get(role_claim, [])
@@ -284,4 +286,4 @@ class OIDCProvider:
             if mapped_value and mapped_value in roles_in_token:
                 return role
 
-        return "VIEWER"
+        return None

@@ -54,7 +54,7 @@ async def risks_page() -> None:
             columns=_COLUMNS,
             rows=[],
             row_key="id",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
         ).classes("w-full shadow-1")
 
         # Color-coded badges for likelihood

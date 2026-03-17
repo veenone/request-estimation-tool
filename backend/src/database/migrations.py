@@ -28,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 16  # v16 adds base_hours_override on task_template_features
+SCHEMA_VERSION = 19  # v19 adds estimated_completion_date on estimations
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -550,6 +550,41 @@ def _migrate_v15_to_v16(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v16_to_v17(engine, session: Session) -> None:
+    """Migrate from v16 to v17: add is_pr_fix to task_templates, formula to estimation_tasks."""
+    if not _column_exists(engine, "task_templates", "is_pr_fix"):
+        session.execute(text(
+            "ALTER TABLE task_templates ADD COLUMN is_pr_fix BOOLEAN NOT NULL DEFAULT 0"
+        ))
+    if not _column_exists(engine, "estimation_tasks", "formula"):
+        session.execute(text(
+            "ALTER TABLE estimation_tasks ADD COLUMN formula TEXT"
+        ))
+    # Auto-flag the seed "PR fix validation" template
+    session.execute(text(
+        "UPDATE task_templates SET is_pr_fix = 1 WHERE LOWER(name) LIKE '%pr fix%' OR LOWER(name) LIKE '%pr validation%'"
+    ))
+    _set_schema_version(session, 17)
+    session.commit()
+
+
+def _migrate_v17_to_v18(engine, session: Session) -> None:
+    """Migrate from v17 to v18: add elapsed_hours/days/weeks to estimations."""
+    for col in ("elapsed_hours", "elapsed_days", "elapsed_weeks"):
+        if not _column_exists(engine, "estimations", col):
+            session.execute(text(f"ALTER TABLE estimations ADD COLUMN {col} REAL NOT NULL DEFAULT 0"))
+    _set_schema_version(session, 18)
+    session.commit()
+
+
+def _migrate_v18_to_v19(engine, session: Session) -> None:
+    """Migrate from v18 to v19: add estimated_completion_date to estimations."""
+    if not _column_exists(engine, "estimations", "estimated_completion_date"):
+        session.execute(text("ALTER TABLE estimations ADD COLUMN estimated_completion_date DATE"))
+    _set_schema_version(session, 19)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -598,6 +633,12 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v14_to_v15(engine, session)
         if current_version < 16:
             _migrate_v15_to_v16(engine, session)
+        if current_version < 17:
+            _migrate_v16_to_v17(engine, session)
+        if current_version < 18:
+            _migrate_v17_to_v18(engine, session)
+        if current_version < 19:
+            _migrate_v18_to_v19(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)
@@ -664,6 +705,14 @@ def _ensure_config_keys(session: Session) -> None:
         "project_types": (
             "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST",
             "Comma-separated list of project types for estimation wizard",
+        ),
+        "release_effort_factor": (
+            "0.5",
+            "Effort multiplier per additional release (0.0 to 1.0)",
+        ),
+        "release_effort_task_types": (
+            "EXECUTION",
+            "Comma-separated task types affected by release effort multiplier (e.g. EXECUTION,REVIEW)",
         ),
     }
     for key, (value, desc) in _keys.items():

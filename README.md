@@ -2,13 +2,14 @@
 
 A structured, data-driven application for producing professional test effort estimations for new product launches, product evolutions, and ongoing support projects. The tool combines a 7-step estimation wizard, historical project calibration, intelligent task catalogs, and automated report generation to deliver defensible estimates in minutes.
 
-**Status:** Version 3.2.0 — Production Ready
+**Status:** Version 3.3.0 — Production Ready
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [What's New in v3.3](#whats-new-in-v33)
 - [What's New in v3.2](#whats-new-in-v32)
 - [What's New in v3.1](#whats-new-in-v31)
 - [Key Features](#key-features)
@@ -50,6 +51,43 @@ The Test Effort Estimation Tool automates the estimation process for QA teams, t
 The tool assumes a matrix-based testing model where testing effort is a function of:
 - Task base effort (hours) x DUT multiplier x Profile multiplier x Complexity weight
 - Followed by test leader overhead, buffer, and risk adjustments
+
+---
+
+## What's New in v3.3
+
+| Feature | Description |
+|---------|-------------|
+| **Dashboard Charts** | Interactive ECharts donut and bar charts for estimations, requests, features, tasks, and risks with dark mode support |
+| **DUT Registry Bulk Edit** | Multi-select rows for bulk category/multiplier changes and bulk delete in DUT registry |
+| **User Management Search** | Real-time search/filter across username, display name, email, and role in user management table |
+| **Bulk Role Assignment** | Multi-select users and assign roles in bulk from the user management page |
+| **LDAP/OIDC Role Preservation** | External auth providers no longer overwrite admin-assigned roles; only explicit group mappings change roles |
+| **Descriptive Error Pages** | HTTP 400, 401, 403, 422 errors display user-friendly banners with detailed Pydantic validation messages |
+| **Estimation Revision Fix** | Fixed 422 errors on save revision caused by empty date strings in Optional[date] fields |
+| **DUT Edit Modal Fix** | Fixed edit button in DUT registry not opening the modal dialog |
+| **Dashboard Stats API** | Extended `/api/dashboard/stats` with feature/task/risk breakdowns by category, type, and likelihood |
+
+### Screenshots
+
+| Page | Screenshot |
+|------|------------|
+| Login | ![Login](docs/screenshots/login.png) |
+| Dashboard | ![Dashboard](docs/screenshots/dashboard.png) |
+| Estimation List | ![Estimation List](docs/screenshots/estimation_list.png) |
+| Estimation Detail | ![Estimation Detail](docs/screenshots/estimation_detail.png) |
+| Estimation Wizard | ![Estimation Wizard](docs/screenshots/estimation_wizard.png) |
+| Requests | ![Requests](docs/screenshots/requests.png) |
+| Feature Catalog | ![Features](docs/screenshots/features.png) |
+| Task Templates | ![Tasks](docs/screenshots/tasks.png) |
+| DUT Registry | ![DUT Registry](docs/screenshots/dut_registry.png) |
+| Test Profiles | ![Profiles](docs/screenshots/profiles.png) |
+| Team Management | ![Team](docs/screenshots/team.png) |
+| User Management | ![Users](docs/screenshots/users.png) |
+| Settings | ![Settings](docs/screenshots/settings.png) |
+| Audit Log | ![Audit Log](docs/screenshots/audit_log.png) |
+| Risk Registry | ![Risk Registry](docs/screenshots/risk_registry.png) |
+| Holidays | ![Holidays](docs/screenshots/holidays.png) |
 
 ---
 
@@ -390,7 +428,7 @@ docker-compose down         # Stop all services
 ```bash
 # Health check (no auth required)
 curl http://localhost:8501/api/healthcheck
-# → {"status":"ok","version":"3.2.0"}
+# → {"status":"ok","version":"3.3.0"}
 
 # Login and get a token
 curl -X POST http://localhost:8501/api/auth/login \
@@ -572,7 +610,7 @@ Authorization: Bearer <access_token>
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"3.2.0"}` |
+| GET | `/api/healthcheck` | Liveness probe — returns `{"status":"ok","version":"3.3.0"}` |
 | GET | `/api/host-config` | Runtime config for frontends (API version, auth providers) |
 
 ### Authentication
@@ -1007,6 +1045,6 @@ For major changes, please open an issue first to discuss the approach.
 
 ---
 
-**Version**: 3.2.0
+**Version**: 3.3.0
 **Last Updated**: March 2026
 **Status**: Production Ready

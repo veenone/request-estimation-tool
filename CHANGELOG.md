@@ -4,6 +4,32 @@ All notable changes to the Test Effort Estimation Tool are documented here.
 
 ---
 
+## [3.3.0] - 2026-03-17
+
+### Added
+- **Dashboard ECharts** — interactive donut and bar charts for estimation status, request status, feature categories, task types, risk categories, and risk likelihood with dark mode legend colors
+- **DUT registry bulk operations** — multi-select rows with bulk edit (category, multiplier) and bulk delete with confirmation dialog
+- **User management search** — real-time search/filter across username, display name, email, role, and auth provider
+- **Bulk role assignment** — select multiple users and assign a new role in bulk from user management page
+- **Descriptive error pages** — HTTP 400, 401, 403, 422 errors display user-friendly banners with detailed Pydantic validation error parsing
+- **Dashboard stats API extensions** — `GET /api/dashboard/stats` returns `features_by_category`, `tasks_by_type`, `risks_by_category`, `risks_by_likelihood` breakdowns
+- **Page screenshots** — 16 automated Playwright screenshots of all NiceGUI pages in `docs/screenshots/`
+- **Design document** — `docs/design-document.md` with architecture overview, data flow, and Mermaid diagrams
+
+### Fixed
+- **Estimation revision 422 error** — empty strings sent for `Optional[date]` fields (`start_date`, `expected_delivery`, `testing_start_date`) now converted to `None` before API call
+- **DUT edit modal not opening** — Vue slot `@click` events changed from `$parent.$emit(...)` to arrow function `() => $parent.$emit(...)` for reliable event emission
+- **User role reverting to VIEWER** — LDAP/OIDC providers no longer overwrite admin-assigned roles; `_map_role()` returns `None` when no group mapping matches, preserving existing role
+- **Duplicate `testing_start_date` keys** — removed duplicate key in both create and revise estimation payloads
+
+### Changed
+- Dashboard moved from placeholder to full inline implementation in `app.py` with 3 chart rows and paginated tables
+- DUT registry uses `selection="multiple"` table with action buttons via arrow function event emission
+- User management table supports multi-select with conditional bulk role button visibility
+- Version bumped to 3.3.0 across `pyproject.toml`, `app.py`, and `README.md`
+
+---
+
 ## [3.2.0] - 2026-03-06
 
 ### Added

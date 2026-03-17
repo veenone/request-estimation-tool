@@ -75,7 +75,7 @@ async def assets_page() -> None:
             rows=[],
             row_key="id",
             selection="multiple",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
         ).classes("w-full shadow-1")
 
         # ------------------------------------------------------------------ #

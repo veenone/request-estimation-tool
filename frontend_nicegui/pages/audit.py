@@ -114,7 +114,7 @@ async def audit_page() -> None:
                     columns=columns,
                     rows=logs,
                     row_key="id",
-                    pagination={"rowsPerPage": 25},
+                    pagination={"rowsPerPage": 15},
                 ).classes("w-full")
 
                 # Color-code action column

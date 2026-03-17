@@ -671,9 +671,20 @@ def update_dut_type(dut_id: int, data: DutTypeUpdate, user: User = Depends(Requi
     dut = db.get(DutType, dut_id)
     if not dut:
         raise HTTPException(404, "DUT type not found")
-    for key, val in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    # Check for name uniqueness only if name is actually changing
+    new_name = updates.get("name")
+    if new_name and new_name != dut.name:
+        existing = db.query(DutType).filter(DutType.name == new_name, DutType.id != dut_id).first()
+        if existing:
+            raise HTTPException(409, f"DUT type with name '{new_name}' already exists")
+    for key, val in updates.items():
         setattr(dut, key, val)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(409, "Failed to update — possible duplicate name")
     db.refresh(dut)
     return dut
 
@@ -974,12 +985,14 @@ def _expand_templates_to_tasks(
     selected_feature_ids: list[int],
     new_feature_ids: list[int],
     db=None,
+    skip_pr_fix: bool = False,
 ) -> list[TaskInput]:
     """Expand task templates into TaskInput list.
 
     Global templates (no linked features) produce one task.
     Feature-linked templates produce one task per selected feature they're linked to.
     Per-feature base_hours_override from task_template_features is used when available.
+    When skip_pr_fix is True, templates flagged as is_pr_fix are excluded.
     """
     task_inputs: list[TaskInput] = []
     selected_set = set(selected_feature_ids)
@@ -998,6 +1011,8 @@ def _expand_templates_to_tasks(
                 override_map[(lnk.task_template_id, lnk.feature_id)] = lnk.base_hours_override
 
     for tmpl in templates:
+        if skip_pr_fix and getattr(tmpl, "is_pr_fix", False):
+            continue
         linked_fids = [f.id for f in tmpl.features]
         if not linked_fids:
             # Global template — one task, no feature association
@@ -1009,6 +1024,7 @@ def _expand_templates_to_tasks(
                 scales_with_profile=tmpl.scales_with_profile,
                 complexity_weight=1.0,
                 is_new_feature_study=False,
+                is_parallelizable=tmpl.is_parallelizable,
                 template_id=tmpl.id,
             ))
         else:
@@ -1029,6 +1045,7 @@ def _expand_templates_to_tasks(
                         scales_with_profile=tmpl.scales_with_profile,
                         complexity_weight=feat.complexity_weight,
                         is_new_feature_study=is_study,
+                        is_parallelizable=tmpl.is_parallelizable,
                         template_id=tmpl.id,
                         feature_id=fid,
                         feature_name=feat.name,
@@ -1058,10 +1075,15 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         features = []
         templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    task_inputs = _expand_templates_to_tasks(templates, features, feature_ids, new_feature_ids, db)
+    pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+    task_inputs = _expand_templates_to_tasks(
+        templates, features, feature_ids, new_feature_ids, db,
+        skip_pr_fix=(pr_total == 0),
+    )
 
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
+    combination_count = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
     new_feature_count = len(new_feature_ids)
 
     # Build per-feature study hours list
@@ -1072,6 +1094,8 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         feature_study_hours_list.append(hrs)
 
     release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
+    release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
 
     calc_input = EstimationInput(
@@ -1079,6 +1103,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         tasks=task_inputs,
         dut_count=dut_count,
         profile_count=profile_count,
+        combination_count=combination_count,
         pr_fixes=CalcPRFixInput(
             simple=data.pr_fixes.simple,
             medium=data.pr_fixes.medium,
@@ -1096,6 +1121,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         pr_scales_with_profile=pr_scales_profile,
         expected_releases=data.expected_releases,
         release_effort_factor=release_factor,
+        release_effort_task_types=release_task_types,
         pr_complexity_hours=pr_cfg["complexity_hours"],
         pr_no_test_hours=pr_cfg["no_test_hours"],
         pr_no_test_count=0,  # preview doesn't have pr_details
@@ -1140,6 +1166,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
                 "task_type": t.task_type,
                 "base_hours": t.base_hours,
                 "calculated_hours": t.calculated_hours,
+                "formula": t.formula,
                 "feature_name": t.feature_name,
             }
             for t in result.tasks
@@ -1157,6 +1184,9 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         feasibility_status=result.feasibility_status,
         capacity_hours=result.capacity_hours,
         utilization_pct=result.utilization_pct,
+        elapsed_hours=result.elapsed_hours,
+        elapsed_days=result.elapsed_days,
+        elapsed_weeks=result.elapsed_weeks,
         risk_flags=[f.value for f in risks.flags],
         risk_messages=all_risk_messages,
     )
@@ -1232,15 +1262,21 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         features = []
         templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    # Build task inputs — one per feature for feature-linked templates
-    task_inputs = _expand_templates_to_tasks(templates, features, data.feature_ids, data.new_feature_ids, db)
-
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
     combinations = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
     new_feature_count = len(data.new_feature_ids)
     pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+
+    # Build task inputs — one per feature for feature-linked templates
+    task_inputs = _expand_templates_to_tasks(
+        templates, features, data.feature_ids, data.new_feature_ids, db,
+        skip_pr_fix=(pr_total == 0),
+    )
+
     release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
+    release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
     pr_details_raw = [d.model_dump() for d in data.pr_details] if data.pr_details else []
     no_test_count = _count_no_test_prs(pr_details_raw)
@@ -1258,6 +1294,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         tasks=task_inputs,
         dut_count=dut_count,
         profile_count=profile_count,
+        combination_count=combinations,
         pr_fixes=CalcPRFixInput(
             simple=data.pr_fixes.simple,
             medium=data.pr_fixes.medium,
@@ -1275,6 +1312,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         pr_scales_with_profile=pr_scales_profile,
         expected_releases=data.expected_releases,
         release_effort_factor=release_factor,
+        release_effort_task_types=release_task_types,
         pr_complexity_hours=pr_cfg["complexity_hours"],
         pr_no_test_hours=pr_cfg["no_test_hours"],
         pr_no_test_count=no_test_count,
@@ -1306,6 +1344,8 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         "document_type_ids": data.document_type_ids,
         "document_counts": data.document_counts,
         "project_reference": data.project_reference,
+        "testing_start_date": data.testing_start_date,
+        "product_type_filter": data.product_type_filter,
     }
 
     # Calculate documentation hours — deduct linked template hours once per group
@@ -1316,6 +1356,15 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
 
     adjusted_grand_total = result.grand_total_hours + documentation_hours
     adjusted_grand_total_days = adjusted_grand_total / hours_per_day if hours_per_day else result.grand_total_days
+
+    # Compute estimated completion date from testing start + elapsed days
+    estimated_completion = None
+    if data.testing_start_date and result.elapsed_days > 0:
+        try:
+            _testing_start = date.fromisoformat(data.testing_start_date)
+            estimated_completion = _compute_completion_date(_testing_start, result.elapsed_days, db)
+        except (ValueError, TypeError):
+            pass
 
     # Save estimation
     estimation = Estimation(
@@ -1340,6 +1389,9 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         buffer_hours=result.buffer_hours,
         grand_total_hours=adjusted_grand_total,
         grand_total_days=adjusted_grand_total_days,
+        elapsed_hours=result.elapsed_hours,
+        elapsed_days=result.elapsed_days,
+        elapsed_weeks=result.elapsed_weeks,
         feasibility_status=result.feasibility_status,
         status="DRAFT",
         created_by=data.created_by,
@@ -1350,6 +1402,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         target_customer=data.target_customer,
         project_reference=data.project_reference,
         team_id=data.team_id,
+        estimated_completion_date=estimated_completion,
     )
     db.add(estimation)
     db.flush()
@@ -1363,10 +1416,11 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
             task_type=task.task_type,
             base_hours=task.base_hours,
             calculated_hours=task.calculated_hours,
-            assigned_testers=1,
+            assigned_testers=data.task_assigned_testers.get(task.name, 1),
             has_leader_support=data.has_leader,
             leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
             is_new_feature_study=task.is_new_feature_study,
+            formula=task.formula,
             feature_id=task.feature_id,
             feature_name=task.feature_name,
         )
@@ -1473,6 +1527,7 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
                 "task_type": t.task_type,
                 "base_hours": t.base_hours,
                 "calculated_hours": t.calculated_hours,
+                "formula": t.formula,
                 "feature_name": t.feature_name,
             }
             for t in result.tasks
@@ -1488,9 +1543,37 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
         feasibility_status=result.feasibility_status,
         capacity_hours=result.capacity_hours,
         utilization_pct=result.utilization_pct,
+        elapsed_hours=result.elapsed_hours,
+        elapsed_days=result.elapsed_days,
+        elapsed_weeks=result.elapsed_weeks,
         risk_flags=[f.value for f in risks.flags],
         risk_messages=all_risk_messages,
     )
+
+
+# ── Completion date helper ────────────────────────────────
+
+def _compute_completion_date(start: date, elapsed_days: float, db: Session) -> date:
+    """Walk forward from start by elapsed_days working days, skipping weekends and holidays."""
+    from datetime import timedelta
+    all_holidays = db.query(PublicHoliday).all()
+    holidays: set[date] = set()
+    for h in all_holidays:
+        if h.is_recurring:
+            for y in range(start.year, start.year + 3):
+                try:
+                    holidays.add(date(y, h.date.month, h.date.day))
+                except ValueError:
+                    pass
+        else:
+            holidays.add(h.date)
+    remaining = elapsed_days
+    current = start
+    while remaining > 0:
+        if current.weekday() < 5 and current not in holidays:
+            remaining -= 1
+        current += timedelta(days=1)
+    return current - timedelta(days=1)
 
 
 # ── Report generation endpoints ──────────────────────────
@@ -1641,8 +1724,10 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         version=estimation.version or 1,
         status=estimation.status,
         start_date=str(estimation.start_date) if estimation.start_date else "",
+        testing_start_date=wizard.get("testing_start_date", ""),
         document_deliverables=doc_deliverables,
         working_weeks=working_weeks,
+        working_hours_per_day=hours_per_day,
     )
 
 
@@ -2189,15 +2274,21 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         features = []
         templates = db.query(TaskTemplate).filter(~TaskTemplate.features.any()).all()
 
-    # Build task inputs — one per feature for feature-linked templates
-    task_inputs = _expand_templates_to_tasks(templates, features, data.feature_ids, data.new_feature_ids, db)
-
     dut_count = len(data.dut_ids) if data.dut_ids else 1
     profile_count = len(data.profile_ids) if data.profile_ids else 1
     combinations = len(data.dut_profile_matrix) if data.dut_profile_matrix else dut_count * profile_count
     new_feature_count = len(data.new_feature_ids)
     pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
+
+    # Build task inputs — one per feature for feature-linked templates
+    task_inputs = _expand_templates_to_tasks(
+        templates, features, data.feature_ids, data.new_feature_ids, db,
+        skip_pr_fix=(pr_total == 0),
+    )
+
     release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
+    release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
     pr_details_raw = [d.model_dump() for d in data.pr_details] if data.pr_details else []
     no_test_count = _count_no_test_prs(pr_details_raw)
@@ -2215,6 +2306,7 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         tasks=task_inputs,
         dut_count=dut_count,
         profile_count=profile_count,
+        combination_count=combinations,
         pr_fixes=CalcPRFixInput(
             simple=data.pr_fixes.simple,
             medium=data.pr_fixes.medium,
@@ -2232,6 +2324,7 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         pr_scales_with_profile=pr_scales_profile,
         expected_releases=data.expected_releases,
         release_effort_factor=release_factor,
+        release_effort_task_types=release_task_types,
         pr_complexity_hours=pr_cfg["complexity_hours"],
         pr_no_test_hours=pr_cfg["no_test_hours"],
         pr_no_test_count=no_test_count,
@@ -2260,6 +2353,8 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         "document_type_ids": data.document_type_ids,
         "document_counts": data.document_counts,
         "project_reference": data.project_reference,
+        "testing_start_date": data.testing_start_date,
+        "product_type_filter": data.product_type_filter,
     }
 
     # Calculate documentation hours — deduct linked template hours once per group
@@ -2335,6 +2430,18 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     estimation.buffer_hours = result.buffer_hours
     estimation.grand_total_hours = adjusted_grand_total
     estimation.grand_total_days = adjusted_grand_total_days
+    estimation.elapsed_hours = result.elapsed_hours
+    estimation.elapsed_days = result.elapsed_days
+    estimation.elapsed_weeks = result.elapsed_weeks
+    # Compute estimated completion date from testing start + elapsed days
+    if data.testing_start_date and result.elapsed_days > 0:
+        try:
+            _testing_start_rev = date.fromisoformat(data.testing_start_date)
+            estimation.estimated_completion_date = _compute_completion_date(_testing_start_rev, result.elapsed_days, db)
+        except (ValueError, TypeError):
+            estimation.estimated_completion_date = None
+    else:
+        estimation.estimated_completion_date = None
     estimation.feasibility_status = result.feasibility_status
     estimation.expected_releases = data.expected_releases
     estimation.project_goals = data.project_goals
@@ -2357,10 +2464,11 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             task_type=task.task_type,
             base_hours=task.base_hours,
             calculated_hours=task.calculated_hours,
-            assigned_testers=1,
+            assigned_testers=data.task_assigned_testers.get(task.name, 1),
             has_leader_support=data.has_leader,
             leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
             is_new_feature_study=task.is_new_feature_study,
+            formula=task.formula,
             feature_id=task.feature_id,
             feature_name=task.feature_name,
         )
@@ -2665,10 +2773,10 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
 
     avg_hours = db.query(sqlfunc.avg(Estimation.grand_total_hours)).scalar() or 0
 
-    # Recent estimations (last 10)
+    # Recent estimations (last 50)
     recent_est = db.query(Estimation).order_by(
         Estimation.created_at.desc()
-    ).limit(10).all()
+    ).limit(50).all()
     recent_estimations = [
         RecentEstimationOut(
             id=e.id,
@@ -2683,10 +2791,10 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
         for e in recent_est
     ]
 
-    # Recent requests (last 10)
+    # Recent requests (last 50)
     recent_req = db.query(Request).order_by(
         Request.created_at.desc()
-    ).limit(10).all()
+    ).limit(50).all()
     recent_requests = [
         RecentRequestOut(
             id=r.id,
@@ -2698,6 +2806,29 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
         )
         for r in recent_req
     ]
+
+    # Feature catalog breakdown by category
+    feat_rows = db.query(
+        sqlfunc.coalesce(Feature.category, "Uncategorized"), sqlfunc.count()
+    ).group_by(sqlfunc.coalesce(Feature.category, "Uncategorized")).all()
+    features_by_category = {cat: cnt for cat, cnt in feat_rows}
+
+    # Task template breakdown by task_type
+    task_rows = db.query(
+        TaskTemplate.task_type, sqlfunc.count()
+    ).group_by(TaskTemplate.task_type).all()
+    tasks_by_type = {tt: cnt for tt, cnt in task_rows}
+
+    # Risk registry breakdown by category and likelihood
+    risk_cat_rows = db.query(
+        sqlfunc.coalesce(RiskItem.category, "General"), sqlfunc.count()
+    ).group_by(sqlfunc.coalesce(RiskItem.category, "General")).all()
+    risks_by_category = {cat: cnt for cat, cnt in risk_cat_rows}
+
+    risk_lh_rows = db.query(
+        RiskItem.likelihood, sqlfunc.count()
+    ).group_by(RiskItem.likelihood).all()
+    risks_by_likelihood = {lh: cnt for lh, cnt in risk_lh_rows}
 
     return DashboardStatsOut(
         total_requests=total_requests,
@@ -2711,6 +2842,10 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
         avg_grand_total_hours=round(float(avg_hours), 1),
         recent_estimations=recent_estimations,
         recent_requests=recent_requests,
+        features_by_category=features_by_category,
+        tasks_by_type=tasks_by_type,
+        risks_by_category=risks_by_category,
+        risks_by_likelihood=risks_by_likelihood,
     )
 
 
@@ -2952,9 +3087,13 @@ def publish_to_outline(
     # Add pr_no_test_hours
     est_data["pr_no_test_hours"] = getattr(estimation, "pr_no_test_hours", 0) or 0
 
-    # Add working weeks
+    # Add working weeks and hours per day
     grand_total_days = estimation.grand_total_days or 0
     est_data["working_weeks"] = round(grand_total_days / 5.0, 1)
+    est_data["working_hours_per_day"] = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    est_data["start_date"] = str(estimation.start_date) if estimation.start_date else ""
+    est_data["testing_start_date"] = _outline_wizard.get("testing_start_date", "")
+    est_data["expected_delivery"] = str(estimation.expected_delivery) if estimation.expected_delivery else ""
 
     # Add DUT/profile names
     dut_ids = _outline_wizard.get("dut_ids", [])

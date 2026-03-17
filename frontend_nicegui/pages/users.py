@@ -67,10 +67,25 @@ async def users_page() -> None:
             ui.notify(f"Failed to load users: {exc}", type="negative")
             users_list = []
 
+    search_ref: dict = {"input": None}
+
     async def refresh_table() -> None:
         await load_users()
         if table_ref is not None:
-            table_ref.rows = users_list
+            si = search_ref.get("input")
+            query = (si.value if si else "").strip().lower()
+            if query:
+                table_ref.rows = [
+                    u for u in users_list
+                    if query in (u.get("username") or "").lower()
+                    or query in (u.get("display_name") or "").lower()
+                    or query in (u.get("email") or "").lower()
+                    or query in (u.get("role") or "").lower()
+                    or query in (u.get("auth_provider") or "").lower()
+                    or query in str(u.get("id", ""))
+                ]
+            else:
+                table_ref.rows = users_list
             table_ref.update()
 
     # ---------------------------------------------------------------------------
@@ -298,11 +313,37 @@ async def users_page() -> None:
             {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
         ]
 
+        # Search input
+        search_input = ui.input(
+            placeholder="Search by username, display name, email, or role...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+        search_ref["input"] = search_input
+
+        def _apply_filter() -> None:
+            query = (search_input.value or "").strip().lower()
+            if not query:
+                table_ref.rows = users_list
+            else:
+                table_ref.rows = [
+                    u for u in users_list
+                    if query in (u.get("username") or "").lower()
+                    or query in (u.get("display_name") or "").lower()
+                    or query in (u.get("email") or "").lower()
+                    or query in (u.get("role") or "").lower()
+                    or query in (u.get("auth_provider") or "").lower()
+                    or query in str(u.get("id", ""))
+                ]
+            table_ref.update()
+
+        search_input.on("update:model-value", lambda _: _apply_filter())
+
         table_ref = ui.table(
             columns=columns,
             rows=users_list,
             row_key="id",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
             selection="multiple",
         ).classes("w-full")
 

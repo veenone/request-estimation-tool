@@ -127,6 +127,7 @@ async def requests_list_page() -> None:
             columns=columns,
             rows=[],
             row_key="id",
+            pagination={"rowsPerPage": 15},
         ).classes("w-full")
 
         # Custom cell rendering via slots
@@ -494,6 +495,7 @@ async def request_detail_page(request_id: int) -> None:
                     columns=est_columns,
                     rows=estimations,
                     row_key="id",
+                    pagination={"rowsPerPage": 15},
                 ).classes("w-full")
 
                 est_table.add_slot("body-cell-feasibility_status", """

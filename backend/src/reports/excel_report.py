@@ -127,8 +127,10 @@ class ExcelReportData:
         version: int = 1,
         status: str = "DRAFT",
         start_date: str | None = None,
+        testing_start_date: str | None = None,
         document_deliverables: list[dict] | None = None,
         working_weeks: float = 0,
+        working_hours_per_day: float = 7.0,
     ):
         self.project_name = project_name
         self.estimation_number = estimation_number
@@ -176,8 +178,10 @@ class ExcelReportData:
         self.version = version
         self.status = status
         self.start_date = start_date or ""
+        self.testing_start_date = testing_start_date or ""
         self.document_deliverables = document_deliverables or []
         self.working_weeks = working_weeks
+        self.working_hours_per_day = working_hours_per_day
 
 
 # ── Sheet builders ───────────────────────────────────────
@@ -217,25 +221,26 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
         ("Profile Count", data.profile_count),
         ("DUT × Profile Combinations", data.dut_profile_combinations),
         ("PR Fix Count", data.pr_fix_count),
-        ("Start Date", data.start_date),
-        ("Expected Delivery", data.expected_delivery),
+        ("Project Start Date (T0)", data.start_date),
+        ("Testing Start Date", data.testing_start_date),
+        ("Target Date", data.expected_delivery),
         ("", ""),
         ("Effort Summary", ""),
-        ("Total Tester Hours", f"{data.total_tester_hours:.1f}"),
-        ("Test Leader Hours", f"{data.total_leader_hours:.1f}"),
-        ("PR Fix Hours", f"{data.pr_fix_hours:.1f}"),
-        ("Study Hours", f"{data.study_hours:.1f}"),
+        ("", "Hours", "Person-Days"),
+        ("Total Tester", f"{data.total_tester_hours:.1f}", f"{data.total_tester_hours / data.working_hours_per_day:.1f}"),
+        ("Test Leader", f"{data.total_leader_hours:.1f}", f"{data.total_leader_hours / data.working_hours_per_day:.1f}"),
+        ("PR Fix Validation", f"{data.pr_fix_hours:.1f}", f"{data.pr_fix_hours / data.working_hours_per_day:.1f}"),
+        ("New Feature Study", f"{data.study_hours:.1f}", f"{data.study_hours / data.working_hours_per_day:.1f}"),
     ]
     if data.pr_no_test_hours > 0:
-        rows.append(("PR Test Creation Hours", f"{data.pr_no_test_hours:.1f}"))
+        rows.append(("PR Test Creation", f"{data.pr_no_test_hours:.1f}", f"{data.pr_no_test_hours / data.working_hours_per_day:.1f}"))
     if data.release_extra_hours > 0:
-        rows.append(("Release Extra Hours", f"{data.release_extra_hours:.1f}"))
+        rows.append(("Release Extra", f"{data.release_extra_hours:.1f}", f"{data.release_extra_hours / data.working_hours_per_day:.1f}"))
     if data.documentation_hours > 0:
-        rows.append(("Documentation Hours", f"{data.documentation_hours:.1f}"))
+        rows.append(("Documentation", f"{data.documentation_hours:.1f}", f"{data.documentation_hours / data.working_hours_per_day:.1f}"))
     rows += [
-        ("Buffer Hours", f"{data.buffer_hours:.1f}"),
-        ("Grand Total (Hours)", f"{data.grand_total_hours:.1f}"),
-        ("Grand Total (Days)", f"{data.grand_total_days:.1f}"),
+        ("Buffer", f"{data.buffer_hours:.1f}", f"{data.buffer_hours / data.working_hours_per_day:.1f}"),
+        ("GRAND TOTAL", f"{data.grand_total_hours:.1f}", f"{data.grand_total_days:.1f}"),
         ("Working Weeks", f"{data.working_weeks:.1f}"),
         ("", ""),
         ("Feasibility", ""),
@@ -244,9 +249,14 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
         ("Feasibility Status", data.feasibility_status),
     ]
 
-    for i, (label, value) in enumerate(rows, start=3):
+    for i, row_data in enumerate(rows, start=3):
+        label = row_data[0]
+        value = row_data[1] if len(row_data) > 1 else ""
         cell_a = ws.cell(row=i, column=1, value=label)
         cell_b = ws.cell(row=i, column=2, value=value)
+        if len(row_data) > 2:
+            cell_c = ws.cell(row=i, column=3, value=row_data[2])
+            cell_c.font = VALUE_FONT
         if label and value == "":
             cell_a.font = SUBTITLE_FONT
         elif label:
@@ -263,36 +273,46 @@ def _build_summary_sheet(ws: Any, data: ExcelReportData) -> None:
             ws.cell(row=risk_row + 1 + i, column=1, value=f"⚠ {msg}").font = VALUE_FONT
 
     ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 40
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 20
 
 
 def _build_task_breakdown_sheet(ws: Any, data: ExcelReportData) -> None:
     ws.title = "Task Breakdown"
 
-    headers = ["Task Name", "Type", "Base Hours", "DUT x", "Profile x", "Complexity", "Tester Hours", "Leader Hours", "Study?", "Notes"]
+    hpd = data.working_hours_per_day
+    headers = ["Task Name", "Type", "Base Hours", "DUT x", "Profile x", "Complexity", "Tester Hours", "Leader Hours", "Total Hours", "Total MD", "Study?", "Notes"]
     for col, header in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=header)
     _style_header_row(ws, 1, len(headers))
 
     for i, task in enumerate(data.tasks, start=2):
+        tester_h = task.get("calculated_hours", 0)
+        leader_h = task.get("leader_hours", 0)
+        total_h = tester_h + leader_h
         ws.cell(row=i, column=1, value=task.get("task_name", task.get("name", "")))
         ws.cell(row=i, column=2, value=task.get("task_type", ""))
         ws.cell(row=i, column=3, value=task.get("base_hours", 0))
         ws.cell(row=i, column=4, value=task.get("dut_multiplier", 1))
         ws.cell(row=i, column=5, value=task.get("profile_multiplier", 1))
         ws.cell(row=i, column=6, value=task.get("complexity_weight", 1.0))
-        ws.cell(row=i, column=7, value=task.get("calculated_hours", 0))
-        ws.cell(row=i, column=8, value=task.get("leader_hours", 0))
-        ws.cell(row=i, column=9, value="Yes" if task.get("is_new_feature_study") else "")
-        ws.cell(row=i, column=10, value=task.get("notes", ""))
+        ws.cell(row=i, column=7, value=tester_h)
+        ws.cell(row=i, column=8, value=leader_h)
+        ws.cell(row=i, column=9, value=round(total_h, 1))
+        ws.cell(row=i, column=10, value=round(total_h / hpd, 1))
+        ws.cell(row=i, column=11, value="Yes" if task.get("is_new_feature_study") else "")
+        ws.cell(row=i, column=12, value=task.get("notes", ""))
         for col in range(1, len(headers) + 1):
             ws.cell(row=i, column=col).border = THIN_BORDER
 
     # Totals row
+    total_all_h = data.total_tester_hours + data.total_leader_hours
     total_row = len(data.tasks) + 2
     ws.cell(row=total_row, column=1, value="TOTAL").font = LABEL_FONT
     ws.cell(row=total_row, column=7, value=data.total_tester_hours).font = LABEL_FONT
     ws.cell(row=total_row, column=8, value=data.total_leader_hours).font = LABEL_FONT
+    ws.cell(row=total_row, column=9, value=round(total_all_h, 1)).font = LABEL_FONT
+    ws.cell(row=total_row, column=10, value=round(total_all_h / hpd, 1)).font = LABEL_FONT
 
     _auto_width(ws)
 
@@ -366,32 +386,35 @@ def _build_team_allocation_sheet(ws: Any, data: ExcelReportData) -> None:
 def _build_pr_fixes_sheet(ws: Any, data: ExcelReportData) -> None:
     ws.title = "PR Fixes"
 
-    headers = ["Complexity", "Count", "Hours Each", "Subtotal"]
+    hpd = data.working_hours_per_day
+    headers = ["Complexity", "Count", "Hours Each", "Subtotal (h)", "Subtotal (MD)"]
     for col, header in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=header)
     _style_header_row(ws, 1, len(headers))
 
-    rows = [
+    pr_rows = [
         ("Simple", data.pr_simple, 2, data.pr_simple * 2),
         ("Medium", data.pr_medium, 4, data.pr_medium * 4),
         ("Complex", data.pr_complex, 8, data.pr_complex * 8),
     ]
-    for i, (complexity, count, hours, subtotal) in enumerate(rows, start=2):
+    for i, (complexity, count, hours, subtotal) in enumerate(pr_rows, start=2):
         ws.cell(row=i, column=1, value=complexity)
         ws.cell(row=i, column=2, value=count)
         ws.cell(row=i, column=3, value=hours)
         ws.cell(row=i, column=4, value=subtotal)
-        for col in range(1, 5):
+        ws.cell(row=i, column=5, value=round(subtotal / hpd, 1))
+        for col in range(1, 6):
             ws.cell(row=i, column=col).border = THIN_BORDER
 
     ws.cell(row=5, column=1, value="TOTAL (before DUT scaling)").font = LABEL_FONT
     ws.cell(row=5, column=2, value=data.pr_fix_count).font = LABEL_FONT
     base_total = data.pr_simple * 2 + data.pr_medium * 4 + data.pr_complex * 8
     ws.cell(row=5, column=4, value=base_total).font = LABEL_FONT
+    ws.cell(row=5, column=5, value=round(base_total / hpd, 1)).font = LABEL_FONT
 
     ws.cell(row=7, column=1, value=f"DUT count: {data.dut_count}").font = LABEL_FONT
     ws.cell(row=8, column=1, value=f"Total PR fix effort (× {data.dut_count} DUTs):").font = LABEL_FONT
-    ws.cell(row=8, column=2, value=f"{data.pr_fix_hours:.1f}h").font = LABEL_FONT
+    ws.cell(row=8, column=2, value=f"{data.pr_fix_hours:.1f}h / {data.pr_fix_hours / hpd:.1f} MD").font = LABEL_FONT
 
     # PR details table (optional)
     if data.pr_details:

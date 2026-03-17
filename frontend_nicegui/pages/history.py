@@ -170,7 +170,7 @@ async def history_page() -> None:
                 columns=columns,
                 rows=projects,
                 row_key="id",
-                pagination={"rowsPerPage": 20},
+                pagination={"rowsPerPage": 15},
             ).classes("w-full")
             table_ref.add_slot(
                 "body-cell-accuracy_ratio",

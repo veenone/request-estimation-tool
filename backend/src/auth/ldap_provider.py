@@ -186,7 +186,8 @@ class LDAPProvider:
                 local_user.email = email
                 local_user.external_id = user_dn
                 local_user.auth_provider = "ldap"
-                local_user.role = role
+                if role is not None:
+                    local_user.role = role
                 local_user.is_active = True
             else:
                 local_user = User(
@@ -195,7 +196,7 @@ class LDAPProvider:
                     email=email,
                     auth_provider="ldap",
                     external_id=user_dn,
-                    role=role,
+                    role=role or "VIEWER",
                     is_active=True,
                 )
                 self.session.add(local_user)
@@ -326,7 +327,8 @@ class LDAPProvider:
                         local_user.display_name = display_name
                         local_user.email = email
                         local_user.external_id = dn
-                        local_user.role = role
+                        if role is not None:
+                            local_user.role = role
                         local_user.is_active = is_active
                         result["updated"] = int(str(result["updated"])) + 1  # type: ignore[arg-type]
                     else:
@@ -336,7 +338,7 @@ class LDAPProvider:
                             email=email,
                             auth_provider="ldap",
                             external_id=dn,
-                            role=role,
+                            role=role or "VIEWER",
                             is_active=is_active,
                         )
                         self.session.add(local_user)
@@ -399,8 +401,9 @@ class LDAPProvider:
                 ``memberOf`` attribute.
 
         Returns:
-            The highest-privilege role the user qualifies for, defaulting to
-            ``"VIEWER"`` when no mapping matches.
+            The highest-privilege role the user qualifies for, or ``None``
+            when no mapping matches (so the caller can preserve the
+            existing locally-assigned role).
         """
         mapping_str = self.config.get("ldap_group_mapping_json", "{}")
         try:
@@ -415,4 +418,4 @@ class LDAPProvider:
             ):
                 return role
 
-        return "VIEWER"
+        return None

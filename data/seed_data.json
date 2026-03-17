@@ -120,6 +120,7 @@
       "scales_with_dut": true,
       "scales_with_profile": false,
       "is_parallelizable": true,
+      "is_pr_fix": true,
       "description": "Validate problem report fixes on each DUT"
     },
     {

@@ -209,8 +209,9 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
             ["PR Fixes", str(data.pr_fix_count)],
             ["Team Size", str(data.team_size)],
             ["Test Leader", "Yes" if data.has_leader else "No"],
-            ["Start Date", data.start_date],
-            ["Delivery Date", data.expected_delivery],
+            ["Project Start Date (T0)", data.start_date],
+            ["Testing Start Date", data.testing_start_date],
+            ["Target Date", data.expected_delivery],
         ],
         col_widths=[page_width * 0.40, page_width * 0.60],
     ))
@@ -238,42 +239,47 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
 
     # ── 5. Task breakdown ──────────────────────────────
     story.append(Paragraph("Task Breakdown", styles["SectionTitle"]))
+    hpd = data.working_hours_per_day
     task_rows = []
     for task in data.tasks:
+        tester_h = task.get("calculated_hours", 0)
+        leader_h = task.get("leader_hours", 0)
+        total_h = tester_h + leader_h
         task_rows.append([
             task.get("task_name", task.get("name", "")),
             task.get("task_type", ""),
             f"{task.get('base_hours', 0):.1f}",
-            f"{task.get('calculated_hours', 0):.1f}",
-            f"{task.get('leader_hours', 0):.1f}",
+            f"{tester_h:.1f}",
+            f"{leader_h:.1f}",
+            f"{total_h:.1f}",
+            f"{total_h / hpd:.1f}",
         ])
-    col_w = [page_width * 0.32, page_width * 0.17, page_width * 0.17, page_width * 0.17, page_width * 0.17]
-    story.append(_make_table(["Task", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs"], task_rows, col_widths=col_w))
+    col_w = [page_width * 0.26, page_width * 0.12, page_width * 0.12, page_width * 0.12, page_width * 0.12, page_width * 0.13, page_width * 0.13]
+    story.append(_make_table(["Task", "Type", "Base Hrs", "Tester Hrs", "Leader Hrs", "Total Hrs", "Total MD"], task_rows, col_widths=col_w))
     story.append(Spacer(1, 12))
 
     # ── 6. Effort summary ──────────────────────────────
     story.append(Paragraph("Effort Summary", styles["SectionTitle"]))
     effort_rows = [
-        ["Total Tester Effort", f"{data.total_tester_hours:.1f}"],
-        ["Test Leader Effort", f"{data.total_leader_hours:.1f}"],
-        ["PR Fix Validation", f"{data.pr_fix_hours:.1f}"],
-        ["New Feature Study", f"{data.study_hours:.1f}"],
+        ["Total Tester Effort", f"{data.total_tester_hours:.1f}", f"{data.total_tester_hours / hpd:.1f}"],
+        ["Test Leader Effort", f"{data.total_leader_hours:.1f}", f"{data.total_leader_hours / hpd:.1f}"],
+        ["PR Fix Validation", f"{data.pr_fix_hours:.1f}", f"{data.pr_fix_hours / hpd:.1f}"],
+        ["New Feature Study", f"{data.study_hours:.1f}", f"{data.study_hours / hpd:.1f}"],
     ]
     if getattr(data, "pr_no_test_hours", 0) > 0:
-        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}"])
+        effort_rows.append(["PR Test Creation", f"{data.pr_no_test_hours:.1f}", f"{data.pr_no_test_hours / hpd:.1f}"])
     if data.release_extra_hours > 0:
-        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}"])
+        effort_rows.append(["Release Extra Effort", f"{data.release_extra_hours:.1f}", f"{data.release_extra_hours / hpd:.1f}"])
     if data.documentation_hours > 0:
-        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}"])
-    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}"])
-    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}"])
-    effort_rows.append(["Grand Total (Days)", f"{data.grand_total_days:.1f}"])
+        effort_rows.append(["Documentation Effort", f"{data.documentation_hours:.1f}", f"{data.documentation_hours / hpd:.1f}"])
+    effort_rows.append(["Buffer (10%)", f"{data.buffer_hours:.1f}", f"{data.buffer_hours / hpd:.1f}"])
+    effort_rows.append(["GRAND TOTAL", f"{data.grand_total_hours:.1f}", f"{data.grand_total_days:.1f}"])
     if getattr(data, "working_weeks", 0) > 0:
-        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}"])
+        effort_rows.append(["Working Weeks", f"{data.working_weeks:.1f}", ""])
     story.append(_make_table(
-        ["Component", "Hours"],
+        ["Component", "Hours", "Person-Days"],
         effort_rows,
-        col_widths=[page_width * 0.55, page_width * 0.45],
+        col_widths=[page_width * 0.45, page_width * 0.275, page_width * 0.275],
     ))
     story.append(Spacer(1, 12))
 
@@ -298,15 +304,15 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
     if data.pr_fix_count > 0:
         story.append(Paragraph("PR Fixes Breakdown", styles["SectionTitle"]))
         pr_breakdown_rows = [
-            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2)],
-            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4)],
-            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8)],
-            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}"],
+            ["Simple", str(data.pr_simple), "2", str(data.pr_simple * 2), f"{data.pr_simple * 2 / hpd:.1f}"],
+            ["Medium", str(data.pr_medium), "4", str(data.pr_medium * 4), f"{data.pr_medium * 4 / hpd:.1f}"],
+            ["Complex", str(data.pr_complex), "8", str(data.pr_complex * 8), f"{data.pr_complex * 8 / hpd:.1f}"],
+            ["TOTAL", str(data.pr_fix_count), "", f"{data.pr_fix_hours:.1f}", f"{data.pr_fix_hours / hpd:.1f}"],
         ]
         story.append(_make_table(
-            ["Complexity", "Count", "Hours Each", "Subtotal"],
+            ["Complexity", "Count", "Hours Each", "Subtotal (h)", "Subtotal (MD)"],
             pr_breakdown_rows,
-            col_widths=[page_width * 0.30, page_width * 0.20, page_width * 0.25, page_width * 0.25],
+            col_widths=[page_width * 0.24, page_width * 0.16, page_width * 0.20, page_width * 0.20, page_width * 0.20],
         ))
         story.append(Spacer(1, 8))
 

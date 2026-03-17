@@ -169,7 +169,7 @@ async def estimations_list_page() -> None:
                     columns=cols,
                     rows=rows,
                     row_key="id",
-                    pagination={"rowsPerPage": 20},
+                    pagination={"rowsPerPage": 15},
                 ).classes("w-full shadow-1")
 
                 # Feasibility badge slot
@@ -250,6 +250,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "pr_details": [],
         # Step 6
         "start_date": None,
+        "testing_start_date": None,
         "delivery_date": None,
         "working_days": 20,
         "team_size": 1,
@@ -663,11 +664,19 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 def _rebuild_matrix() -> None:
                     """Repaint the DUT×Profile combination grid."""
                     matrix_container.clear()
+                    # Apply product type filter to matrix
+                    _mpt = state.get("product_type_filter") or "All"
+                    if _mpt and _mpt != "All":
+                        _m_duts = [d for d in all_duts if d.get("product_type") == _mpt or not d.get("product_type")]
+                        _m_profs = [p for p in all_profiles if p.get("product_type") == _mpt or not p.get("product_type")]
+                    else:
+                        _m_duts = all_duts
+                        _m_profs = all_profiles
                     sel_duts = [
-                        d for d in all_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value
+                        d for d in _m_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value
                     ]
                     sel_profs = [
-                        p for p in all_profiles if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value
+                        p for p in _m_profs if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value
                     ]
                     matrix_cb_refs.clear()
 
@@ -1146,7 +1155,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                 with ui.row().classes("w-full q-gutter-md"):
                     with ui.input(
-                        "Start Date (optional)",
+                        "Project Start Date - T0 (optional)",
                         value=state.get("start_date") or "",
                     ).classes("flex-1") as start_date_input:
                         with ui.menu() as start_menu:
@@ -1154,6 +1163,16 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 _start_dp.on("update:model-value", lambda: start_menu.close())
                         with start_date_input.add_slot("append"):
                             ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
+
+                    with ui.input(
+                        "Testing Start Date (optional)",
+                        value=state.get("testing_start_date") or "",
+                    ).classes("flex-1") as testing_start_input:
+                        with ui.menu() as testing_start_menu:
+                            with ui.date().bind_value(testing_start_input) as _testing_dp:
+                                _testing_dp.on("update:model-value", lambda: testing_start_menu.close())
+                        with testing_start_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
 
                     with ui.input(
                         "Deadline (optional)",
@@ -1176,7 +1195,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
 
                 def _auto_calc_working_days() -> None:
-                    sd = start_date_input.value
+                    sd = testing_start_input.value
                     dd = delivery_input.value
                     if sd and dd:
                         try:
@@ -1205,7 +1224,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                     else:
                         auto_calc_label.set_text("")
 
-                start_date_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                testing_start_input.on("update:model-value", lambda _: _auto_calc_working_days())
                 delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
 
                 team_size_input = ui.number(
@@ -1372,6 +1391,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                 def _collect_delivery() -> None:
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
+                    raw_testing_start = testing_start_input.value
+                    state["testing_start_date"] = raw_testing_start if raw_testing_start else None
                     raw = delivery_input.value
                     state["delivery_date"] = raw if raw else None
                     state["working_days"] = int(working_days_input.value or 20)
@@ -1498,16 +1519,29 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             if res.get("documentation_hours", 0) > 0:
                                 _hours_card("Documentation Hours", res["documentation_hours"], "description")
                             _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
-                            _hours_card(
-                                "Grand Total Hours",
-                                res.get("grand_total_hours", 0),
-                                "summarize",
-                            )
-                            _hours_card(
-                                "Grand Total Days",
-                                res.get("grand_total_days", 0),
-                                "calendar_today",
-                            )
+                            _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
+                            _gt_days = res.get("grand_total_days", 0)
+                            _hours_card("Grand Total (Person-Days)", _gt_days, "calendar_today")
+                            _ww = round(_gt_days / 5.0, 1) if _gt_days else 0
+                            if _ww > 0:
+                                _hours_card("Working Weeks", _ww, "date_range")
+                            _cap = res.get("capacity_hours", 0)
+                            if _cap > 0:
+                                _hours_card("Capacity Hours", _cap, "fitness_center")
+
+                        # Elapsed time (wall-clock estimate)
+                        _el_days = res.get("elapsed_days", 0)
+                        _el_weeks = res.get("elapsed_weeks", 0)
+                        if _el_days > 0 and _el_days != _gt_days:
+                            ui.separator().classes("q-mt-sm")
+                            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
+                            ui.label(
+                                "Parallelizable tasks are divided by team size; sequential tasks are not."
+                            ).classes("text-caption text-grey q-mb-xs")
+                            with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                                _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
+                                _hours_card("Elapsed Days", _el_days, "today")
+                                _hours_card("Elapsed Weeks", _el_weeks, "date_range")
 
                         # Risk flags
                         flags = res.get("risk_flags", [])
@@ -1528,19 +1562,58 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         # Task breakdown table
                         tasks = res.get("tasks", [])
                         if tasks:
+                            # Initialise per-task assigned_testers in state
+                            if "task_assigned_testers" not in state:
+                                state["task_assigned_testers"] = {}
+                            for t in tasks:
+                                t["assigned_testers"] = state["task_assigned_testers"].get(t["name"], 1)
                             ui.label("Task Breakdown").classes("text-subtitle2 q-mt-sm q-mb-xs")
                             task_cols = [
+                                {"name": "feature_name", "label": "Feature", "field": "feature_name", "align": "left", "sortable": True},
                                 {"name": "name", "label": "Task", "field": "name", "align": "left", "sortable": True},
                                 {"name": "task_type", "label": "Type", "field": "task_type", "align": "left"},
                                 {"name": "base_hours", "label": "Base h", "field": "base_hours", "align": "right"},
+                                {"name": "formula", "label": "Formula", "field": "formula", "align": "left"},
                                 {"name": "calculated_hours", "label": "Calc h", "field": "calculated_hours", "align": "right"},
+                                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center"},
                             ]
-                            ui.table(
+                            _tbl = ui.table(
                                 columns=task_cols,
                                 rows=tasks,
                                 row_key="name",
                                 pagination={"rowsPerPage": 15},
                             ).classes("w-full shadow-1")
+                            _tbl.add_slot(
+                                "body-cell-feature_name",
+                                r"""
+                                <q-td :props="props">
+                                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
+                                    <span v-else class="text-grey-5 text-italic">Global</span>
+                                </q-td>
+                                """,
+                            )
+                            _tbl.add_slot(
+                                "body-cell-assigned_testers",
+                                r"""
+                                <q-td :props="props">
+                                    <q-input
+                                        v-model.number="props.row.assigned_testers"
+                                        type="number"
+                                        dense
+                                        outlined
+                                        :min="1"
+                                        style="max-width: 70px"
+                                        @update:model-value="(v) => $parent.$emit('update_testers', {name: props.row.name, value: v})"
+                                    />
+                                </q-td>
+                                """,
+                            )
+                            _tbl.on(
+                                "update_testers",
+                                lambda e: state["task_assigned_testers"].update(
+                                    {e.args["name"]: max(1, int(e.args["value"] or 1))}
+                                ),
+                            )
 
                 async def run_calculate() -> None:
                     """Call POST /estimations/calculate and render the result."""
@@ -1600,8 +1673,9 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "team_size": state["team_size"],
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
-                        "start_date": state.get("start_date"),
-                        "expected_delivery": state["delivery_date"],
+                        "start_date": state.get("start_date") or None,
+                        "testing_start_date": state.get("testing_start_date") or None,
+                        "expected_delivery": state.get("delivery_date") or None,
                         "request_id": linked_request_id,
                         "created_by": user.get("username"),
                         "team_allocations": state.get("team_allocations", []),
@@ -1613,6 +1687,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         "risk_item_ids": state.get("risk_item_ids", []),
                         "document_type_ids": state.get("document_type_ids", []),
                         "document_counts": state.get("document_counts", {}),
+                        "task_assigned_testers": state.get("task_assigned_testers", {}),
+                        "product_type_filter": state.get("product_type_filter", "All"),
                     }
                     try:
                         saved = await api_post("/estimations", json=payload)
@@ -2063,10 +2139,27 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 _hours_card("Documentation Hours", est["documentation_hours"], "description")
             _hours_card("Buffer Hours", est.get("buffer_hours", 0), "security")
             _hours_card("Grand Total Hours", est.get("grand_total_hours", 0), "summarize")
-            _hours_card("Grand Total Days", est.get("grand_total_days", 0), "calendar_today")
+            _hours_card("Grand Total (Person-Days)", est.get("grand_total_days", 0), "calendar_today")
             _ww = round(est.get("grand_total_days", 0) / 5.0, 1) if est.get("grand_total_days", 0) else 0
             if _ww > 0:
                 _hours_card("Working Weeks", _ww, "date_range")
+
+        _el_days = est.get("elapsed_days", 0)
+        _el_weeks = est.get("elapsed_weeks", 0)
+        if _el_days > 0 and _el_days != est.get("grand_total_days", 0):
+            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle1 q-mb-sm")
+            ui.label(
+                "Parallelizable tasks divided by team size; sequential tasks run by one person."
+            ).classes("text-caption text-grey q-mb-xs")
+            with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
+                _hours_card("Elapsed Hours", est.get("elapsed_hours", 0), "hourglass_top")
+                _hours_card("Elapsed Days", _el_days, "today")
+                _hours_card("Elapsed Weeks", _el_weeks, "date_range")
+                if est.get("estimated_completion_date"):
+                    with ui.card().classes("q-pa-sm text-center"):
+                        ui.icon("event_available").classes("text-h5 text-primary")
+                        ui.label(str(est["estimated_completion_date"])).classes("text-h6")
+                        ui.label("Est. Completion").classes("text-caption text-grey")
 
         # ------------------------------------------------------------------ #
         # Task breakdown table                                                 #
@@ -2079,14 +2172,16 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 {"name": "task_name", "label": "Task",       "field": "task_name",        "align": "left",  "sortable": True},
                 {"name": "task_type", "label": "Type",       "field": "task_type",        "align": "left",  "sortable": True},
                 {"name": "base_hours","label": "Base h",     "field": "base_hours",       "align": "right", "sortable": True},
+                {"name": "formula",   "label": "Formula",    "field": "formula",          "align": "left",  "sortable": False},
                 {"name": "calc_hours","label": "Calc h",     "field": "calculated_hours", "align": "right", "sortable": True},
+                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center", "sortable": True},
                 {"name": "new_study", "label": "New Feature","field": "is_new_feature_study", "align": "center"},
             ]
             tbl = ui.table(
                 columns=task_cols,
                 rows=tasks,
                 row_key="id",
-                pagination={"rowsPerPage": 20},
+                pagination={"rowsPerPage": 15},
             ).classes("w-full shadow-1 q-mb-md")
             tbl.add_slot(
                 "body-cell-feature",
@@ -2139,7 +2234,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 columns=doc_cols,
                 rows=_doc_rows,
                 row_key="name",
-                pagination={"rowsPerPage": 20},
+                pagination={"rowsPerPage": 15},
             ).classes("w-full shadow-1 q-mb-md")
             # Highlight rows with overlap deduction
             doc_tbl.add_slot(
@@ -2201,6 +2296,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
                     columns=pr_detail_cols,
                     rows=_pr_details,
                     row_key="pr_number",
+                    pagination={"rowsPerPage": 15},
                 ).classes("w-full shadow-1 q-mb-md")
                 # Make links clickable
                 pr_tbl.add_slot(
@@ -2239,6 +2335,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 columns=alloc_cols,
                 rows=team_allocs,
                 row_key="team_member_id",
+                pagination={"rowsPerPage": 15},
             ).classes("w-full shadow-1 q-mb-md")
 
         # ------------------------------------------------------------------ #
@@ -2474,6 +2571,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "pr_complex": saved_inputs.get("pr_fixes", {}).get("complex", 0),
             "pr_details": saved_inputs.get("pr_details", []),
             "start_date": str(est.get("start_date") or "") or None,
+            "testing_start_date": str(est.get("testing_start_date") or saved_inputs.get("testing_start_date") or "") or None,
             "delivery_date": str(est.get("expected_delivery") or "") or None,
             "working_days": saved_inputs.get("working_days", 20),
             "team_size": saved_inputs.get("team_size", 1),
@@ -2484,6 +2582,11 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "risk_item_ids": [r.get("risk_item_id") for r in (est.get("risks") or [])],
             "document_type_ids": saved_inputs.get("document_type_ids", []),
             "document_counts": saved_inputs.get("document_counts", {}),
+            "task_assigned_testers": {
+                t.get("task_name", ""): t.get("assigned_testers", 1)
+                for t in (est.get("tasks") or [])
+                if t.get("assigned_testers", 1) != 1
+            },
             "calc_result": None,
         }
 
@@ -2749,8 +2852,16 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                 def _rebuild_matrix():
                     matrix_container.clear()
-                    sel_duts = [d for d in all_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value]
-                    sel_profs = [p for p in all_profiles if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value]
+                    # Apply product type filter to matrix
+                    _mpt = state.get("product_type_filter") or "All"
+                    if _mpt and _mpt != "All":
+                        _m_duts = [d for d in all_duts if d.get("product_type") == _mpt or not d.get("product_type")]
+                        _m_profs = [p for p in all_profiles if p.get("product_type") == _mpt or not p.get("product_type")]
+                    else:
+                        _m_duts = all_duts
+                        _m_profs = all_profiles
+                    sel_duts = [d for d in _m_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value]
+                    sel_profs = [p for p in _m_profs if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value]
                     matrix_cb_refs.clear()
                     if not sel_duts or not sel_profs:
                         with matrix_container:
@@ -3084,7 +3195,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 ui.label("Specify start date, deadline, and team capacity.").classes("text-body2 text-grey q-mb-md")
                 with ui.row().classes("w-full q-gutter-md"):
                     with ui.input(
-                        "Start Date (optional)",
+                        "Project Start Date - T0 (optional)",
                         value=state.get("start_date") or "",
                     ).classes("flex-1") as start_date_input:
                         with ui.menu() as start_menu:
@@ -3092,6 +3203,16 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                 _start_dp.on("update:model-value", lambda: start_menu.close())
                         with start_date_input.add_slot("append"):
                             ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
+
+                    with ui.input(
+                        "Testing Start Date (optional)",
+                        value=state.get("testing_start_date") or "",
+                    ).classes("flex-1") as testing_start_input:
+                        with ui.menu() as testing_start_menu:
+                            with ui.date().bind_value(testing_start_input) as _testing_dp:
+                                _testing_dp.on("update:model-value", lambda: testing_start_menu.close())
+                        with testing_start_input.add_slot("append"):
+                            ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
 
                     with ui.input(
                         "Deadline (optional)",
@@ -3108,7 +3229,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
 
                 def _auto_calc_working_days() -> None:
-                    sd = start_date_input.value
+                    sd = testing_start_input.value
                     dd = delivery_input.value
                     if sd and dd:
                         try:
@@ -3126,7 +3247,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     else:
                         auto_calc_label.set_text("")
 
-                start_date_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                testing_start_input.on("update:model-value", lambda _: _auto_calc_working_days())
                 delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
 
                 team_size_input = ui.number("Team Size (testers)", value=state["team_size"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
@@ -3252,6 +3373,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 def _collect_delivery():
                     raw_start = start_date_input.value
                     state["start_date"] = raw_start if raw_start else None
+                    raw_testing_start = testing_start_input.value
+                    state["testing_start_date"] = raw_testing_start if raw_testing_start else None
                     raw = delivery_input.value
                     state["delivery_date"] = raw if raw else None
                     state["working_days"] = int(working_days_input.value or 20)
@@ -3345,13 +3468,85 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                 _hours_card("Documentation Hours", res["documentation_hours"], "description")
                             _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
                             _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
-                            _hours_card("Grand Total Days", res.get("grand_total_days", 0), "calendar_today")
+                            _gt_days = res.get("grand_total_days", 0)
+                            _hours_card("Grand Total (Person-Days)", _gt_days, "calendar_today")
+                            _ww = round(_gt_days / 5.0, 1) if _gt_days else 0
+                            if _ww > 0:
+                                _hours_card("Working Weeks", _ww, "date_range")
+                            _cap = res.get("capacity_hours", 0)
+                            if _cap > 0:
+                                _hours_card("Capacity Hours", _cap, "fitness_center")
+
+                        _el_days = res.get("elapsed_days", 0)
+                        _el_weeks = res.get("elapsed_weeks", 0)
+                        if _el_days > 0 and _el_days != _gt_days:
+                            ui.separator().classes("q-mt-sm")
+                            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
+                            ui.label(
+                                "Parallelizable tasks are divided by team size; sequential tasks are not."
+                            ).classes("text-caption text-grey q-mb-xs")
+                            with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                                _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
+                                _hours_card("Elapsed Days", _el_days, "today")
+                                _hours_card("Elapsed Weeks", _el_weeks, "date_range")
+
                         flags = res.get("risk_flags", [])
                         if flags:
                             ui.label("Risk Flags").classes("text-subtitle2 q-mt-sm q-mb-xs")
                             with ui.row().classes("flex-wrap q-gutter-xs"):
                                 for flag in flags:
                                     ui.chip(flag.replace("_", " ").title(), icon="warning").props("color=negative outline dense")
+
+                        # Task breakdown table
+                        _tasks = res.get("tasks", [])
+                        if _tasks:
+                            # Initialise per-task assigned_testers in state
+                            if "task_assigned_testers" not in state:
+                                state["task_assigned_testers"] = {}
+                            for t in _tasks:
+                                t["assigned_testers"] = state["task_assigned_testers"].get(t["name"], 1)
+                            ui.label("Task Breakdown").classes("text-subtitle2 q-mt-sm q-mb-xs")
+                            _tcols = [
+                                {"name": "feature_name", "label": "Feature", "field": "feature_name", "align": "left", "sortable": True},
+                                {"name": "name", "label": "Task", "field": "name", "align": "left", "sortable": True},
+                                {"name": "task_type", "label": "Type", "field": "task_type", "align": "left"},
+                                {"name": "base_hours", "label": "Base h", "field": "base_hours", "align": "right"},
+                                {"name": "formula", "label": "Formula", "field": "formula", "align": "left"},
+                                {"name": "calculated_hours", "label": "Calc h", "field": "calculated_hours", "align": "right"},
+                                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center"},
+                            ]
+                            _ttbl = ui.table(columns=_tcols, rows=_tasks, row_key="name", pagination={"rowsPerPage": 15}).classes("w-full shadow-1")
+                            _ttbl.add_slot(
+                                "body-cell-feature_name",
+                                r"""
+                                <q-td :props="props">
+                                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
+                                    <span v-else class="text-grey-5 text-italic">Global</span>
+                                </q-td>
+                                """,
+                            )
+                            _ttbl.add_slot(
+                                "body-cell-assigned_testers",
+                                r"""
+                                <q-td :props="props">
+                                    <q-input
+                                        v-model.number="props.row.assigned_testers"
+                                        type="number"
+                                        dense
+                                        outlined
+                                        :min="1"
+                                        style="max-width: 70px"
+                                        @update:model-value="(v) => $parent.$emit('update_testers', {name: props.row.name, value: v})"
+                                    />
+                                </q-td>
+                                """,
+                            )
+                            _ttbl.on(
+                                "update_testers",
+                                lambda e: state["task_assigned_testers"].update(
+                                    {e.args["name"]: max(1, int(e.args["value"] or 1))}
+                                ),
+                            )
 
                 async def run_calculate():
                     _render_summary()
@@ -3407,8 +3602,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "team_size": state["team_size"],
                         "has_leader": state["has_leader"],
                         "working_days": state["working_days"],
-                        "start_date": state.get("start_date"),
-                        "expected_delivery": state["delivery_date"],
+                        "start_date": state.get("start_date") or None,
+                        "testing_start_date": state.get("testing_start_date") or None,
+                        "expected_delivery": state.get("delivery_date") or None,
                         "team_allocations": state.get("team_allocations", []),
                         "expected_releases": state.get("expected_releases", 1),
                         "project_goals": state.get("project_goals") or None,
@@ -3418,6 +3614,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "risk_item_ids": state.get("risk_item_ids", []),
                         "document_type_ids": state.get("document_type_ids", []),
                         "document_counts": state.get("document_counts", {}),
+                        "task_assigned_testers": state.get("task_assigned_testers", {}),
+                        "product_type_filter": state.get("product_type_filter", "All"),
                     }
                     try:
                         saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)

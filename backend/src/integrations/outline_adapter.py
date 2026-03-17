@@ -414,6 +414,27 @@ class OutlineAdapter(BaseAdapter):
             "",
         ]
 
+        # Timeline information
+        _start_date = data.get("start_date", "")
+        _testing_start = data.get("testing_start_date", "")
+        _target_date = data.get("expected_delivery", "")
+        if _start_date or _testing_start or _target_date:
+            lines.append("## Timeline")
+            lines.append("")
+            if _start_date:
+                lines.append(f"- **Project Start Date (T0):** {_start_date}")
+            if _testing_start:
+                lines.append(f"- **Testing Start Date:** {_testing_start}")
+            if _target_date:
+                lines.append(f"- **Target Date:** {_target_date}")
+            _working_weeks = data.get("working_weeks", 0)
+            if _working_weeks:
+                lines.append(f"- **Working Weeks:** {_working_weeks:.1f}")
+            _total_pd = data.get("grand_total_days", 0)
+            if _total_pd:
+                lines.append(f"- **Total Person-Days:** {_total_pd:.1f}")
+            lines.append("")
+
         # Project context
         project_goals = data.get("project_goals")
         target_customer = data.get("target_customer")
@@ -427,33 +448,33 @@ class OutlineAdapter(BaseAdapter):
             lines.append("")
 
         # Effort summary
+        hpd = data.get("working_hours_per_day", 7.0)
         effort_lines = [
             "## Effort Summary",
             "",
-            "| Category | Hours |",
-            "|----------|------:|",
-            f"| Tester Effort | {data.get('total_tester_hours', 0):.1f} |",
-            f"| Leader Effort | {data.get('total_leader_hours', 0):.1f} |",
-            f"| PR Fix Validation | {data.get('pr_fix_hours', 0):.1f} |",
+            "| Category | Hours | Person-Days |",
+            "|----------|------:|------------:|",
+            f"| Tester Effort | {data.get('total_tester_hours', 0):.1f} | {data.get('total_tester_hours', 0) / hpd:.1f} |",
+            f"| Leader Effort | {data.get('total_leader_hours', 0):.1f} | {data.get('total_leader_hours', 0) / hpd:.1f} |",
+            f"| PR Fix Validation | {data.get('pr_fix_hours', 0):.1f} | {data.get('pr_fix_hours', 0) / hpd:.1f} |",
         ]
         pr_no_test = data.get("pr_no_test_hours", 0)
         if pr_no_test:
-            effort_lines.append(f"| PR Test Creation | {pr_no_test:.1f} |")
-        effort_lines.append(f"| New Feature Study | {data.get('study_hours', 0):.1f} |")
+            effort_lines.append(f"| PR Test Creation | {pr_no_test:.1f} | {pr_no_test / hpd:.1f} |")
+        effort_lines.append(f"| New Feature Study | {data.get('study_hours', 0):.1f} | {data.get('study_hours', 0) / hpd:.1f} |")
         release_extra = data.get("release_extra_hours", 0)
         doc_hours = data.get("documentation_hours", 0)
         if release_extra:
-            effort_lines.append(f"| Release Extra | {release_extra:.1f} |")
+            effort_lines.append(f"| Release Extra | {release_extra:.1f} | {release_extra / hpd:.1f} |")
         if doc_hours:
-            effort_lines.append(f"| Documentation | {doc_hours:.1f} |")
+            effort_lines.append(f"| Documentation | {doc_hours:.1f} | {doc_hours / hpd:.1f} |")
         effort_lines.extend([
-            f"| Buffer | {data.get('buffer_hours', 0):.1f} |",
-            f"| **Grand Total** | **{data.get('grand_total_hours', 0):.1f}** |",
-            f"| Grand Total (days) | {data.get('grand_total_days', 0):.1f} |",
+            f"| Buffer | {data.get('buffer_hours', 0):.1f} | {data.get('buffer_hours', 0) / hpd:.1f} |",
+            f"| **Grand Total** | **{data.get('grand_total_hours', 0):.1f}** | **{data.get('grand_total_days', 0):.1f}** |",
         ])
         working_weeks = data.get("working_weeks", 0)
         if working_weeks:
-            effort_lines.append(f"| Working Weeks | {working_weeks:.1f} |")
+            effort_lines.append(f"| Working Weeks | {working_weeks:.1f} | |")
         effort_lines.append("")
         lines.extend(effort_lines)
 
@@ -479,15 +500,16 @@ class OutlineAdapter(BaseAdapter):
         pr_medium = data.get("pr_medium", 0)
         pr_complex = data.get("pr_complex", 0)
         if pr_simple or pr_medium or pr_complex:
+            pr_fix_total = data.get("pr_fix_hours", 0)
             lines.extend([
                 "## PR Fixes Breakdown",
                 "",
-                "| Complexity | Count | Hours Each | Subtotal |",
-                "|------------|------:|-----------:|---------:|",
-                f"| Simple | {pr_simple} | 2 | {pr_simple * 2} |",
-                f"| Medium | {pr_medium} | 4 | {pr_medium * 4} |",
-                f"| Complex | {pr_complex} | 8 | {pr_complex * 8} |",
-                f"| **Total** | **{pr_simple + pr_medium + pr_complex}** | | **{data.get('pr_fix_hours', 0):.1f}** |",
+                "| Complexity | Count | Hours Each | Subtotal (h) | Subtotal (MD) |",
+                "|------------|------:|-----------:|-------------:|--------------:|",
+                f"| Simple | {pr_simple} | 2 | {pr_simple * 2} | {pr_simple * 2 / hpd:.1f} |",
+                f"| Medium | {pr_medium} | 4 | {pr_medium * 4} | {pr_medium * 4 / hpd:.1f} |",
+                f"| Complex | {pr_complex} | 8 | {pr_complex * 8} | {pr_complex * 8 / hpd:.1f} |",
+                f"| **Total** | **{pr_simple + pr_medium + pr_complex}** | | **{pr_fix_total:.1f}** | **{pr_fix_total / hpd:.1f}** |",
                 "",
             ])
 
@@ -515,16 +537,17 @@ class OutlineAdapter(BaseAdapter):
             lines.extend([
                 "## Task Breakdown",
                 "",
-                "| Task | Type | Tester Hours | Leader Hours | Notes |",
-                "|------|------|-------------:|-------------:|-------|",
+                "| Task | Type | Tester Hours | Leader Hours | Total Hrs | Total MD | Notes |",
+                "|------|------|-------------:|-------------:|----------:|---------:|-------|",
             ])
             for task in tasks:
                 name = task.get("task_name", task.get("name", ""))
                 task_type = task.get("task_type", "")
                 tester_hours = task.get("calculated_hours", 0)
                 leader_hours = task.get("leader_hours", 0)
+                total_h = tester_hours + leader_hours
                 notes = task.get("notes", "") or ""
-                lines.append(f"| {name} | {task_type} | {tester_hours:.1f} | {leader_hours:.1f} | {notes} |")
+                lines.append(f"| {name} | {task_type} | {tester_hours:.1f} | {leader_hours:.1f} | {total_h:.1f} | {total_h / hpd:.1f} | {notes} |")
             lines.append("")
 
         # Document Deliverables

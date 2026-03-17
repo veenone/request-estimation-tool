@@ -1,4 +1,4 @@
-"""DUT Registry page — full CRUD.
+"""DUT Registry page — full CRUD with bulk edit.
 
 Route: /duts
 API:
@@ -39,18 +39,91 @@ async def duts_page() -> None:
 
     sidebar()
 
+    # ------------------------------------------------------------------ #
+    # Fetch configurable categories and product types                      #
+    # ------------------------------------------------------------------ #
+    try:
+        categories: list[str] = await api_get("/dut-categories")
+    except Exception:
+        categories = _DEFAULT_CATEGORIES
+
+    try:
+        product_types: list[str] = await api_get("/configuration/product_types")
+    except Exception:
+        product_types = ["Payment", "Telco"]
+
     with ui.column().classes("q-pa-lg w-full"):
         ui.label("DUT Registry").classes("text-h4 q-mb-md")
 
         # ------------------------------------------------------------------ #
-        # Table                                                                #
+        # Toolbar                                                              #
+        # ------------------------------------------------------------------ #
+        with ui.row().classes("items-center q-mb-md w-full"):
+            if has_permission("reinit_registries"):
+                async def _reinit_duts() -> None:
+                    with ui.dialog() as confirm_dlg, ui.card().classes("w-80"):
+                        ui.label("Reinitialize DUT Registry").classes("text-h6")
+                        ui.label(
+                            "This will delete ALL DUT types and reset IDs to start from 1. "
+                            "This cannot be undone."
+                        ).classes("text-body2 q-mt-sm")
+
+                        async def _confirm() -> None:
+                            try:
+                                await api_post("/dut-types/reinit")
+                                confirm_dlg.close()
+                                ui.notify("DUT registry reinitialized.", type="positive")
+                                await refresh()
+                            except Exception as exc:
+                                ui.notify(f"Error: {exc}", type="negative")
+
+                        with ui.row().classes("q-mt-md justify-end w-full"):
+                            ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
+                            ui.button("Delete All", on_click=_confirm).props("color=negative")
+                    confirm_dlg.open()
+
+                ui.button(
+                    "Reinit Registry",
+                    icon="restart_alt",
+                    on_click=_reinit_duts,
+                ).props("flat color=negative")
+
+            bulk_edit_btn = ui.button(
+                "Bulk Edit", icon="edit_note", on_click=lambda: show_bulk_edit_dialog()
+            ).props("outline color=secondary")
+            bulk_edit_btn.set_visibility(False)
+
+            bulk_delete_btn = ui.button(
+                "Bulk Delete", icon="delete_sweep", on_click=lambda: show_bulk_delete_dialog()
+            ).props("outline color=negative")
+            bulk_delete_btn.set_visibility(False)
+
+            ui.space()
+
+            ui.button(
+                "Add DUT Type",
+                icon="add",
+                on_click=lambda: show_add_dialog(),
+            ).props("color=primary")
+
+        # ------------------------------------------------------------------ #
+        # Table with multi-select                                              #
         # ------------------------------------------------------------------ #
         table = ui.table(
             columns=_COLUMNS,
             rows=[],
             row_key="id",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
+            selection="multiple",
         ).classes("w-full shadow-1")
+
+        # Show/hide bulk buttons based on selection
+        def _on_selection_change() -> None:
+            has_sel = bool(table.selected)
+            bulk_edit_btn.set_visibility(has_sel)
+            bulk_delete_btn.set_visibility(has_sel)
+
+        table.on("selection", lambda _: _on_selection_change())
 
         # Action buttons column
         table.add_slot(
@@ -59,43 +132,32 @@ async def duts_page() -> None:
             <q-td :props="props">
                 <q-btn
                     dense flat round icon="edit" color="primary" size="sm"
-                    @click="$parent.$emit('edit-row', props.row)"
+                    @click="() => $parent.$emit('edit-row', props.row)"
                     class="q-mr-xs"
                 />
                 <q-btn
                     dense flat round icon="delete" color="negative" size="sm"
-                    @click="$parent.$emit('delete-row', props.row)"
+                    @click="() => $parent.$emit('delete-row', props.row)"
                 />
             </q-td>
             """,
         )
 
         # ------------------------------------------------------------------ #
-        # Fetch configurable categories and product types                        #
-        # ------------------------------------------------------------------ #
-        try:
-            categories: list[str] = await api_get("/dut-categories")
-        except Exception:
-            categories = _DEFAULT_CATEGORIES
-
-        try:
-            product_types: list[str] = await api_get("/configuration/product_types")
-        except Exception:
-            product_types = ["Payment", "Telco"]
-
-        # ------------------------------------------------------------------ #
-        # Refresh helper                                                        #
+        # Refresh helper                                                       #
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
                 rows: list = await api_get("/dut-types")
                 table.rows = rows
+                table.selected.clear()
                 table.update()
+                _on_selection_change()
             except Exception as exc:
                 ui.notify(f"Failed to load DUT types: {exc}", type="negative")
 
         # ------------------------------------------------------------------ #
-        # Add dialog                                                            #
+        # Add dialog                                                           #
         # ------------------------------------------------------------------ #
         async def show_add_dialog() -> None:
             with ui.dialog() as dialog, ui.card().classes("w-96"):
@@ -135,10 +197,7 @@ async def duts_page() -> None:
                         }
                         if product_type_input.value:
                             payload["product_type"] = product_type_input.value
-                        await api_post(
-                            "/dut-types",
-                            json=payload,
-                        )
+                        await api_post("/dut-types", json=payload)
                         dialog.close()
                         ui.notify("DUT type created.", type="positive")
                         await refresh()
@@ -152,17 +211,19 @@ async def duts_page() -> None:
             dialog.open()
 
         # ------------------------------------------------------------------ #
-        # Edit dialog                                                           #
+        # Edit dialog                                                          #
         # ------------------------------------------------------------------ #
         async def show_edit_dialog(row: dict) -> None:
             with ui.dialog() as dialog, ui.card().classes("w-96"):
                 ui.label("Edit DUT Type").classes("text-h6 q-mb-sm")
 
                 name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
+                row_cat = row.get("category", categories[0] if categories else "Other")
+                cat_options = categories if row_cat in categories else [row_cat] + categories
                 category_select = ui.select(
-                    categories,
+                    cat_options,
                     label="Category",
-                    value=row.get("category", categories[0] if categories else "Other"),
+                    value=row_cat,
                 ).classes("w-full")
                 multiplier_input = ui.number(
                     "Complexity Multiplier",
@@ -191,10 +252,7 @@ async def duts_page() -> None:
                             "complexity_multiplier": float(multiplier_input.value or 1.0),
                             "product_type": product_type_input.value if product_type_input.value else None,
                         }
-                        await api_put(
-                            f"/dut-types/{row['id']}",
-                            json=payload,
-                        )
+                        await api_put(f"/dut-types/{row['id']}", json=payload)
                         dialog.close()
                         ui.notify("DUT type updated.", type="positive")
                         await refresh()
@@ -208,7 +266,141 @@ async def duts_page() -> None:
             dialog.open()
 
         # ------------------------------------------------------------------ #
-        # Delete confirmation dialog                                            #
+        # Bulk edit dialog                                                     #
+        # ------------------------------------------------------------------ #
+        async def show_bulk_edit_dialog() -> None:
+            selected = list(table.selected)
+            if not selected:
+                ui.notify("Select at least one DUT type first.", type="warning")
+                return
+
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
+                ui.label("Bulk Edit DUT Types").classes("text-h6")
+                ui.separator()
+                ui.label(
+                    f"Update {len(selected)} selected DUT type(s). "
+                    "Only checked fields will be changed."
+                ).classes("text-body2 q-mb-md")
+
+                # List selected names for reference
+                with ui.expansion("Selected items", icon="list").classes("w-full q-mb-sm"):
+                    for s in selected:
+                        ui.label(f"  {s.get('id')} — {s.get('name', '')}").classes("text-caption")
+
+                # Category field with enable checkbox
+                with ui.row().classes("w-full items-center gap-2"):
+                    cat_cb = ui.checkbox("Category").classes("w-28")
+                    cat_select = ui.select(
+                        categories,
+                        label="New Category",
+                        value=categories[0] if categories else "Other",
+                    ).classes("flex-1")
+                    cat_select.bind_enabled_from(cat_cb, "value")
+
+                # Multiplier field with enable checkbox
+                with ui.row().classes("w-full items-center gap-2"):
+                    mult_cb = ui.checkbox("Multiplier").classes("w-28")
+                    mult_input = ui.number(
+                        "New Multiplier",
+                        value=1.0,
+                        min=0.1,
+                        max=10.0,
+                        step=0.1,
+                        format="%.1f",
+                    ).classes("flex-1")
+                    mult_input.bind_enabled_from(mult_cb, "value")
+
+                # Product type field with enable checkbox
+                with ui.row().classes("w-full items-center gap-2"):
+                    pt_cb = ui.checkbox("Product Type").classes("w-28")
+                    pt_select = ui.select(
+                        options=["(clear)"] + product_types,
+                        label="New Product Type",
+                        value=product_types[0] if product_types else "(clear)",
+                        with_input=True,
+                    ).classes("flex-1")
+                    pt_select.bind_enabled_from(pt_cb, "value")
+
+                async def apply() -> None:
+                    if not cat_cb.value and not mult_cb.value and not pt_cb.value:
+                        ui.notify("Check at least one field to update.", type="warning")
+                        return
+
+                    success = 0
+                    errors = 0
+                    for row in selected:
+                        payload: dict = {}
+                        if cat_cb.value:
+                            payload["category"] = cat_select.value
+                        if mult_cb.value:
+                            payload["complexity_multiplier"] = float(mult_input.value or 1.0)
+                        if pt_cb.value:
+                            val = pt_select.value
+                            payload["product_type"] = None if val == "(clear)" else val
+                        try:
+                            await api_put(f"/dut-types/{row['id']}", json=payload)
+                            success += 1
+                        except Exception:
+                            errors += 1
+
+                    msg = f"Updated {success}/{len(selected)} DUT types."
+                    if errors:
+                        msg += f" ({errors} failed)"
+                    ui.notify(msg, type="positive" if not errors else "warning")
+                    dialog.close()
+                    await refresh()
+
+                with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button("Apply", icon="check", on_click=apply).props("color=primary")
+
+            dialog.open()
+
+        # ------------------------------------------------------------------ #
+        # Bulk delete dialog                                                   #
+        # ------------------------------------------------------------------ #
+        async def show_bulk_delete_dialog() -> None:
+            selected = list(table.selected)
+            if not selected:
+                ui.notify("Select at least one DUT type first.", type="warning")
+                return
+
+            with ui.dialog() as dialog, ui.card().classes("w-[400px]"):
+                ui.label("Bulk Delete DUT Types").classes("text-h6")
+                ui.separator()
+                ui.label(
+                    f"Delete {len(selected)} selected DUT type(s)? This cannot be undone."
+                ).classes("text-body2 q-mt-sm text-negative")
+
+                with ui.expansion("Selected items", icon="list").classes("w-full q-mt-sm"):
+                    for s in selected:
+                        ui.label(f"  {s.get('id')} — {s.get('name', '')}").classes("text-caption")
+
+                async def confirm() -> None:
+                    success = 0
+                    errors = 0
+                    for row in selected:
+                        try:
+                            await api_delete(f"/dut-types/{row['id']}")
+                            success += 1
+                        except Exception:
+                            errors += 1
+
+                    msg = f"Deleted {success}/{len(selected)} DUT types."
+                    if errors:
+                        msg += f" ({errors} failed)"
+                    ui.notify(msg, type="positive" if not errors else "warning")
+                    dialog.close()
+                    await refresh()
+
+                with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button("Delete", icon="delete", on_click=confirm).props("color=negative")
+
+            dialog.open()
+
+        # ------------------------------------------------------------------ #
+        # Delete confirmation dialog (single row)                              #
         # ------------------------------------------------------------------ #
         async def show_delete_dialog(row: dict) -> None:
             with ui.dialog() as dialog, ui.card().classes("w-80"):
@@ -234,53 +426,12 @@ async def duts_page() -> None:
             dialog.open()
 
         # ------------------------------------------------------------------ #
-        # Wire table events to dialogs                                          #
+        # Wire table events to dialogs                                         #
         # ------------------------------------------------------------------ #
         table.on("edit-row",   lambda e: show_edit_dialog(e.args))
         table.on("delete-row", lambda e: show_delete_dialog(e.args))
 
         # ------------------------------------------------------------------ #
-        # Toolbar: Add button                                                   #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-mb-md"):
-            if has_permission("reinit_registries"):
-                async def _reinit_duts() -> None:
-                    with ui.dialog() as confirm_dlg, ui.card().classes("w-80"):
-                        ui.label("Reinitialize DUT Registry").classes("text-h6")
-                        ui.label(
-                            "This will delete ALL DUT types and reset IDs to start from 1. "
-                            "This cannot be undone."
-                        ).classes("text-body2 q-mt-sm")
-
-                        async def _confirm() -> None:
-                            try:
-                                await api_post("/dut-types/reinit")
-                                confirm_dlg.close()
-                                ui.notify("DUT registry reinitialized.", type="positive")
-                                await refresh()
-                            except Exception as exc:
-                                ui.notify(f"Error: {exc}", type="negative")
-
-                        with ui.row().classes("q-mt-md justify-end w-full"):
-                            ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
-                            ui.button("Delete All", on_click=_confirm).props("color=negative")
-                    confirm_dlg.open()
-
-                ui.button(
-                    "Reinit Registry",
-                    icon="restart_alt",
-                    on_click=_reinit_duts,
-                ).props("flat color=negative")
-
-            ui.space()
-
-            ui.button(
-                "Add DUT Type",
-                icon="add",
-                on_click=show_add_dialog,
-            ).props("color=primary")
-
-        # ------------------------------------------------------------------ #
-        # Initial data load                                                     #
+        # Initial data load                                                    #
         # ------------------------------------------------------------------ #
         await refresh()

@@ -42,10 +42,18 @@ app.add_static_files("/uploads", str(_UPLOADS_DIR))
 # ---------------------------------------------------------------------------
 
 _ERROR_PAGES: dict[int, dict[str, str]] = {
+    400: {
+        "icon": "report_problem",
+        "title": "Bad Request",
+        "message": "The server could not process the request. This usually means invalid or missing data was sent. Please check your input and try again.",
+        "action_label": "Go Back",
+        "action_url": "/",
+        "color": "warning",
+    },
     401: {
         "icon": "lock",
         "title": "Session Expired",
-        "message": "Your session has expired or you are not logged in.",
+        "message": "Your session has expired or you are not logged in. Please log in again to continue.",
         "action_label": "Go to Login",
         "action_url": "/login",
         "color": "warning",
@@ -53,7 +61,7 @@ _ERROR_PAGES: dict[int, dict[str, str]] = {
     403: {
         "icon": "block",
         "title": "Access Denied",
-        "message": "You don't have permission to view this page. Contact your administrator if you believe this is an error.",
+        "message": "You do not have the required permissions to perform this action. Your current role may not be authorized. Contact your administrator if you believe this is an error.",
         "action_label": "Back to Dashboard",
         "action_url": "/",
         "color": "negative",
@@ -65,6 +73,14 @@ _ERROR_PAGES: dict[int, dict[str, str]] = {
         "action_label": "Back to Dashboard",
         "action_url": "/",
         "color": "info",
+    },
+    422: {
+        "icon": "edit_off",
+        "title": "Validation Error",
+        "message": "The submitted data did not pass validation. One or more fields have invalid values (e.g. wrong format, missing required fields, or out-of-range values). Please review your input and try again.",
+        "action_label": "Go Back",
+        "action_url": "/",
+        "color": "orange",
     },
     500: {
         "icon": "error_outline",
@@ -81,6 +97,14 @@ _ERROR_PAGES: dict[int, dict[str, str]] = {
         "action_label": "Retry",
         "action_url": None,
         "color": "negative",
+    },
+    504: {
+        "icon": "hourglass_disabled",
+        "title": "Gateway Timeout",
+        "message": "The backend server took too long to respond. This may indicate heavy load or a long-running operation. Please try again.",
+        "action_label": "Retry",
+        "action_url": None,
+        "color": "warning",
     },
     520: {
         "icon": "warning_amber",
@@ -117,7 +141,30 @@ def show_error_page(exc: Exception) -> None:
         detail = exc.detail
     elif isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        detail = str(exc)
+        # Try to extract structured error detail from JSON response body
+        try:
+            body = exc.response.json()
+            if isinstance(body, dict):
+                if "detail" in body:
+                    raw_detail = body["detail"]
+                    if isinstance(raw_detail, list):
+                        # Pydantic 422 validation errors
+                        parts = []
+                        for err in raw_detail:
+                            loc = " -> ".join(str(l) for l in err.get("loc", []))
+                            msg = err.get("msg", "")
+                            parts.append(f"{loc}: {msg}" if loc else msg)
+                        detail = "; ".join(parts)
+                    else:
+                        detail = str(raw_detail)
+                elif "message" in body:
+                    detail = str(body["message"])
+                else:
+                    detail = str(body)
+            else:
+                detail = str(body)
+        except Exception:
+            detail = str(exc)
     elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         status = 502
         detail = "Could not reach the backend server."
@@ -181,6 +228,7 @@ def _safe_storage() -> dict:
 
 
 def is_authenticated() -> bool:
+    _capture_client_ip()
     return _safe_storage().get("token") is not None
 
 
@@ -188,9 +236,58 @@ def current_user() -> dict | None:
     return _safe_storage().get("user")
 
 
+def _get_client_ip() -> str | None:
+    """Extract the real client IP from the NiceGUI request headers.
+
+    NiceGUI sits behind nginx, so ``request.client.host`` is always the
+    proxy address.  The real client IP is in the ``X-Forwarded-For`` or
+    ``X-Real-IP`` headers set by nginx.
+
+    Falls back to the value cached in user storage (set once per session
+    by ``_capture_client_ip``).
+    """
+    try:
+        from nicegui import context
+        req = context.client.request
+        # X-Forwarded-For may be a comma-separated chain; take the leftmost
+        forwarded = req.headers.get("x-forwarded-for")
+        if forwarded:
+            ip = forwarded.split(",")[0].strip()
+            if ip:
+                return ip
+        real_ip = req.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+        if req.client:
+            return req.client.host
+    except Exception:
+        pass
+    # Fallback: read from storage (set once per page load)
+    return _safe_storage().get("client_ip")
+
+
+def _capture_client_ip() -> None:
+    """Snapshot the real client IP into user storage.
+
+    Call this early in every page handler so that subsequent ``api_*``
+    calls can forward the IP even if the NiceGUI context is unavailable.
+    """
+    ip = _get_client_ip()
+    if ip:
+        _safe_storage()["client_ip"] = ip
+
+
 def auth_headers() -> dict[str, str]:
     token = _safe_storage().get("token")
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    # Forward the real client IP so the backend audit log records it
+    client_ip = _get_client_ip()
+    if client_ip:
+        headers["X-Forwarded-For"] = client_ip
+        headers["X-Real-IP"] = client_ip
+    return headers
 
 
 def has_permission(perm: str) -> bool:
@@ -250,6 +347,7 @@ async def api_delete(path: str) -> dict:
 
 @ui.page("/login")
 async def login_page():
+    _capture_client_ip()
     # Check which providers are available
     providers = ["local"]
     try:
@@ -271,8 +369,13 @@ async def login_page():
                 "password": password.value,
                 "auth_method": auth_method["value"],
             }
+            login_headers: dict[str, str] = {}
+            client_ip = _get_client_ip()
+            if client_ip:
+                login_headers["X-Forwarded-For"] = client_ip
+                login_headers["X-Real-IP"] = client_ip
             async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(f"{API_URL}/auth/login", json=payload)
+                r = await client.post(f"{API_URL}/auth/login", json=payload, headers=login_headers)
                 if r.status_code == 401:
                     ui.notify("Invalid username or password", type="negative")
                     return
@@ -668,11 +771,58 @@ def sidebar():
 
 @ui.page("/")
 async def dashboard_page():
+    _capture_client_ip()
     if not is_authenticated():
         ui.navigate.to("/login")
         return
 
     sidebar()
+
+    # Shared legend style for dark-mode readability
+    _legend = {"orient": "horizontal", "bottom": 0, "textStyle": {"color": "#FFFFFF"}}
+    _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 11, "color": "#FFFFFF"}
+    _emphasis = {"label": {"show": True, "fontSize": 14, "fontWeight": "bold"}}
+    _chart_h = "height: 400px"
+
+    # Color palettes
+    _palette = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350", "#AB47BC",
+                "#26C6DA", "#EC407A", "#8D6E63", "#78909C", "#FFEE58"]
+
+    def _donut(title: str, series_name: str, data: list[dict]) -> None:
+        """Render a donut chart card."""
+        with ui.card().classes("q-pa-md flex-1"):
+            ui.label(title).classes("text-subtitle1 q-mb-sm")
+            ui.echart({
+                "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
+                "legend": _legend,
+                "series": [{
+                    "name": series_name,
+                    "type": "pie",
+                    "radius": ["40%", "70%"],
+                    "center": ["50%", "42%"],
+                    "avoidLabelOverlap": False,
+                    "label": _label,
+                    "emphasis": _emphasis,
+                    "data": data,
+                }],
+            }).classes("w-full").style(_chart_h)
+
+    def _bar(title: str, categories: list[str], values: list[int], color: str = "#42A5F5") -> None:
+        """Render a horizontal bar chart card."""
+        with ui.card().classes("q-pa-md flex-1"):
+            ui.label(title).classes("text-subtitle1 q-mb-sm")
+            ui.echart({
+                "tooltip": {"trigger": "axis"},
+                "grid": {"left": "3%", "right": "6%", "bottom": "3%", "top": "8%", "containLabel": True},
+                "xAxis": {"type": "value", "axisLabel": {"color": "#FFFFFF"}},
+                "yAxis": {"type": "category", "data": categories, "axisLabel": {"color": "#FFFFFF", "fontSize": 11}},
+                "series": [{
+                    "type": "bar",
+                    "data": values,
+                    "itemStyle": {"color": color},
+                    "label": {"show": True, "position": "right", "color": "#FFFFFF"},
+                }],
+            }).classes("w-full").style(_chart_h)
 
     with ui.column().classes("q-pa-lg w-full"):
         ui.label("Dashboard").classes("text-h4")
@@ -680,55 +830,155 @@ async def dashboard_page():
         try:
             stats = await api_get("/dashboard/stats")
 
-            with ui.row().classes("q-gutter-md"):
-                for label, key in [
-                    ("Total Estimations", "total_estimations"),
-                    ("Draft", "estimations_draft"),
-                    ("Final", "estimations_final"),
-                    ("Approved", "estimations_approved"),
-                ]:
-                    with ui.card().classes("q-pa-md"):
-                        ui.label(label).classes("text-subtitle2")
-                        ui.label(str(stats.get(key, 0))).classes("text-h4")
+            # ── Row 1: Estimation & Request status ────────────
+            with ui.row().classes("w-full q-gutter-md q-mb-md"):
+                total_est = stats.get("total_estimations", 0)
+                _donut(f"Estimations \u2014 {total_est} total", "Estimations", [
+                    {"value": stats.get("estimations_draft", 0), "name": "Draft", "itemStyle": {"color": "#78909C"}},
+                    {"value": stats.get("estimations_final", 0), "name": "Final", "itemStyle": {"color": "#1976D2"}},
+                    {"value": stats.get("estimations_approved", 0), "name": "Approved", "itemStyle": {"color": "#4CAF50"}},
+                ])
 
-            with ui.row().classes("q-gutter-md"):
-                for label, key in [
-                    ("Total Requests", "total_requests"),
-                    ("New", "requests_new"),
-                    ("In Progress", "requests_in_progress"),
-                    ("Completed", "requests_completed"),
-                ]:
-                    with ui.card().classes("q-pa-md"):
-                        ui.label(label).classes("text-subtitle2")
-                        ui.label(str(stats.get(key, 0))).classes("text-h4")
+                total_req = stats.get("total_requests", 0)
+                req_data = [
+                    {"value": stats.get("requests_new", 0), "name": "New", "itemStyle": {"color": "#26A69A"}},
+                    {"value": stats.get("requests_in_progress", 0), "name": "In Progress", "itemStyle": {"color": "#FFA726"}},
+                    {"value": stats.get("requests_completed", 0), "name": "Completed", "itemStyle": {"color": "#66BB6A"}},
+                ]
+                rejected = total_req - sum(d["value"] for d in req_data)
+                if rejected > 0:
+                    req_data.append({"value": rejected, "name": "Other", "itemStyle": {"color": "#BDBDBD"}})
+                _donut(f"Requests \u2014 {total_req} total", "Requests", req_data)
 
-            # Recent estimations
-            ui.label("Recent Estimations").classes("text-h6 q-mt-lg")
+            # ── Row 2: Features & Task Templates ──────────────
+            with ui.row().classes("w-full q-gutter-md q-mb-md"):
+                feat_cat = stats.get("features_by_category", {})
+                if feat_cat:
+                    feat_data = [
+                        {"value": cnt, "name": cat, "itemStyle": {"color": _palette[i % len(_palette)]}}
+                        for i, (cat, cnt) in enumerate(feat_cat.items())
+                    ]
+                    total_feat = sum(d["value"] for d in feat_data)
+                    _donut(f"Feature Catalog \u2014 {total_feat} total", "Features", feat_data)
+                else:
+                    with ui.card().classes("q-pa-md flex-1"):
+                        ui.label("Feature Catalog").classes("text-subtitle1")
+                        ui.label("No features configured.").classes("text-grey q-mt-md")
+
+                tasks_type = stats.get("tasks_by_type", {})
+                if tasks_type:
+                    sorted_tasks = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
+                    cats = [t[0] for t in sorted_tasks]
+                    vals = [t[1] for t in sorted_tasks]
+                    total_tasks = sum(vals)
+                    _bar(f"Task Templates \u2014 {total_tasks} total", cats, vals, "#42A5F5")
+                else:
+                    with ui.card().classes("q-pa-md flex-1"):
+                        ui.label("Task Templates").classes("text-subtitle1")
+                        ui.label("No task templates configured.").classes("text-grey q-mt-md")
+
+            # ── Row 3: Risk Registry (by category & likelihood) ─
+            with ui.row().classes("w-full q-gutter-md q-mb-lg"):
+                risk_cat = stats.get("risks_by_category", {})
+                if risk_cat:
+                    risk_cat_data = [
+                        {"value": cnt, "name": cat, "itemStyle": {"color": _palette[i % len(_palette)]}}
+                        for i, (cat, cnt) in enumerate(risk_cat.items())
+                    ]
+                    total_risks = sum(d["value"] for d in risk_cat_data)
+                    _donut(f"Risk Registry \u2014 {total_risks} total", "Risks", risk_cat_data)
+                else:
+                    with ui.card().classes("q-pa-md flex-1"):
+                        ui.label("Risk Registry").classes("text-subtitle1")
+                        ui.label("No risks configured.").classes("text-grey q-mt-md")
+
+                risk_lh = stats.get("risks_by_likelihood", {})
+                _lh_colors = {"LOW": "#66BB6A", "MEDIUM": "#FFA726", "HIGH": "#EF5350", "CRITICAL": "#B71C1C"}
+                if risk_lh:
+                    risk_lh_data = [
+                        {"value": cnt, "name": lh, "itemStyle": {"color": _lh_colors.get(lh, "#78909C")}}
+                        for lh, cnt in risk_lh.items()
+                    ]
+                    _donut("Risk Likelihood", "Likelihood", risk_lh_data)
+                else:
+                    with ui.card().classes("q-pa-md flex-1"):
+                        ui.label("Risk Likelihood").classes("text-subtitle1")
+                        ui.label("No risks configured.").classes("text-grey q-mt-md")
+
+            # ── Recent estimations ────────────────────────────
+            ui.label("Recent Estimations").classes("text-h6 q-mt-md")
             recent = stats.get("recent_estimations", [])
             if recent:
                 columns = [
-                    {"name": "id", "label": "ID", "field": "id"},
-                    {"name": "project_name", "label": "Project", "field": "project_name"},
-                    {"name": "grand_total_hours", "label": "Total Hours", "field": "grand_total_hours"},
-                    {"name": "status", "label": "Status", "field": "status"},
-                    {"name": "feasibility_status", "label": "Feasibility", "field": "feasibility_status"},
+                    {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
+                    {"name": "estimation_number", "label": "Number", "field": "estimation_number", "sortable": True, "align": "left"},
+                    {"name": "project_name", "label": "Project", "field": "project_name", "sortable": True, "align": "left"},
+                    {"name": "grand_total_hours", "label": "Total Hours", "field": "grand_total_hours", "sortable": True, "align": "right"},
+                    {"name": "status", "label": "Status", "field": "status", "sortable": True, "align": "left"},
+                    {"name": "feasibility_status", "label": "Feasibility", "field": "feasibility_status", "sortable": True, "align": "left"},
+                    {"name": "created_at", "label": "Created", "field": "created_at", "sortable": True, "align": "left"},
                 ]
-                ui.table(columns=columns, rows=recent).classes("w-full")
+                est_tbl = ui.table(
+                    columns=columns,
+                    rows=recent,
+                    row_key="id",
+                    pagination={"rowsPerPage": 10, "sortBy": "id", "descending": True},
+                ).classes("w-full")
+                est_tbl.add_slot("body-cell-status", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'DRAFT' ? 'blue-grey' :
+                            props.value === 'FINAL' ? 'blue' :
+                            props.value === 'APPROVED' ? 'green' : 'grey'
+                        ">{{ props.value }}</q-badge>
+                    </q-td>
+                """)
+                est_tbl.add_slot("body-cell-feasibility_status", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'FEASIBLE' ? 'positive' :
+                            props.value === 'AT_RISK' ? 'warning' : 'negative'
+                        ">{{ props.value }}</q-badge>
+                    </q-td>
+                """)
             else:
                 ui.label("No estimations yet.").classes("text-grey")
 
-            # Recent requests
+            # ── Recent requests ───────────────────────────────
             ui.label("Recent Requests").classes("text-h6 q-mt-lg")
             recent_req = stats.get("recent_requests", [])
             if recent_req:
                 columns = [
-                    {"name": "id", "label": "ID", "field": "id"},
-                    {"name": "request_number", "label": "Number", "field": "request_number"},
-                    {"name": "title", "label": "Title", "field": "title"},
-                    {"name": "priority", "label": "Priority", "field": "priority"},
-                    {"name": "status", "label": "Status", "field": "status"},
+                    {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
+                    {"name": "request_number", "label": "Number", "field": "request_number", "sortable": True, "align": "left"},
+                    {"name": "title", "label": "Title", "field": "title", "sortable": True, "align": "left"},
+                    {"name": "priority", "label": "Priority", "field": "priority", "sortable": True, "align": "left"},
+                    {"name": "status", "label": "Status", "field": "status", "sortable": True, "align": "left"},
+                    {"name": "created_at", "label": "Created", "field": "created_at", "sortable": True, "align": "left"},
                 ]
-                ui.table(columns=columns, rows=recent_req).classes("w-full")
+                req_tbl = ui.table(
+                    columns=columns,
+                    rows=recent_req,
+                    row_key="id",
+                    pagination={"rowsPerPage": 10, "sortBy": "id", "descending": True},
+                ).classes("w-full")
+                req_tbl.add_slot("body-cell-priority", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'HIGH' || props.value === 'CRITICAL' ? 'negative' :
+                            props.value === 'MEDIUM' ? 'warning' : 'positive'
+                        ">{{ props.value }}</q-badge>
+                    </q-td>
+                """)
+                req_tbl.add_slot("body-cell-status", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'NEW' ? 'info' :
+                            props.value === 'IN_ESTIMATION' ? 'warning' :
+                            props.value === 'COMPLETED' ? 'positive' : 'grey'
+                        ">{{ props.value }}</q-badge>
+                    </q-td>
+                """)
             else:
                 ui.label("No requests yet.").classes("text-grey")
 

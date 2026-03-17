@@ -120,9 +120,13 @@ async def public_holidays_page():
 
                 # Weekday headers
                 with ui.row().classes("w-full gap-0"):
+                    with ui.element("div").classes("text-center text-caption text-bold").style(
+                        "width: calc(100% / 8); padding: 4px 0;"
+                    ):
+                        ui.label("Wk")
                     for wd in range(7):
                         with ui.element("div").classes("text-center text-caption text-bold").style(
-                            "width: calc(100% / 7); padding: 4px 0;"
+                            "width: calc(100% / 8); padding: 4px 0;"
                         ):
                             ui.label(_weekday_name(wd))
 
@@ -139,12 +143,29 @@ async def public_holidays_page():
                 with ui.element("div").classes("w-full").style(
                     "display: flex; flex-wrap: wrap; gap: 0;"
                 ):
+                    # Week number for first (partial) row
+                    first_wk = date(y, m, 1).isocalendar()[1]
+                    with ui.element("div").classes("text-center text-caption text-grey").style(
+                        "width: calc(100% / 8); min-height: 80px; border: 1px solid #e0e0e0; "
+                        "padding: 4px; display: flex; align-items: flex-start; justify-content: center;"
+                    ):
+                        ui.label(str(first_wk)).classes("text-bold")
+
                     # Empty cells for offset
                     for _ in range(start_weekday):
-                        ui.element("div").style("width: calc(100% / 7); min-height: 80px;")
+                        ui.element("div").style("width: calc(100% / 8); min-height: 80px;")
 
                     for day in range(1, days_in_month + 1):
                         day_date = date(y, m, day)
+                        # At the start of a new week (Monday), add week number cell
+                        if day > 1 and day_date.weekday() == 0:
+                            wk = day_date.isocalendar()[1]
+                            with ui.element("div").classes("text-center text-caption text-grey").style(
+                                "width: calc(100% / 8); min-height: 80px; border: 1px solid #e0e0e0; "
+                                "padding: 4px; display: flex; align-items: flex-start; justify-content: center;"
+                            ):
+                                ui.label(str(wk)).classes("text-bold")
+
                         is_weekend = day_date.weekday() >= 5
                         is_today = day_date == today
                         day_holidays = _holidays_for_date(y, m, day)
@@ -156,7 +177,7 @@ async def public_holidays_page():
                             bg = f"background: {_holiday_cell_bg};"
 
                         with ui.element("div").style(
-                            f"width: calc(100% / 7); min-height: 80px; border: 1px solid #e0e0e0; "
+                            f"width: calc(100% / 8); min-height: 80px; border: 1px solid #e0e0e0; "
                             f"padding: 4px; cursor: pointer; {bg}"
                         ).on("click", lambda _, d=day: _on_day_click(d)):
                             day_label_color = "color: primary" if is_today else ""

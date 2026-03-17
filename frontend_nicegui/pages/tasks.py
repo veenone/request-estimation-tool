@@ -47,10 +47,11 @@ async def tasks_page():
             {"name": "id", "label": "ID", "field": "id", "align": "left", "sortable": True},
             {"name": "name", "label": "Name", "field": "name", "align": "left", "sortable": True},
             {"name": "task_type", "label": "Type", "field": "task_type", "align": "left", "sortable": True},
-            {"name": "feature", "label": "Feature", "field": "feature", "align": "left"},
+            {"name": "feature", "label": "Feature", "field": "feature", "align": "left", "style": "max-width: 220px"},
             {"name": "base_effort_hours", "label": "Base Hours", "field": "base_effort_hours", "align": "right", "sortable": True},
             {"name": "scales_with_dut", "label": "Scales DUT", "field": "scales_with_dut", "align": "center"},
             {"name": "scales_with_profile", "label": "Scales Profile", "field": "scales_with_profile", "align": "center"},
+            {"name": "is_pr_fix", "label": "PR Fix", "field": "is_pr_fix", "align": "center"},
             {"name": "product_type", "label": "Product Type", "field": "product_type", "align": "left", "sortable": True},
             {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
         ]
@@ -59,7 +60,7 @@ async def tasks_page():
             columns=cols,
             rows=[],
             row_key="id",
-            pagination={"rowsPerPage": 20},
+            pagination={"rowsPerPage": 15},
         ).classes("w-full shadow-1")
 
         table.add_slot(
@@ -70,6 +71,17 @@ async def tasks_page():
                     @click="$parent.$emit('edit-row', props.row)" class="q-mr-xs" />
                 <q-btn dense flat round icon="delete" color="negative" size="sm"
                     @click="$parent.$emit('delete-row', props.row)" />
+            </q-td>
+            """,
+        )
+
+        table.add_slot(
+            "body-cell-feature",
+            r"""
+            <q-td :props="props">
+                <div style="max-width: 200px; white-space: normal; word-break: break-word; line-height: 1.3;">
+                    {{ props.value }}
+                </div>
             </q-td>
             """,
         )
@@ -95,6 +107,7 @@ async def tasks_page():
                     "scales_with_dut": "Yes" if t.get("scales_with_dut") else "No",
                     "scales_with_profile": "Yes" if t.get("scales_with_profile") else "No",
                     "is_parallelizable": t.get("is_parallelizable", False),
+                    "is_pr_fix": "Yes" if t.get("is_pr_fix") else "No",
                     "description": t.get("description") or "",
                     "product_type": t.get("product_type") or "",
                 })
@@ -152,6 +165,9 @@ async def tasks_page():
                 dut_switch = ui.switch("Scales with DUT", value=False)
                 prof_switch = ui.switch("Scales with Profile", value=False)
                 para_switch = ui.switch("Is Parallelizable", value=False)
+                pr_fix_switch = ui.switch("PR Fix Template", value=False).tooltip(
+                    "If ON, this template is excluded when no PR fixes are expected"
+                )
                 pt_select = ui.select(
                     options=[""] + product_types,
                     label="Product Type (optional)",
@@ -179,6 +195,7 @@ async def tasks_page():
                         "scales_with_dut": dut_switch.value,
                         "scales_with_profile": prof_switch.value,
                         "is_parallelizable": para_switch.value,
+                        "is_pr_fix": pr_fix_switch.value,
                         "description": desc_input.value or None,
                         "product_type": pt_select.value if pt_select.value else None,
                     }
@@ -263,6 +280,9 @@ async def tasks_page():
                 dut_switch = ui.switch("Scales with DUT", value=bool(tmpl.get("scales_with_dut")))
                 prof_switch = ui.switch("Scales with Profile", value=bool(tmpl.get("scales_with_profile")))
                 para_switch = ui.switch("Is Parallelizable", value=bool(tmpl.get("is_parallelizable")))
+                pr_fix_switch = ui.switch("PR Fix Template", value=bool(tmpl.get("is_pr_fix"))).tooltip(
+                    "If ON, this template is excluded when no PR fixes are expected"
+                )
                 pt_select = ui.select(
                     options=[""] + product_types,
                     label="Product Type (optional)",
@@ -289,6 +309,7 @@ async def tasks_page():
                         "scales_with_dut": dut_switch.value,
                         "scales_with_profile": prof_switch.value,
                         "is_parallelizable": para_switch.value,
+                        "is_pr_fix": pr_fix_switch.value,
                         "description": desc_input.value or None,
                         "product_type": pt_select.value if pt_select.value else None,
                     }

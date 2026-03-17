@@ -291,6 +291,8 @@ def _estimation_to_export_dict(est: "Estimation") -> dict:
         "pr_complex": pr_fixes.get("complex", 0),
         "pr_details": wizard.get("pr_details", []),
         "pr_no_test_hours": getattr(est, "pr_no_test_hours", 0) or 0,
+        "start_date": str(est.start_date) if est.start_date else "",
+        "expected_delivery": str(est.expected_delivery) if est.expected_delivery else "",
     }
 
 

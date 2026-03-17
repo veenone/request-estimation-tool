@@ -40,6 +40,7 @@ class TaskTemplateOut(BaseModel):
     scales_with_dut: bool
     scales_with_profile: bool
     is_parallelizable: bool
+    is_pr_fix: bool = False
     description: Optional[str] = None
     product_type: Optional[str] = None
 
@@ -76,6 +77,7 @@ class TaskTemplateCreate(BaseModel):
     scales_with_dut: bool = False
     scales_with_profile: bool = False
     is_parallelizable: bool = False
+    is_pr_fix: bool = False
     description: Optional[str] = None
     product_type: Optional[str] = None
 
@@ -86,6 +88,7 @@ class TaskTemplateUpdate(BaseModel):
     scales_with_dut: Optional[bool] = None
     scales_with_profile: Optional[bool] = None
     is_parallelizable: Optional[bool] = None
+    is_pr_fix: Optional[bool] = None
     description: Optional[str] = None
     product_type: Optional[str] = None
     feature_ids: Optional[list[int]] = None  # Many-to-many feature IDs
@@ -294,6 +297,7 @@ class EstimationTaskOut(BaseModel):
     has_leader_support: bool
     leader_hours: float
     is_new_feature_study: bool
+    formula: Optional[str] = None
     notes: Optional[str] = None
     feature_id: Optional[int] = None
     feature_name: Optional[str] = None
@@ -357,6 +361,9 @@ class EstimationCreate(BaseModel):
     risk_item_ids: list[int] = []
     document_type_ids: list[int] = []
     document_counts: dict[str, int] = {}  # {doc_type_id_str: count}
+    task_assigned_testers: dict[str, int] = {}  # {task_name: tester_count}
+    testing_start_date: Optional[str] = None
+    product_type_filter: Optional[str] = None
 
 class EstimationRiskOut(BaseModel):
     id: int
@@ -393,6 +400,10 @@ class EstimationOut(BaseModel):
     buffer_hours: float = 0
     grand_total_hours: float
     grand_total_days: float
+    elapsed_hours: float = 0
+    elapsed_days: float = 0
+    elapsed_weeks: float = 0
+    estimated_completion_date: Optional[date] = None
     feasibility_status: str
     status: str
     version: int = 1
@@ -483,6 +494,9 @@ class EstimationRevise(BaseModel):
     risk_item_ids: list[int] = []
     document_type_ids: list[int] = []
     document_counts: dict[str, int] = {}
+    task_assigned_testers: dict[str, int] = {}  # {task_name: tester_count}
+    testing_start_date: Optional[str] = None
+    product_type_filter: Optional[str] = None
 
 
 class EstimationStatusUpdate(BaseModel):
@@ -528,6 +542,10 @@ class DashboardStatsOut(BaseModel):
     avg_utilization_pct: float = 0
     recent_estimations: list[RecentEstimationOut] = []
     recent_requests: list[RecentRequestOut] = []
+    features_by_category: dict[str, int] = {}
+    tasks_by_type: dict[str, int] = {}
+    risks_by_category: dict[str, int] = {}
+    risks_by_likelihood: dict[str, int] = {}
 
 
 class CalibrationResultOut(BaseModel):
@@ -553,6 +571,9 @@ class CalculationResultOut(BaseModel):
     feasibility_status: str
     capacity_hours: float
     utilization_pct: float
+    elapsed_hours: float = 0
+    elapsed_days: float = 0
+    elapsed_weeks: float = 0
     risk_flags: list[str] = []
     risk_messages: list[str] = []
 
