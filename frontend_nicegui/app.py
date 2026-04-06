@@ -311,9 +311,24 @@ def has_permission(perm: str) -> bool:
     return False
 
 
+def _handle_401() -> None:
+    """Clear auth state and redirect to login, preserving return URL."""
+    try:
+        current_path = ui.context.client.page.path
+    except Exception:
+        current_path = "/"
+    return_url = current_path if current_path != "/login" else "/"
+    app.storage.user.clear()
+    app.storage.user["_return_url"] = return_url
+    ui.navigate.to("/login")
+
+
 async def api_get(path: str, params: dict | None = None) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{API_URL}{path}", headers=auth_headers(), params=params)
+        if r.status_code == 401:
+            _handle_401()
+            raise Exception("Session expired")
         r.raise_for_status()
         return r.json()
 
@@ -321,6 +336,9 @@ async def api_get(path: str, params: dict | None = None) -> dict:
 async def api_post(path: str, json: dict | None = None, params: dict | None = None) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.post(f"{API_URL}{path}", headers=auth_headers(), json=json, params=params)
+        if r.status_code == 401:
+            _handle_401()
+            raise Exception("Session expired")
         r.raise_for_status()
         return r.json()
 
@@ -328,6 +346,9 @@ async def api_post(path: str, json: dict | None = None, params: dict | None = No
 async def api_put(path: str, json: dict | None = None) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.put(f"{API_URL}{path}", headers=auth_headers(), json=json)
+        if r.status_code == 401:
+            _handle_401()
+            raise Exception("Session expired")
         r.raise_for_status()
         return r.json()
 
@@ -335,6 +356,9 @@ async def api_put(path: str, json: dict | None = None) -> dict:
 async def api_delete(path: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.delete(f"{API_URL}{path}", headers=auth_headers())
+        if r.status_code == 401:
+            _handle_401()
+            raise Exception("Session expired")
         r.raise_for_status()
         if r.status_code == 204 or not r.content:
             return {}
@@ -392,7 +416,8 @@ async def login_page():
                 app.storage.user["token"] = data["access_token"]
                 app.storage.user["refresh_token"] = data["refresh_token"]
                 app.storage.user["user"] = data["user"]
-                ui.navigate.to("/")
+                return_url = app.storage.user.pop("_return_url", "/")
+                ui.navigate.to(return_url)
         except httpx.HTTPStatusError as exc:
             try:
                 detail = exc.response.json().get("detail", "Authentication failed")
@@ -694,6 +719,7 @@ def sidebar():
                 _nav_item("Users",     "manage_accounts",      "/users")
                 _nav_item("RBAC",      "admin_panel_settings", "/rbac")
                 _nav_item("Audit Log", "receipt_long",         "/audit")
+                _nav_item("Backup & Restore", "backup",        "/admin/backup")
 
         ui.space()
 
@@ -1010,6 +1036,7 @@ import frontend_nicegui.pages.assets        # noqa: F401,E402
 import frontend_nicegui.pages.pr_registry   # noqa: F401,E402
 import frontend_nicegui.pages.documents    # noqa: F401,E402
 import frontend_nicegui.pages.holidays    # noqa: F401,E402
+import frontend_nicegui.pages.backup     # noqa: F401,E402
 
 # ---------------------------------------------------------------------------
 # Run

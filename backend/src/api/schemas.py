@@ -1,9 +1,24 @@
 """Pydantic request/response models for the FastAPI layer."""
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Annotated, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
+
+
+def _coerce_date(v: object) -> object:
+    """Accept ISO-format date strings so ``Optional[date]`` fields work in
+    Pydantic v2 union resolution (which otherwise picks the ``None`` branch
+    and rejects the string)."""
+    if isinstance(v, str):
+        v_stripped = v.strip()
+        if v_stripped:
+            return date.fromisoformat(v_stripped)
+        return None
+    return v
+
+
+OptionalDate = Annotated[Optional[date], BeforeValidator(_coerce_date)]
 
 
 # ── Features ──────────────────────────────────────────────
@@ -615,7 +630,7 @@ class PublicHolidayOut(BaseModel):
     model_config = {"from_attributes": True}
 
 class PublicHolidayUpdate(BaseModel):
-    date: Optional[date] = None
+    date: OptionalDate = None
     name: Optional[str] = None
     country: Optional[str] = None
     is_recurring: Optional[bool] = None
@@ -731,3 +746,17 @@ class RiskItemOut(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+# ── Backup / Restore ───────────────────────────────────
+
+class BackupMetadata(BaseModel):
+    version: str
+    timestamp: str
+    tables: dict[str, int]
+
+
+class RestoreResult(BaseModel):
+    status: str
+    tables_restored: list[str]
+    rows_restored: dict[str, int]

@@ -226,13 +226,24 @@ async def public_holidays_page():
                 country_input = ui.input("Country / Region", value="").classes("w-full")
                 recurring_switch = ui.switch("Recurring annually", value=False)
 
+                def _normalize_date(raw):
+                    if hasattr(raw, "isoformat"):
+                        return raw.isoformat()
+                    if isinstance(raw, str) and raw.strip():
+                        return raw.strip()
+                    return None
+
                 async def _save():
                     if not date_input.value or not name_input.value:
                         ui.notify("Date and Name are required.", type="warning")
                         return
+                    date_val = _normalize_date(date_input.value)
+                    if not date_val:
+                        ui.notify("Invalid date value.", type="warning")
+                        return
                     try:
                         result = await api_post("/public-holidays", json={
-                            "date": date_input.value,
+                            "date": date_val,
                             "name": name_input.value.strip(),
                             "country": country_input.value or "",
                             "is_recurring": recurring_switch.value,
@@ -260,13 +271,24 @@ async def public_holidays_page():
                 country_input = ui.input("Country / Region", value=holiday.get("country", "")).classes("w-full")
                 recurring_switch = ui.switch("Recurring annually", value=holiday.get("is_recurring", False))
 
+                def _normalize_date(raw):
+                    if hasattr(raw, "isoformat"):
+                        return raw.isoformat()
+                    if isinstance(raw, str) and raw.strip():
+                        return raw.strip()
+                    return None
+
                 async def _save_edit():
                     if not date_input.value or not name_input.value:
                         ui.notify("Date and Name are required.", type="warning")
                         return
+                    date_val = _normalize_date(date_input.value)
+                    if not date_val:
+                        ui.notify("Invalid date value.", type="warning")
+                        return
                     try:
                         updated = await api_put(f"/public-holidays/{holiday['id']}", json={
-                            "date": date_input.value,
+                            "date": date_val,
                             "name": name_input.value.strip(),
                             "country": country_input.value or "",
                             "is_recurring": recurring_switch.value,

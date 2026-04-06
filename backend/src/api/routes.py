@@ -8,7 +8,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette.requests import Request as HTTPRequest
@@ -321,6 +321,17 @@ def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db
             try:
                 ldap_user = ldap.authenticate(data.username, data.password)
             except LDAPConnectionError as exc:
+                auth_service.log_action(
+                    user_id=None,
+                    action="LOGIN_FAILED",
+                    resource_type="auth",
+                    details={
+                        "username": data.username,
+                        "auth_method": "ldap",
+                        "reason": f"LDAP unreachable: {exc}",
+                    },
+                    ip_address=client_ip,
+                )
                 raise HTTPException(
                     status_code=502,
                     detail=f"LDAP server unreachable: {exc}",
@@ -337,6 +348,17 @@ def login(data: LoginRequest, request: HTTPRequest, db: Session = Depends(get_db
             )
 
     if result is None:
+        auth_service.log_action(
+            user_id=None,
+            action="LOGIN_FAILED",
+            resource_type="auth",
+            details={
+                "username": data.username,
+                "auth_method": method,
+                "reason": "Invalid username or password",
+            },
+            ip_address=client_ip,
+        )
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     user, access_token, refresh_token = result
@@ -3932,3 +3954,150 @@ def calculate_working_weeks(
             "working_weeks": round(working_weeks, 1),
             "holidays_excluded": 0,
         }
+
+
+# ── Backup & Restore ──────────────────────────────────
+
+
+# Ordered by FK dependencies (parents before children)
+_BACKUP_TABLES: list[tuple[str, type]] = [
+    ("features", Feature),
+    ("task_templates", TaskTemplate),
+    ("task_template_features", TaskTemplateFeature),
+    ("dut_types", DutType),
+    ("test_profiles", TestProfile),
+    ("team_members", TeamMember),
+    ("risk_items", RiskItem),
+    ("document_types", DocumentType),
+    ("public_holidays", PublicHoliday),
+]
+
+
+def _row_to_dict(row) -> dict:
+    """Convert an ORM row to a plain dict, serializing dates/datetimes."""
+    d = {}
+    for col in row.__table__.columns:
+        val = getattr(row, col.name)
+        if isinstance(val, (date, datetime)):
+            val = val.isoformat()
+        d[col.name] = val
+    return d
+
+
+@router.get("/admin/backup")
+def admin_backup(
+    request: HTTPRequest,
+    current_user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    """Export all config data as a downloadable JSON file."""
+    tables_data: dict[str, list[dict]] = {}
+    tables_count: dict[str, int] = {}
+    for table_name, model_cls in _BACKUP_TABLES:
+        rows = db.query(model_cls).all()
+        serialized = [_row_to_dict(r) for r in rows]
+        tables_data[table_name] = serialized
+        tables_count[table_name] = len(serialized)
+
+    backup = {
+        "version": "3.3.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "tables": tables_data,
+    }
+
+    auth_service = AuthService(db)
+    client_ip = getattr(request.state, "client_ip", None)
+    auth_service.log_action(
+        user_id=current_user.id,
+        action="BACKUP",
+        resource_type="system",
+        details={"tables": tables_count},
+        ip_address=client_ip,
+    )
+
+    content = json.dumps(backup, indent=2, default=str)
+    timestamp_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="presto_backup_{timestamp_str}.json"'
+        },
+    )
+
+
+@router.post("/admin/restore")
+def admin_restore(
+    request: HTTPRequest,
+    file: UploadFile = File(...),
+    current_user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+):
+    """Restore config data from a backup JSON file."""
+    try:
+        raw = file.file.read()
+        backup = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON file: {exc}")
+
+    if "tables" not in backup:
+        raise HTTPException(status_code=400, detail="Invalid backup format: missing 'tables' key")
+
+    tables_map = backup["tables"]
+    tables_restored: list[str] = []
+    rows_restored: dict[str, int] = {}
+
+    try:
+        # Delete in reverse order (children before parents) to respect FK constraints
+        for table_name, model_cls in reversed(_BACKUP_TABLES):
+            if table_name in tables_map:
+                db.query(model_cls).delete()
+
+        db.flush()
+
+        # Insert in forward order (parents before children)
+        for table_name, model_cls in _BACKUP_TABLES:
+            if table_name not in tables_map:
+                continue
+            rows = tables_map[table_name]
+            for row_data in rows:
+                # Convert date strings back to date objects for date columns
+                for col in model_cls.__table__.columns:
+                    col_name = col.name
+                    if col_name in row_data and row_data[col_name] is not None:
+                        col_type = str(col.type)
+                        if "DATE" in col_type and not "DATETIME" in col_type:
+                            try:
+                                row_data[col_name] = date.fromisoformat(row_data[col_name])
+                            except (ValueError, TypeError):
+                                pass
+                        elif "DATETIME" in col_type:
+                            try:
+                                row_data[col_name] = datetime.fromisoformat(row_data[col_name])
+                            except (ValueError, TypeError):
+                                pass
+                obj = model_cls(**row_data)
+                db.add(obj)
+            tables_restored.append(table_name)
+            rows_restored[table_name] = len(rows)
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Restore failed: {exc}")
+
+    auth_service = AuthService(db)
+    client_ip = getattr(request.state, "client_ip", None)
+    auth_service.log_action(
+        user_id=current_user.id,
+        action="RESTORE",
+        resource_type="system",
+        details={"tables_restored": tables_restored, "rows_restored": rows_restored},
+        ip_address=client_ip,
+    )
+
+    return {
+        "status": "ok",
+        "tables_restored": tables_restored,
+        "rows_restored": rows_restored,
+    }
