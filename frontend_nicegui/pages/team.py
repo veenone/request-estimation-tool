@@ -75,10 +75,24 @@ async def team_page() -> None:
             ui.notify(f"Failed to load team members: {exc}", type="negative")
             members = []
 
+    search_ref: dict = {"input": None}
+
     async def refresh_table() -> None:
         await load_members()
         if table_ref is not None:
-            table_ref.rows = members
+            si = search_ref.get("input")
+            query = (si.value if si else "").strip().lower()
+            if query:
+                table_ref.rows = [
+                    m for m in members
+                    if query in (m.get("name") or "").lower()
+                    or query in (m.get("role") or "").lower()
+                    or query in (m.get("skills_json") or "").lower()
+                    or query in (m.get("linked_user_name") or "").lower()
+                    or query in str(m.get("id", ""))
+                ]
+            else:
+                table_ref.rows = members
             table_ref.update()
 
     # ---------------------------------------------------------------------------
@@ -363,6 +377,31 @@ async def team_page() -> None:
                 ).props("color=primary")
 
         await load_members()
+
+        # Search input
+        search_input = ui.input(
+            placeholder="Search by name, role, skills, linked user...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+        search_ref["input"] = search_input
+
+        def _apply_team_filter() -> None:
+            query = (search_input.value or "").strip().lower()
+            if not query:
+                table_ref.rows = members
+            else:
+                table_ref.rows = [
+                    m for m in members
+                    if query in (m.get("name") or "").lower()
+                    or query in (m.get("role") or "").lower()
+                    or query in (m.get("skills_json") or "").lower()
+                    or query in (m.get("linked_user_name") or "").lower()
+                    or query in str(m.get("id", ""))
+                ]
+            table_ref.update()
+
+        search_input.on("update:model-value", lambda _: _apply_team_filter())
 
         columns = [
             {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},

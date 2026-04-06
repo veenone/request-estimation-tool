@@ -47,6 +47,17 @@ async def profiles_page() -> None:
         ui.label("Test Profiles").classes("text-h4 q-mb-md")
 
         # ------------------------------------------------------------------ #
+        # Search input                                                         #
+        # ------------------------------------------------------------------ #
+        all_rows_ref: dict = {"data": []}
+
+        search_input = ui.input(
+            placeholder="Search by name, description, product type...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+
+        # ------------------------------------------------------------------ #
         # Table                                                                #
         # ------------------------------------------------------------------ #
         table = ui.table(
@@ -98,13 +109,33 @@ async def profiles_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
+        # Filter helper                                                        #
+        # ------------------------------------------------------------------ #
+        def _apply_search() -> None:
+            query = (search_input.value or "").strip().lower()
+            if not query:
+                table.rows = list(all_rows_ref["data"])
+            else:
+                table.rows = [
+                    r for r in all_rows_ref["data"]
+                    if query in (r.get("name") or "").lower()
+                    or query in (r.get("description") or "").lower()
+                    or query in (r.get("product_type") or "").lower()
+                    or query in str(r.get("effort_multiplier", ""))
+                    or query in str(r.get("id", ""))
+                ]
+            table.update()
+
+        search_input.on("update:model-value", lambda _: _apply_search())
+
+        # ------------------------------------------------------------------ #
         # Refresh helper                                                        #
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
                 rows: list = await api_get("/profiles")
-                table.rows = rows
-                table.update()
+                all_rows_ref["data"] = rows
+                _apply_search()
             except Exception as exc:
                 ui.notify(f"Failed to load profiles: {exc}", type="negative")
 

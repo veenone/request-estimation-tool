@@ -107,6 +107,17 @@ async def duts_page() -> None:
             ).props("color=primary")
 
         # ------------------------------------------------------------------ #
+        # Search input                                                         #
+        # ------------------------------------------------------------------ #
+        all_rows_ref: dict = {"data": []}
+
+        search_input = ui.input(
+            placeholder="Search by name, category, product type...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+
+        # ------------------------------------------------------------------ #
         # Table with multi-select                                              #
         # ------------------------------------------------------------------ #
         table = ui.table(
@@ -144,14 +155,34 @@ async def duts_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
+        # Filter helper                                                        #
+        # ------------------------------------------------------------------ #
+        def _apply_search() -> None:
+            query = (search_input.value or "").strip().lower()
+            if not query:
+                table.rows = list(all_rows_ref["data"])
+            else:
+                table.rows = [
+                    r for r in all_rows_ref["data"]
+                    if query in (r.get("name") or "").lower()
+                    or query in (r.get("category") or "").lower()
+                    or query in (r.get("product_type") or "").lower()
+                    or query in str(r.get("complexity_multiplier", ""))
+                    or query in str(r.get("id", ""))
+                ]
+            table.update()
+
+        search_input.on("update:model-value", lambda _: _apply_search())
+
+        # ------------------------------------------------------------------ #
         # Refresh helper                                                       #
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
                 rows: list = await api_get("/dut-types")
-                table.rows = rows
+                all_rows_ref["data"] = rows
+                _apply_search()
                 table.selected.clear()
-                table.update()
                 _on_selection_change()
             except Exception as exc:
                 ui.notify(f"Failed to load DUT types: {exc}", type="negative")

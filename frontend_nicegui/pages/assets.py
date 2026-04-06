@@ -68,6 +68,15 @@ async def assets_page() -> None:
                 )
 
         # ------------------------------------------------------------------ #
+        # Search input                                                         #
+        # ------------------------------------------------------------------ #
+        search_input = ui.input(
+            placeholder="Search by name, serial, model, category, status...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+
+        # ------------------------------------------------------------------ #
         # Table with checkbox selection                                        #
         # ------------------------------------------------------------------ #
         table = ui.table(
@@ -101,13 +110,27 @@ async def assets_page() -> None:
         # Apply local category filter to table                                 #
         # ------------------------------------------------------------------ #
         def _apply_filter() -> None:
-            """Filter table rows by the selected category."""
+            """Filter table rows by the selected category and search query."""
             filt = state["filter_category"]
             if filt == "All":
-                table.rows = list(state["all_rows"])
+                rows = list(state["all_rows"])
             else:
-                table.rows = [r for r in state["all_rows"] if r.get("category") == filt]
+                rows = [r for r in state["all_rows"] if r.get("category") == filt]
+            query = (search_input.value or "").strip().lower()
+            if query:
+                rows = [
+                    r for r in rows
+                    if query in (r.get("name") or "").lower()
+                    or query in (r.get("serial") or "").lower()
+                    or query in (r.get("model_name") or "").lower()
+                    or query in (r.get("category") or "").lower()
+                    or query in (r.get("status") or "").lower()
+                    or query in (r.get("asset_tag") or "").lower()
+                ]
+            table.rows = rows
             table.update()
+
+        search_input.on("update:model-value", lambda _: _apply_filter())
 
         # ------------------------------------------------------------------ #
         # Refresh helper                                                       #

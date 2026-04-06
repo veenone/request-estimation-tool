@@ -48,6 +48,15 @@ async def risks_page() -> None:
         state: dict = {"rows": []}
 
         # ------------------------------------------------------------------ #
+        # Search input                                                         #
+        # ------------------------------------------------------------------ #
+        search_input = ui.input(
+            placeholder="Search by name, category, likelihood, impact...",
+        ).classes("w-full q-mb-sm").props('outlined dense clearable')
+        with search_input:
+            ui.icon("search").classes("text-grey").props('slot="prepend"')
+
+        # ------------------------------------------------------------------ #
         # Table                                                                #
         # ------------------------------------------------------------------ #
         table = ui.table(
@@ -102,14 +111,34 @@ async def risks_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
+        # Filter helper                                                        #
+        # ------------------------------------------------------------------ #
+        def _apply_search() -> None:
+            query = (search_input.value or "").strip().lower()
+            if not query:
+                table.rows = list(state["rows"])
+            else:
+                table.rows = [
+                    r for r in state["rows"]
+                    if query in (r.get("name") or "").lower()
+                    or query in (r.get("category") or "").lower()
+                    or query in (r.get("likelihood") or "").lower()
+                    or query in (r.get("impact") or "").lower()
+                    or query in (r.get("description") or "").lower()
+                    or query in str(r.get("id", ""))
+                ]
+            table.update()
+
+        search_input.on("update:model-value", lambda _: _apply_search())
+
+        # ------------------------------------------------------------------ #
         # Refresh helper                                                        #
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
                 all_rows: list = await api_get("/risk-items")
                 state["rows"] = all_rows
-                table.rows = list(all_rows)
-                table.update()
+                _apply_search()
             except Exception as exc:
                 ui.notify(f"Failed to load risk items: {exc}", type="negative")
 
