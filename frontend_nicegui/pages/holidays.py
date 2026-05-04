@@ -111,12 +111,18 @@ async def public_holidays_page():
             y, m = state["year"], state["month"]
 
             with calendar_container:
-                # Navigation header
-                with ui.row().classes("items-center q-mb-sm gap-2"):
+                # Navigation header — month nav on the left, Add Holiday on the right
+                with ui.row().classes("items-center q-mb-sm gap-2 w-full"):
                     ui.button(icon="chevron_left", on_click=_prev_month).props("flat dense round")
                     ui.label(f"{_month_name(m)} {y}").classes("text-h6").style("min-width: 200px; text-align: center;")
                     ui.button(icon="chevron_right", on_click=_next_month).props("flat dense round")
                     ui.button("Today", on_click=_goto_today).props("flat dense")
+                    ui.space()
+                    ui.button(
+                        "Add Holiday",
+                        icon="add",
+                        on_click=lambda: _show_add_dialog(),
+                    ).props("color=primary")
 
                 # Weekday headers
                 with ui.row().classes("w-full gap-0"):
@@ -189,6 +195,14 @@ async def public_holidays_page():
                                     "padding: 1px 4px; font-size: 11px; cursor: pointer;"
                                 ).on("click.stop", lambda _, h=hol: _show_edit_dialog(h)):
                                     ui.label(hol["name"]).style("white-space: nowrap; overflow: hidden; text-overflow: ellipsis;")
+
+                # Bottom-left: Import ICS uploader
+                with ui.row().classes("w-full q-mt-md justify-start"):
+                    ui.upload(
+                        label="Import ICS",
+                        on_upload=_handle_ics_upload,
+                        auto_upload=True,
+                    ).props('accept=".ics" flat dense color=secondary').classes("max-w-sm")
 
         async def _prev_month():
             if state["month"] == 1:
@@ -364,16 +378,6 @@ async def public_holidays_page():
                 _render_table()
             except Exception as exc:
                 ui.notify(f"Import failed: {exc}", type="negative")
-
-        # ---- Toolbar -------------------------------------------------------------
-        with ui.row().classes("q-mb-md gap-2 items-center"):
-            ui.button("Add Holiday", icon="add", on_click=lambda: _show_add_dialog()).props("color=primary")
-
-            ui.upload(
-                label="Import ICS",
-                on_upload=_handle_ics_upload,
-                auto_upload=True,
-            ).props('accept=".ics" flat dense color=secondary').classes("q-ml-sm")
 
         # ---- Calendar view -------------------------------------------------------
         _render_calendar()

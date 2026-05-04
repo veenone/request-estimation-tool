@@ -541,9 +541,27 @@ def list_features(product_type: str | None = None, user: User = Depends(get_curr
 
 @router.post("/features", response_model=FeatureOut, status_code=201)
 def create_feature(data: FeatureCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    existing = db.query(Feature).filter(
+        Feature.name == data.name,
+        Feature.category == data.category,
+    ).first()
+    if existing:
+        cat_label = data.category or "(no category)"
+        raise HTTPException(
+            409,
+            f"Feature '{data.name}' already exists in category '{cat_label}'. "
+            "Choose a different name or category.",
+        )
     feature = Feature(**data.model_dump())
     db.add(feature)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            409,
+            f"Feature '{data.name}' already exists in this category.",
+        )
     db.refresh(feature)
     return feature
 
@@ -561,9 +579,32 @@ def update_feature(feature_id: int, data: FeatureUpdate, user: User = Depends(Re
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
-    for key, val in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    new_name = updates.get("name", feature.name)
+    new_category = updates.get("category", feature.category)
+    if (new_name, new_category) != (feature.name, feature.category):
+        clash = db.query(Feature).filter(
+            Feature.name == new_name,
+            Feature.category == new_category,
+            Feature.id != feature_id,
+        ).first()
+        if clash:
+            cat_label = new_category or "(no category)"
+            raise HTTPException(
+                409,
+                f"Feature '{new_name}' already exists in category '{cat_label}'. "
+                "Choose a different name or category.",
+            )
+    for key, val in updates.items():
         setattr(feature, key, val)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            409,
+            f"Feature '{new_name}' already exists in this category.",
+        )
     db.refresh(feature)
     return feature
 
@@ -936,6 +977,14 @@ def update_request(request_id: int, data: RequestUpdate, user: User = Depends(Re
 
 
 # ── Configuration ────────────────────────────────────────
+
+@router.get("/configuration/branding")
+def get_branding(db: Session = Depends(get_db)):
+    """Return branding config (logo) without authentication."""
+    logo_url = _get_config_value(db, "logo_url", "")
+    logo_height = _get_config_value(db, "logo_height", "50")
+    return {"logo_url": logo_url, "logo_height": logo_height}
+
 
 @router.get("/configuration", response_model=list[ConfigurationOut])
 def list_configuration(user: User = Depends(get_current_user), db: Session = Depends(get_db)):

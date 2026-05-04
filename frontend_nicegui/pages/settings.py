@@ -351,11 +351,15 @@ async def settings_page():
                     f"Partial save — {len(errors)} error(s). See notification."
                 )
             elif changed:
+                # Invalidate cached config so sidebar/theme picks up new values
+                _safe_storage().pop("_rbac_cache", None)
                 ui.notify(
-                    f"Saved {len(changed)} configuration key(s).",
+                    f"Saved {len(changed)} configuration key(s). Reloading...",
                     type="positive",
                 )
                 status_label.set_text(f"Saved: {', '.join(changed)}")
+                # Reload page so appearance/theme changes take effect immediately
+                ui.timer(1.0, lambda: ui.navigate.to("/settings"), once=True)
             else:
                 ui.notify("No changes detected.", type="info")
                 status_label.set_text("No changes to save.")

@@ -311,6 +311,31 @@ def has_permission(perm: str) -> bool:
     return False
 
 
+def extract_error_detail(exc: Exception) -> str:
+    """Pull a human-readable detail string out of an httpx error or ApiError.
+
+    Falls back to ``str(exc)`` if no structured detail is available."""
+    if isinstance(exc, ApiError):
+        return exc.detail or str(exc)
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.json()
+            if isinstance(body, dict):
+                raw = body.get("detail") or body.get("message")
+                if isinstance(raw, list):
+                    parts = []
+                    for err in raw:
+                        loc = " -> ".join(str(l) for l in err.get("loc", []))
+                        msg = err.get("msg", "")
+                        parts.append(f"{loc}: {msg}" if loc else msg)
+                    return "; ".join(parts)
+                if raw:
+                    return str(raw)
+        except Exception:
+            pass
+    return str(exc)
+
+
 def _handle_401() -> None:
     """Clear auth state and redirect to login, preserving return URL."""
     try:
@@ -429,18 +454,16 @@ async def login_page():
         except Exception as e:
             ui.notify(f"Login error: {e}", type="negative")
 
-    # Fetch logo config for login page
+    # Fetch logo config from public branding endpoint (no auth required)
     _login_logo_url = ""
     _login_logo_height = "50"
     try:
         async with httpx.AsyncClient() as client:
-            r_cfg = await client.get(f"{API_URL}/configuration")
+            r_cfg = await client.get(f"{API_URL}/configuration/branding")
             if r_cfg.status_code == 200:
-                for ci in r_cfg.json():
-                    if ci.get("key") == "logo_url":
-                        _login_logo_url = ci.get("value") or ""
-                    elif ci.get("key") == "logo_height":
-                        _login_logo_height = ci.get("value") or "50"
+                branding = r_cfg.json()
+                _login_logo_url = branding.get("logo_url") or ""
+                _login_logo_height = branding.get("logo_height") or "50"
     except Exception:
         pass
     if _login_logo_url and "/api/static/uploads/" in _login_logo_url:
@@ -449,11 +472,10 @@ async def login_page():
     with ui.card().classes("absolute-center w-96"):
         if _login_logo_url:
             with ui.row().classes("w-full justify-center q-mb-sm"):
-                ui.html(
-                    f'<img src="{_login_logo_url}" alt="Logo" '
-                    f'style="max-height: {_login_logo_height}px; max-width: 200px; object-fit: contain;" '
-                    f'onerror="this.style.display=\'none\'" />'
-                )
+                ui.image(_login_logo_url).style(
+                    f"max-height: {_login_logo_height}px; max-width: 200px; "
+                    "object-fit: contain;"
+                ).props("fit=contain spinner-color=primary")
         ui.label("PRESTO").classes("text-h5 text-center w-full")
         ui.label("Project Request Estimation Tool").classes("text-subtitle2 text-center w-full text-grey")
 
@@ -501,31 +523,41 @@ def sidebar():
     user = current_user()
     role = user.get("role", "VIEWER") if user else "VIEWER"
 
-    with ui.left_drawer(value=True).classes("bg-dark text-white") as drawer:
-        # Configurable logo (sync fetch to avoid async in non-async function)
-        _logo_url = ""
-        _logo_height = "40"
-        try:
-            import httpx as _hx_logo
-            _r_logo = _hx_logo.get(f"{API_URL}/configuration", headers=auth_headers(), timeout=5)
-            if _r_logo.status_code == 200:
-                for _ci_logo in _r_logo.json():
-                    if _ci_logo.get("key") == "logo_url":
-                        _logo_url = _ci_logo.get("value") or ""
-                    elif _ci_logo.get("key") == "logo_height":
-                        _logo_height = _ci_logo.get("value") or "40"
-        except Exception:
-            pass
-        # Rewrite API-served URL to NiceGUI-served URL for reliability
-        if _logo_url and "/api/static/uploads/" in _logo_url:
-            _logo_url = _logo_url.replace("/api/static/uploads/", "/uploads/")
+    # Load configuration list (cached in storage) for logo, RBAC, and theme
+    _cfg_list: list[dict] | None = None
+    try:
+        _cfg_list = _safe_storage().get("_rbac_cache")
+        if not _cfg_list:
+            import httpx as _hx
+            _r = _hx.get(f"{API_URL}/configuration", headers=auth_headers(), timeout=5)
+            if _r.status_code == 200:
+                _cfg_list = _r.json()
+                _safe_storage()["_rbac_cache"] = _cfg_list
+    except Exception:
+        pass
+
+    # Extract logo config from the already-loaded config list
+    _logo_url = ""
+    _logo_height = "40"
+    if _cfg_list:
+        for _ci_logo in _cfg_list:
+            if _ci_logo.get("key") == "logo_url":
+                _logo_url = _ci_logo.get("value") or ""
+            elif _ci_logo.get("key") == "logo_height":
+                _logo_height = _ci_logo.get("value") or "40"
+    if _logo_url and "/api/static/uploads/" in _logo_url:
+        _logo_url = _logo_url.replace("/api/static/uploads/", "/uploads/")
+
+    # Drawer background is controlled by the injected theme CSS below
+    # (sidebar_bg_light / sidebar_bg_dark). We avoid `bg-dark` because its
+    # `!important` rule wins over our injected style.
+    with ui.left_drawer(value=True).classes("text-white") as drawer:
         if _logo_url:
             with ui.row().classes("q-pa-md items-center gap-2"):
-                ui.html(
-                    f'<img src="{_logo_url}" alt="Logo" '
-                    f'style="max-height: {_logo_height}px; max-width: 160px; object-fit: contain;" '
-                    f'onerror="this.style.display=\'none\'" />'
-                )
+                ui.image(_logo_url).style(
+                    f"max-height: {_logo_height}px; max-width: 160px; "
+                    "object-fit: contain;"
+                ).props("fit=contain spinner-color=primary")
                 ui.label("PRESTO").classes("text-h6")
         else:
             ui.label("PRESTO").classes("text-h6 q-pa-md")
@@ -642,19 +674,6 @@ def sidebar():
         ui.timer(30.0, _update_banner)
         ui.timer(1.0, _update_banner, once=True)
 
-        # Load configuration list (cached in storage) for RBAC + theme
-        _cfg_list: list[dict] | None = None
-        try:
-            _cfg_list = _safe_storage().get("_rbac_cache")
-            if not _cfg_list:
-                import httpx as _hx
-                _r = _hx.get(f"{API_URL}/configuration", headers=auth_headers(), timeout=5)
-                if _r.status_code == 200:
-                    _cfg_list = _r.json()
-                    _safe_storage()["_rbac_cache"] = _cfg_list
-        except Exception:
-            pass
-
         # Determine RBAC permissions for nav visibility
         _rbac_perms: set[str] = set()
         if role == "ADMIN":
@@ -756,13 +775,30 @@ def sidebar():
             sidebar_bg = _theme[f"sidebar_{suffix}"]
             content_bg = _theme[f"content_{suffix}"]
             btn = _theme[f"button_{suffix}"]
+            # Compute readable text color for sidebar based on its background luminance
+            try:
+                _sb = sidebar_bg.lstrip("#")
+                _r, _g, _b = int(_sb[0:2], 16), int(_sb[2:4], 16), int(_sb[4:6], 16)
+                _lum = (0.299 * _r + 0.587 * _g + 0.114 * _b)
+                sidebar_text = "#FFFFFF" if _lum < 140 else "#212121"
+            except Exception:
+                sidebar_text = "#FFFFFF" if dark_mode else "#212121"
             ui.run_javascript(f"""
                 document.getElementById('theme-dynamic')?.remove();
                 var s = document.createElement('style');
                 s.id = 'theme-dynamic';
                 s.textContent = `
                     .q-table thead th {{ background-color: {hdr} !important; }}
-                    .q-drawer--left {{ background-color: {sidebar_bg} !important; }}
+                    aside.q-drawer.q-drawer--left,
+                    aside.q-drawer.q-drawer--left .q-drawer__content {{
+                        background-color: {sidebar_bg} !important;
+                        color: {sidebar_text} !important;
+                    }}
+                    aside.q-drawer.q-drawer--left .q-item__label,
+                    aside.q-drawer.q-drawer--left .text-caption,
+                    aside.q-drawer.q-drawer--left .text-h6 {{
+                        color: {sidebar_text} !important;
+                    }}
                     .q-page {{ background-color: {content_bg} !important; }}
                     .q-btn--standard.bg-primary {{ background-color: {btn} !important; }}
                 `;
@@ -804,9 +840,12 @@ async def dashboard_page():
 
     sidebar()
 
-    # Shared legend style for dark-mode readability
-    _legend = {"orient": "horizontal", "bottom": 0, "textStyle": {"color": "#FFFFFF"}}
-    _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 11, "color": "#FFFFFF"}
+    # Resolve chart text color based on dark/light mode
+    _is_dark = _safe_storage().get("dark_mode", True)
+    _chart_text = "#FFFFFF" if _is_dark else "#333333"
+
+    _legend = {"orient": "horizontal", "bottom": 0, "textStyle": {"color": _chart_text}}
+    _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 11, "color": _chart_text}
     _emphasis = {"label": {"show": True, "fontSize": 14, "fontWeight": "bold"}}
     _chart_h = "height: 400px"
 
@@ -840,13 +879,13 @@ async def dashboard_page():
             ui.echart({
                 "tooltip": {"trigger": "axis"},
                 "grid": {"left": "3%", "right": "6%", "bottom": "3%", "top": "8%", "containLabel": True},
-                "xAxis": {"type": "value", "axisLabel": {"color": "#FFFFFF"}},
-                "yAxis": {"type": "category", "data": categories, "axisLabel": {"color": "#FFFFFF", "fontSize": 11}},
+                "xAxis": {"type": "value", "axisLabel": {"color": _chart_text}},
+                "yAxis": {"type": "category", "data": categories, "axisLabel": {"color": _chart_text, "fontSize": 11}},
                 "series": [{
                     "type": "bar",
                     "data": values,
                     "itemStyle": {"color": color},
-                    "label": {"show": True, "position": "right", "color": "#FFFFFF"},
+                    "label": {"show": True, "position": "right", "color": _chart_text},
                 }],
             }).classes("w-full").style(_chart_h)
 

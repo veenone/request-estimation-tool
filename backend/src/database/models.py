@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -68,9 +69,12 @@ class Request(Base):
 
 class Feature(Base):
     __tablename__ = "features"
+    __table_args__ = (
+        UniqueConstraint("name", "category", name="uq_features_name_category"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     complexity_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     has_existing_tests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

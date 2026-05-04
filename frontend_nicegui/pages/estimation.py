@@ -1730,619 +1730,480 @@ async def estimation_detail_page(estimation_id: int) -> None:
     hdrs = auth_headers()
     token: str = hdrs.get("Authorization", "").removeprefix("Bearer ") if hdrs else ""
 
-    with ui.column().classes("q-pa-lg w-full"):
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ------------------------------------------------------------------ #
-        # Load the estimation                                                  #
-        # ------------------------------------------------------------------ #
+        # ─────────────────────────────────────────────────────────────
+        # Inject typography + design system CSS (theme-aware via tokens)
+        # ─────────────────────────────────────────────────────────────
+        ui.add_head_html("""
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+        <style>
+          :root {
+            --ed-line: color-mix(in srgb, currentColor 18%, transparent);
+            --ed-line-soft: color-mix(in srgb, currentColor 11%, transparent);
+            --ed-bg-soft: color-mix(in srgb, currentColor 4%, transparent);
+            --ed-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+            --ed-sans: inherit;
+          }
+
+          /* Layout shell */
+          .ed-shell { width: 100%; max-width: 1340px; margin: 0 auto; }
+
+          /* Mono helper */
+          .ed-mono       { font-family: var(--ed-mono) !important; font-variant-numeric: tabular-nums; }
+
+          .ed-eyebrow    { font-family: var(--ed-sans) !important;
+                           text-transform: uppercase !important; letter-spacing: 0.16em !important;
+                           font-size: 10px !important; font-weight: 600 !important; opacity: 0.62 !important;
+                           line-height: 1.1 !important; }
+          .ed-cap        { font-family: var(--ed-sans) !important;
+                           text-transform: uppercase !important; letter-spacing: 0.18em !important;
+                           font-size: 11px !important; font-weight: 700 !important; opacity: 0.6 !important;
+                           line-height: 1.1 !important; }
+
+          /* Sticky toolbar */
+          .ed-toolbar    { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap;
+                           padding: 12px 24px; backdrop-filter: blur(14px);
+                           background: var(--ed-bg-soft);
+                           border-bottom: 1px solid var(--ed-line);
+                           position: sticky; top: 0; z-index: 60;
+                           margin: -16px -16px 28px -16px; }
+          .ed-toolbar .q-btn { font-family: var(--ed-sans); text-transform: uppercase;
+                               letter-spacing: 0.10em; font-size: 11px; font-weight: 600; }
+          .ed-toolbar-spacer { width: 1px; height: 22px; background: var(--ed-line); margin: 0 8px; }
+          .ed-toolbar-grow   { flex: 1; min-width: 16px; }
+
+          /* Status pill */
+          .ed-status-now { display: inline-flex; align-items: center; gap: 10px;
+                           padding: 7px 14px; border: 1px solid var(--ed-line);
+                           border-radius: 99px; font-family: var(--ed-mono);
+                           font-size: 11px; letter-spacing: 0.04em; }
+          .ed-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--q-info); }
+          .ed-status-FEASIBLE .ed-status-dot, .ed-status-APPROVED .ed-status-dot { background: var(--q-positive); }
+          .ed-status-AT_RISK  .ed-status-dot, .ed-status-REVISED  .ed-status-dot { background: var(--q-warning); }
+          .ed-status-NOT_FEASIBLE .ed-status-dot { background: var(--q-negative); }
+          .ed-status-FINAL .ed-status-dot { background: var(--q-primary); }
+
+          /* Hero */
+          .ed-hero       { position: relative; display: grid !important;
+                           grid-template-columns: 1fr auto; gap: 36px;
+                           padding: 32px 36px 32px 44px;
+                           border: 1px solid var(--ed-line); border-radius: 4px;
+                           overflow: hidden; margin: 0 16px 28px 16px; }
+          @media (max-width: 720px) {
+            .ed-hero { grid-template-columns: 1fr; }
+          }
+          .ed-hero-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; }
+          .ed-stripe-FEASIBLE     { background: var(--q-positive); }
+          .ed-stripe-AT_RISK      { background: var(--q-warning); }
+          .ed-stripe-NOT_FEASIBLE { background: var(--q-negative); }
+          .ed-stripe-default      { background: var(--q-info); }
+
+          .ed-hero-left  { display: flex !important; flex-direction: column; min-width: 0; }
+          .ed-hero-meta  { display: flex !important; align-items: center; gap: 8px;
+                           flex-wrap: wrap; margin-bottom: 14px; min-height: 22px; }
+
+          .ed-hero-num-pill { font-family: var(--ed-mono); font-size: 12px;
+                              padding: 3px 10px; border: 1px solid var(--ed-line);
+                              border-radius: 99px; }
+          .ed-hero-ver-pill { font-family: var(--ed-mono); font-size: 11px;
+                              padding: 3px 10px; background: var(--q-warning);
+                              color: white; border-radius: 99px; font-weight: 600; }
+          .ed-hero-ptype    { font-family: var(--ed-sans); text-transform: uppercase;
+                              letter-spacing: 0.14em; font-size: 10px; font-weight: 600;
+                              opacity: 0.55; margin-left: 4px; }
+
+          .ed-hero-title { font-family: inherit !important;
+                           font-size: 32px !important; font-weight: 600 !important;
+                           letter-spacing: -0.012em !important; line-height: 1.15 !important;
+                           margin: 4px 0 14px 0 !important; }
+          .ed-hero-sub   { font-family: var(--ed-sans);
+                           font-size: 14px; opacity: 0.72; max-width: 64ch;
+                           line-height: 1.5; }
+
+          .ed-hero-right { display: flex !important; flex-direction: column;
+                           align-items: flex-end; justify-content: center;
+                           padding-left: 36px; border-left: 1px dashed var(--ed-line);
+                           min-width: 240px; }
+          @media (max-width: 720px) {
+            .ed-hero-right { padding-left: 0; border-left: none;
+                             border-top: 1px dashed var(--ed-line); padding-top: 22px;
+                             align-items: flex-start; }
+          }
+
+          .ed-hero-bignum { font-family: var(--ed-mono) !important;
+                            font-variant-numeric: tabular-nums;
+                            font-size: 60px !important; font-weight: 500 !important;
+                            line-height: 0.95 !important; letter-spacing: -0.02em !important;
+                            margin: 8px 0 0 0 !important; }
+          .ed-hero-unit  { font-family: var(--ed-sans);
+                           text-transform: uppercase; letter-spacing: 0.10em;
+                           font-size: 13px; opacity: 0.62; margin-top: 8px; }
+          .ed-hero-completion { margin-top: 14px; font-family: var(--ed-sans);
+                                font-size: 12px; opacity: 0.85; }
+          .ed-hero-completion .ed-mono { font-size: 13px; margin-left: 6px; }
+          .ed-hero-completion-label { opacity: 0.55; text-transform: uppercase;
+                                      letter-spacing: 0.10em; font-size: 11px; }
+
+          /* Tabs */
+          .ed-tabs       { margin: 0 16px 24px 16px;
+                           border-bottom: 1px solid var(--ed-line); }
+          .ed-tabs .q-tab{ font-family: var(--ed-sans);
+                           text-transform: uppercase; letter-spacing: 0.16em;
+                           font-size: 11px; font-weight: 600;
+                           padding: 0 22px; min-height: 48px; }
+          .ed-tabs .q-tab__indicator { height: 2px; }
+          .ed-panels     { background: transparent !important;
+                           margin: 0 16px;
+                           overflow: hidden !important;
+                           border-radius: 4px; }
+          .ed-panels .q-panel { overflow: hidden !important; }
+          .ed-panels .q-tab-panel { padding: 6px 2px 6px 0 !important;
+                                    box-sizing: border-box; }
+
+          /* Cards — always span the full tab-panel width */
+          .ed-card       { display: block !important;
+                           width: 100% !important; box-sizing: border-box;
+                           border: 1px solid var(--ed-line) !important;
+                           border-radius: 4px; padding: 24px 26px;
+                           box-shadow: none !important; background: transparent !important;
+                           margin-bottom: 22px; }
+          /* Empty state spans the full width too */
+          .ed-empty      { width: 100%; box-sizing: border-box; }
+          .ed-card-head  { display: flex !important; align-items: baseline;
+                           justify-content: space-between; margin-bottom: 18px;
+                           gap: 16px; }
+          .ed-card-head-meta { font-family: var(--ed-mono); font-size: 12px; opacity: 0.7; }
+
+          /* Spec sheet */
+          .ed-spec       { display: grid !important; grid-template-columns: 1fr 1fr;
+                           gap: 0 40px; }
+          @media (max-width: 720px) { .ed-spec { grid-template-columns: 1fr; } }
+          .ed-spec-row   { display: grid !important; grid-template-columns: 140px 1fr;
+                           padding: 10px 0; border-bottom: 1px dashed var(--ed-line-soft);
+                           align-items: baseline; gap: 12px; }
+          .ed-spec-label { font-family: var(--ed-sans);
+                           text-transform: uppercase; letter-spacing: 0.12em;
+                           font-size: 10px; font-weight: 600; opacity: 0.6; }
+          .ed-spec-value { font-family: var(--ed-mono);
+                           font-size: 13px; word-break: break-word; }
+          .ed-spec-value.long { font-family: var(--ed-sans);
+                                font-size: 13px; line-height: 1.5; }
+
+          /* Hours bar chart */
+          .ed-bar-row    { display: grid !important; grid-template-columns: 220px 1fr 100px;
+                           align-items: center; gap: 18px; padding: 11px 0;
+                           border-bottom: 1px dashed var(--ed-line-soft); }
+          @media (max-width: 720px) {
+            .ed-bar-row  { grid-template-columns: 1fr; gap: 6px; }
+          }
+          .ed-bar-row:last-child { border-bottom: none; }
+          .ed-bar-row.total { border-top: 1px solid var(--ed-line);
+                              border-bottom: none !important; padding-top: 16px;
+                              margin-top: 6px; }
+          .ed-bar-label  { display: flex !important; align-items: center; gap: 8px;
+                           font-family: var(--ed-sans); font-size: 12px;
+                           text-transform: uppercase; letter-spacing: 0.10em;
+                           font-weight: 500; opacity: 0.78; }
+          .ed-bar-row.total .ed-bar-label { font-weight: 700; opacity: 1; }
+          .ed-bar-icon   { font-size: 16px !important; opacity: 0.55; }
+          .ed-bar-track  { height: 6px; background: var(--ed-line-soft);
+                           border-radius: 99px; overflow: hidden; }
+          .ed-bar-fill   { height: 100%; background: var(--q-primary);
+                           border-radius: 99px;
+                           transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1); }
+          .ed-bar-row.total .ed-bar-fill { background: currentColor; opacity: 0.85; }
+          .ed-bar-value  { font-family: var(--ed-mono);
+                           font-variant-numeric: tabular-nums;
+                           font-size: 13px; font-weight: 500; text-align: right; }
+          .ed-bar-row.total .ed-bar-value { font-size: 16px; font-weight: 600; }
+
+          /* KPI strip */
+          .ed-strip      { display: grid !important;
+                           grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                           border: 1px solid var(--ed-line); border-radius: 4px;
+                           overflow: hidden; }
+          .ed-strip-cell { padding: 18px 22px;
+                           border-right: 1px dashed var(--ed-line-soft); }
+          .ed-strip-cell:last-child { border-right: none; }
+          .ed-strip-num  { font-family: var(--ed-mono);
+                           font-variant-numeric: tabular-nums;
+                           font-size: 22px; font-weight: 500;
+                           letter-spacing: -0.01em; margin-top: 8px; }
+          .ed-strip-unit { opacity: 0.4; font-size: 14px; font-weight: 400; margin-left: 2px; }
+          .ed-strip-date { font-family: var(--ed-mono);
+                           font-size: 17px; font-weight: 500; margin-top: 8px; }
+
+          /* PR tiles */
+          .ed-pr-grid    { display: grid !important;
+                           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                           gap: 14px; margin-bottom: 22px; }
+          .ed-pr-tile    { padding: 18px 20px; border: 1px solid var(--ed-line);
+                           border-radius: 4px; }
+          .ed-pr-tile.total { border-color: var(--q-primary); }
+          .ed-pr-tile-num { font-family: var(--ed-mono);
+                            font-variant-numeric: tabular-nums;
+                            font-size: 22px; font-weight: 500; margin-top: 10px; }
+          .ed-pr-tile-x   { font-family: var(--ed-sans);
+                            font-size: 12px; opacity: 0.65; margin-top: 4px; }
+          .ed-pr-tile-x strong { font-weight: 700; }
+          .ed-pr-unit     { font-size: 14px; opacity: 0.5; margin-left: 1px; }
+
+          /* Risk chips */
+          .ed-chips      { display: flex !important; flex-wrap: wrap; gap: 6px; }
+
+          /* Workflow assignment */
+          .ed-assign-block { display: flex !important; align-items: center; gap: 10px; }
+          .ed-assign-name  { font-size: 15px; font-weight: 500; line-height: 1.2; }
+          .ed-assign-empty { opacity: 0.6; line-height: 1.2; }
+
+          /* Footer download */
+          .ed-download   { display: grid !important;
+                           grid-template-columns: 1fr auto auto auto;
+                           align-items: center; gap: 14px;
+                           margin: 36px 16px 12px 16px;
+                           padding: 24px 28px; border: 1px solid var(--ed-line);
+                           border-radius: 4px; }
+          @media (max-width: 720px) { .ed-download { grid-template-columns: 1fr; } }
+          .ed-dl-meta-title { font-family: inherit !important;
+                              font-size: 18px !important; font-weight: 600 !important;
+                              line-height: 1.2 !important; margin: 6px 0 4px 0 !important; }
+          .ed-dl-meta-sub   { font-family: var(--ed-sans);
+                              opacity: 0.65; font-size: 12px; }
+
+          .ed-dl-btn .q-btn__content {
+            font-family: var(--ed-sans); text-transform: uppercase;
+            letter-spacing: 0.14em; font-size: 11px; font-weight: 600;
+          }
+
+          /* Tables — refine Quasar tables */
+          .ed-card .q-table__container { box-shadow: none !important;
+                                         border: 1px solid var(--ed-line);
+                                         background: transparent !important; }
+          .ed-card .q-table thead th { font-family: var(--ed-sans);
+                                       text-transform: uppercase; letter-spacing: 0.10em;
+                                       font-size: 10px; font-weight: 700; opacity: 0.7; }
+          .ed-card .q-table tbody td { font-family: var(--ed-mono);
+                                       font-variant-numeric: tabular-nums;
+                                       font-size: 12.5px; }
+
+          /* Empty state */
+          .ed-empty      { padding: 28px; text-align: center;
+                           border: 1px dashed var(--ed-line); border-radius: 4px;
+                           opacity: 0.55;
+                           font-family: var(--ed-sans);
+                           text-transform: uppercase; letter-spacing: 0.14em;
+                           font-size: 11px; font-weight: 600; }
+        </style>
+        """)
+
+        # ─────────────────────────────────────────────────────────────
+        # Load the estimation
+        # ─────────────────────────────────────────────────────────────
         try:
             est: dict = await api_get(f"/estimations/{estimation_id}")
         except Exception as exc:
             show_error_page(exc)
             return
 
-        # We need a mutable container for the current status so the status
-        # buttons can refresh after a transition without a full page reload.
         est_state: dict[str, Any] = {"data": est}
+        version = est.get("version", 1) or 1
+        feasibility = est.get("feasibility_status", "")
+        status = est.get("status", "")
 
-        # ------------------------------------------------------------------ #
-        # Page title row                                                       #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-gutter-sm q-mb-md"):
-            ui.label(est.get("project_name", f"Estimation {estimation_id}")).classes("text-h4")
-            if est.get("estimation_number"):
-                ui.badge(est["estimation_number"], color="info").props("rounded")
-            version = est.get("version", 1) or 1
-            if version > 1:
-                ui.badge(f"v{version}", color="accent").props("rounded")
-            _feasibility_badge(est.get("feasibility_status", ""))
-            _status_badge(est.get("status", ""))
-
-        with ui.row().classes("q-gutter-sm q-mb-md"):
-            ui.button(
-                "Back",
-                icon="arrow_back",
-                on_click=lambda: ui.navigate.to("/estimations"),
-            ).props("flat dense")
-            if est.get("status") == "REVISED":
-                ui.button(
-                    "Edit Estimation",
-                    icon="edit",
-                    on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}/edit"),
-                ).props("color=orange outline dense")
-
-            # Export to Jira/Redmine button — only when linked to an external request
-            if est.get("request_id"):
-                async def _do_export() -> None:
-                    try:
-                        result = await api_post(f"/estimations/{estimation_id}/export")
-                        status = result.get("status", "unknown")
-                        errors = result.get("errors", [])
-                        if errors:
-                            ui.notify(f"Export completed with errors: {', '.join(errors)}", type="warning")
-                        else:
-                            ui.notify(f"Export successful (status: {status}).", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Export failed: {exc}", type="negative")
-
-                ui.button(
-                    "Export to External System",
-                    icon="cloud_upload",
-                    on_click=_do_export,
-                ).props("color=accent outline dense")
-
-            # Export Task Breakdown — works with or without linked request
-            async def _open_export_tasks_dialog() -> None:
-                # Pre-resolve external_id from linked request
-                _linked_ext_id = ""
-                _linked_source = ""
-                if est.get("request_id"):
-                    try:
-                        req_data = await api_get(f"/requests/{est['request_id']}")
-                        _linked_ext_id = req_data.get("external_id") or ""
-                        _linked_source = req_data.get("request_source") or ""
-                    except Exception:
-                        pass
-
-                with ui.dialog() as dlg, ui.card().classes("w-[420px]"):
-                    ui.label("Export Task Breakdown").classes("text-h6 q-mb-sm")
-                    ui.label("Create sub-tasks in Jira or Redmine for each estimation task.").classes("text-caption text-grey q-mb-md")
-                    sys_select = ui.select(
-                        label="Target System",
-                        options=["JIRA", "REDMINE"],
-                        value=_linked_source if _linked_source in ("JIRA", "REDMINE") else "JIRA",
-                    ).classes("w-full")
-                    with ui.row().classes("w-full items-end gap-1"):
-                        issue_input = ui.input(
-                            label="Parent Issue Key (optional)",
-                            placeholder="e.g. PROJ-123 or leave empty",
-                        ).classes("flex-grow")
-                        if _linked_ext_id:
-                            def _fill_from_request(ext=_linked_ext_id):
-                                issue_input.value = ext
-                            ui.button(
-                                icon="link", on_click=_fill_from_request
-                            ).props("flat dense round").tooltip(f"Use linked request: {_linked_ext_id}")
-                    ui.label("If empty, tasks are created as standalone issues in the configured project.").classes("text-caption text-grey q-mb-md")
-
-                    async def _do_export_tasks() -> None:
-                        payload = {"target_system": sys_select.value}
-                        if issue_input.value and issue_input.value.strip():
-                            payload["issue_key"] = issue_input.value.strip()
-                        try:
-                            result = await api_post(f"/estimations/{estimation_id}/export-tasks", json=payload)
-                            created = result.get("items_created", 0)
-                            total = result.get("items_processed", 0)
-                            errors = result.get("errors", [])
-                            dlg.close()
-                            if errors:
-                                ui.notify(f"Task export: {created}/{total} created. Errors: {', '.join(errors[:3])}", type="warning")
-                            else:
-                                ui.notify(f"Task breakdown exported: {created}/{total} tasks created in {sys_select.value}.", type="positive")
-                        except Exception as exc:
-                            ui.notify(f"Task export failed: {exc}", type="negative")
-
-                    with ui.row().classes("w-full justify-end gap-2 q-mt-sm"):
-                        ui.button("Cancel", on_click=dlg.close).props("flat")
-                        ui.button("Export", icon="account_tree", on_click=_do_export_tasks).props("color=teal")
-                dlg.open()
-
-            ui.button(
-                "Export Task Breakdown",
-                icon="account_tree",
-                on_click=_open_export_tasks_dialog,
-            ).props("color=teal outline dense")
-
-            # Compare Versions button — only if estimation has more than 1 version
-            if version > 1:
-                async def _open_version_diff_dialog() -> None:
-                    """Load version history and show comparison dialog."""
-                    try:
-                        versions_list = await api_get(f"/estimations/{estimation_id}/versions")
-                    except Exception as exc:
-                        ui.notify(f"Failed to load versions: {exc}", type="negative")
-                        return
-
-                    with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[900px] max-h-[85vh]"):
-                        ui.label("Compare Versions").classes("text-h6 q-mb-md")
-
-                        with ui.row().classes("items-end gap-4 q-mb-md"):
-                            ver_options = {v["version"]: f"v{v['version']} — {v.get('grand_total_hours', 0):.1f}h ({v.get('status', '')})" for v in versions_list}
-                            ver_a_select = ui.select(
-                                options=ver_options,
-                                value=versions_list[0]["version"] if versions_list else 1,
-                                label="Version A",
-                            ).classes("w-64")
-                            ver_b_select = ui.select(
-                                options=ver_options,
-                                value=versions_list[-1]["version"] if versions_list else 1,
-                                label="Version B",
-                            ).classes("w-64")
-
-                        diff_container = ui.column().classes("w-full")
-
-                        async def _run_diff(
-                            _va=ver_a_select,
-                            _vb=ver_b_select,
-                            _container=diff_container,
-                        ) -> None:
-                            va = _va.value
-                            vb = _vb.value
-                            if va == vb:
-                                ui.notify("Select two different versions.", type="warning")
-                                return
-                            try:
-                                diff = await api_get(f"/estimations/{estimation_id}/versions/{va}/diff/{vb}")
-                            except Exception as exc:
-                                ui.notify(f"Diff failed: {exc}", type="negative")
-                                return
-
-                            _container.clear()
-                            with _container:
-                                changes = diff.get("changes", [])
-                                if changes:
-                                    ui.label("Field Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
-                                    diff_rows = []
-                                    for c in changes:
-                                        va_val = c.get("version_a")
-                                        vb_val = c.get("version_b")
-                                        # Format numbers
-                                        if isinstance(va_val, float):
-                                            va_val = f"{va_val:,.1f}"
-                                        if isinstance(vb_val, float):
-                                            vb_val = f"{vb_val:,.1f}"
-                                        diff_rows.append({
-                                            "field": c["field"],
-                                            "version_a": str(va_val) if va_val is not None else "—",
-                                            "version_b": str(vb_val) if vb_val is not None else "—",
-                                        })
-                                    ui.table(
-                                        columns=[
-                                            {"name": "field", "label": "Field", "field": "field", "align": "left"},
-                                            {"name": "version_a", "label": f"v{va}", "field": "version_a", "align": "right"},
-                                            {"name": "version_b", "label": f"v{vb}", "field": "version_b", "align": "right"},
-                                        ],
-                                        rows=diff_rows,
-                                        row_key="field",
-                                    ).classes("w-full q-mb-md")
-
-                                # Modified tasks
-                                modified = diff.get("modified_tasks", [])
-                                if modified:
-                                    ui.label("Modified Tasks").classes("text-subtitle1 text-weight-medium q-mt-sm")
-                                    mod_rows = []
-                                    for m in modified:
-                                        delta = (m.get("hours_b", 0) or 0) - (m.get("hours_a", 0) or 0)
-                                        mod_rows.append({
-                                            "task": m["task_name"],
-                                            "hours_a": f"{m.get('hours_a', 0):.1f}",
-                                            "hours_b": f"{m.get('hours_b', 0):.1f}",
-                                            "delta": f"{delta:+.1f}",
-                                        })
-                                    ui.table(
-                                        columns=[
-                                            {"name": "task", "label": "Task", "field": "task", "align": "left"},
-                                            {"name": "hours_a", "label": f"v{va} Hours", "field": "hours_a", "align": "right"},
-                                            {"name": "hours_b", "label": f"v{vb} Hours", "field": "hours_b", "align": "right"},
-                                            {"name": "delta", "label": "Delta", "field": "delta", "align": "right"},
-                                        ],
-                                        rows=mod_rows,
-                                        row_key="task",
-                                    ).classes("w-full q-mb-md")
-
-                                # Added / removed tasks
-                                added = diff.get("added_tasks", [])
-                                removed = diff.get("removed_tasks", [])
-                                if added:
-                                    ui.label(f"Added Tasks (v{vb})").classes("text-subtitle2 text-positive q-mt-sm")
-                                    for t in added:
-                                        ui.label(f"  + {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
-                                if removed:
-                                    ui.label(f"Removed Tasks (v{va})").classes("text-subtitle2 text-negative q-mt-sm")
-                                    for t in removed:
-                                        ui.label(f"  - {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
-
-                                # Input changes
-                                input_changes = diff.get("input_changes", {})
-                                if input_changes:
-                                    ui.label("Input Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
-                                    for key, vals in input_changes.items():
-                                        label = key.replace("_", " ").title()
-                                        added_ids = vals.get("added", [])
-                                        removed_ids = vals.get("removed", [])
-                                        if added_ids:
-                                            ui.label(f"  {label} added: {added_ids}").classes("text-body2 text-positive")
-                                        if removed_ids:
-                                            ui.label(f"  {label} removed: {removed_ids}").classes("text-body2 text-negative")
-
-                                if not changes and not modified and not added and not removed and not input_changes:
-                                    ui.label("No differences found between the two versions.").classes("text-grey q-mt-md")
-
-                        ui.button("Compare", icon="compare_arrows", on_click=_run_diff).props("color=primary")
-
-                        ui.separator().classes("q-mt-md")
-                        ui.button("Close", on_click=dlg.close).props("flat")
-
-                    dlg.open()
-
-                ui.button(
-                    "Compare Versions",
-                    icon="compare_arrows",
-                    on_click=_open_version_diff_dialog,
-                ).props("outline dense color=secondary")
-
-        # ------------------------------------------------------------------ #
-        # Info cards                                                           #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
-            with ui.card().classes("q-pa-md"):
-                ui.label("Project Type").classes("text-caption text-grey")
-                ui.label(est.get("project_type", "—")).classes("text-body1")
-            with ui.card().classes("q-pa-md"):
-                ui.label("Feasibility").classes("text-caption text-grey")
-                with ui.row().classes("items-center"):
-                    _feasibility_badge(est.get("feasibility_status", ""))
-            with ui.card().classes("q-pa-md"):
-                ui.label("Workflow Status").classes("text-caption text-grey")
-                with ui.row().classes("items-center"):
-                    _status_badge(est.get("status", ""))
-            with ui.card().classes("q-pa-md"):
-                ui.label("DUTs").classes("text-caption text-grey")
-                ui.label(str(est.get("dut_count", 0))).classes("text-body1")
-            with ui.card().classes("q-pa-md"):
-                ui.label("Profiles").classes("text-caption text-grey")
-                ui.label(str(est.get("profile_count", 0))).classes("text-body1")
-            with ui.card().classes("q-pa-md"):
-                ui.label("Combinations").classes("text-caption text-grey")
-                ui.label(str(est.get("dut_profile_combinations", 0))).classes("text-body1")
-            if est.get("start_date"):
-                with ui.card().classes("q-pa-md"):
-                    ui.label("Start Date").classes("text-caption text-grey")
-                    ui.label(str(est["start_date"])).classes("text-body1")
-            if est.get("expected_delivery"):
-                with ui.card().classes("q-pa-md"):
-                    ui.label("Deadline").classes("text-caption text-grey")
-                    ui.label(str(est["expected_delivery"])).classes("text-body1")
-            if est.get("created_at"):
-                with ui.card().classes("q-pa-md"):
-                    ui.label("Created").classes("text-caption text-grey")
-                    ui.label(str(est["created_at"])[:10]).classes("text-body1")
-            releases = est.get("expected_releases", 1)
-            if releases and releases > 1:
-                with ui.card().classes("q-pa-md"):
-                    ui.label("Expected Releases").classes("text-caption text-grey")
-                    ui.label(str(releases)).classes("text-body1")
-
-        if est.get("project_goals") or est.get("target_customer") or est.get("team_name") or est.get("project_reference"):
-            with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
-                if est.get("team_name"):
-                    with ui.card().classes("q-pa-md"):
-                        ui.label("Team").classes("text-caption text-grey")
-                        ui.label(est["team_name"]).classes("text-body1")
-                if est.get("project_reference"):
-                    with ui.card().classes("q-pa-md"):
-                        ui.label("Project Reference").classes("text-caption text-grey")
-                        ui.label(est["project_reference"]).classes("text-body1")
-                if est.get("project_goals"):
-                    with ui.card().classes("q-pa-md"):
-                        ui.label("Project Goals").classes("text-caption text-grey")
-                        ui.label(est["project_goals"]).classes("text-body1")
-                if est.get("target_customer"):
-                    with ui.card().classes("q-pa-md"):
-                        ui.label("Target Customer").classes("text-caption text-grey")
-                        ui.label(est["target_customer"]).classes("text-body1")
-
-        # ------------------------------------------------------------------ #
-        # Risks                                                                #
-        # ------------------------------------------------------------------ #
-        est_risks = est.get("risks") or []
-        if est_risks:
-            ui.label("Associated Risks").classes("text-h6 q-mb-sm")
-            with ui.row().classes("flex-wrap q-gutter-xs q-mb-md"):
-                for risk in est_risks:
-                    risk_name = risk.get("risk_item_name") or risk.get("name") or f"Risk #{risk.get('risk_item_id', '?')}"
-                    risk_cat = risk.get("category") or ""
-                    chip_label = f"{risk_cat}: {risk_name}" if risk_cat else risk_name
-                    ui.chip(chip_label, icon="warning").props("color=warning outline dense")
-
-        # ------------------------------------------------------------------ #
-        # Assignee                                                             #
-        # ------------------------------------------------------------------ #
-        ui.label("Assignment").classes("text-h6 q-mb-sm")
-        assign_row = ui.row().classes("items-center q-gutter-sm q-mb-md")
-
-        async def _build_assign_ui() -> None:
-            assign_row.clear()
-            current_est = est_state["data"]
-            with assign_row:
-                assigned_name = current_est.get("assigned_to_name")
-                if assigned_name:
-                    ui.icon("person", color="primary").classes("text-lg")
-                    ui.label(f"Assigned to: {assigned_name}").classes("text-body1")
+        # ─────────────────────────────────────────────────────────────
+        # Inline helpers/dialogs (preserved verbatim from original)
+        # ─────────────────────────────────────────────────────────────
+        async def _do_export() -> None:
+            try:
+                result = await api_post(f"/estimations/{estimation_id}/export")
+                status_v = result.get("status", "unknown")
+                errors = result.get("errors", [])
+                if errors:
+                    ui.notify(f"Export completed with errors: {', '.join(errors)}", type="warning")
                 else:
-                    ui.icon("person_off", color="grey").classes("text-lg")
-                    ui.label("Unassigned").classes("text-body1 text-grey")
+                    ui.notify(f"Export successful (status: {status_v}).", type="positive")
+            except Exception as exc:
+                ui.notify(f"Export failed: {exc}", type="negative")
 
-                # Load users for the dropdown
+        async def _open_export_tasks_dialog() -> None:
+            _linked_ext_id = ""
+            _linked_source = ""
+            if est.get("request_id"):
                 try:
-                    users_list: list[dict] = await api_get("/users")
+                    req_data = await api_get(f"/requests/{est['request_id']}")
+                    _linked_ext_id = req_data.get("external_id") or ""
+                    _linked_source = req_data.get("request_source") or ""
                 except Exception:
-                    users_list = []
+                    pass
 
-                if users_list:
-                    user_options = {u["id"]: u.get("display_name") or u["username"] for u in users_list}
-                    current_id = current_est.get("assigned_to_id")
+            with ui.dialog() as dlg, ui.card().classes("w-[420px]"):
+                ui.label("Export Task Breakdown").classes("text-h6 q-mb-sm")
+                ui.label("Create sub-tasks in Jira or Redmine for each estimation task.").classes("text-caption text-grey q-mb-md")
+                sys_select = ui.select(
+                    label="Target System",
+                    options=["JIRA", "REDMINE"],
+                    value=_linked_source if _linked_source in ("JIRA", "REDMINE") else "JIRA",
+                ).classes("w-full")
+                with ui.row().classes("w-full items-end gap-1"):
+                    issue_input = ui.input(
+                        label="Parent Issue Key (optional)",
+                        placeholder="e.g. PROJ-123 or leave empty",
+                    ).classes("flex-grow")
+                    if _linked_ext_id:
+                        def _fill_from_request(ext=_linked_ext_id):
+                            issue_input.value = ext
+                        ui.button(
+                            icon="link", on_click=_fill_from_request
+                        ).props("flat dense round").tooltip(f"Use linked request: {_linked_ext_id}")
+                ui.label("If empty, tasks are created as standalone issues in the configured project.").classes("text-caption text-grey q-mb-md")
 
-                    sel = ui.select(
-                        options=user_options,
-                        value=current_id,
-                        label="Assign to",
-                        with_input=True,
-                        clearable=True,
+                async def _do_export_tasks() -> None:
+                    payload = {"target_system": sys_select.value}
+                    if issue_input.value and issue_input.value.strip():
+                        payload["issue_key"] = issue_input.value.strip()
+                    try:
+                        result = await api_post(f"/estimations/{estimation_id}/export-tasks", json=payload)
+                        created = result.get("items_created", 0)
+                        total = result.get("items_processed", 0)
+                        errors = result.get("errors", [])
+                        dlg.close()
+                        if errors:
+                            ui.notify(f"Task export: {created}/{total} created. Errors: {', '.join(errors[:3])}", type="warning")
+                        else:
+                            ui.notify(f"Task breakdown exported: {created}/{total} tasks created in {sys_select.value}.", type="positive")
+                    except Exception as exc:
+                        ui.notify(f"Task export failed: {exc}", type="negative")
+
+                with ui.row().classes("w-full justify-end gap-2 q-mt-sm"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Export", icon="account_tree", on_click=_do_export_tasks).props("color=teal")
+            dlg.open()
+
+        async def _open_version_diff_dialog() -> None:
+            try:
+                versions_list = await api_get(f"/estimations/{estimation_id}/versions")
+            except Exception as exc:
+                ui.notify(f"Failed to load versions: {exc}", type="negative")
+                return
+
+            with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[900px] max-h-[85vh]"):
+                ui.label("Compare Versions").classes("text-h6 q-mb-md")
+
+                with ui.row().classes("items-end gap-4 q-mb-md"):
+                    ver_options = {v["version"]: f"v{v['version']} — {v.get('grand_total_hours', 0):.1f}h ({v.get('status', '')})" for v in versions_list}
+                    ver_a_select = ui.select(
+                        options=ver_options,
+                        value=versions_list[0]["version"] if versions_list else 1,
+                        label="Version A",
+                    ).classes("w-64")
+                    ver_b_select = ui.select(
+                        options=ver_options,
+                        value=versions_list[-1]["version"] if versions_list else 1,
+                        label="Version B",
                     ).classes("w-64")
 
-                    async def _do_assign() -> None:
-                        uid = sel.value
-                        if uid is None:
-                            ui.notify("Select a user first.", type="warning")
-                            return
-                        try:
-                            await api_post(
-                                f"/estimations/{estimation_id}/assign",
-                                params={"assigned_to_id": uid},
-                            )
-                            # Refresh estimation data
-                            est_state["data"] = await api_get(f"/estimations/{estimation_id}")
-                            ui.notify(f"Assigned to {user_options.get(uid, uid)}.", type="positive")
-                            await _build_assign_ui()
-                        except Exception as exc:
-                            ui.notify(f"Assignment failed: {exc}", type="negative")
+                diff_container = ui.column().classes("w-full")
 
-                    ui.button("Assign", icon="person_add", on_click=_do_assign).props("flat dense color=primary")
+                async def _run_diff(
+                    _va=ver_a_select,
+                    _vb=ver_b_select,
+                    _container=diff_container,
+                ) -> None:
+                    va = _va.value
+                    vb = _vb.value
+                    if va == vb:
+                        ui.notify("Select two different versions.", type="warning")
+                        return
+                    try:
+                        diff = await api_get(f"/estimations/{estimation_id}/versions/{va}/diff/{vb}")
+                    except Exception as exc:
+                        ui.notify(f"Diff failed: {exc}", type="negative")
+                        return
 
-        await _build_assign_ui()
+                    _container.clear()
+                    with _container:
+                        changes = diff.get("changes", [])
+                        if changes:
+                            ui.label("Field Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
+                            diff_rows = []
+                            for c in changes:
+                                va_val = c.get("version_a")
+                                vb_val = c.get("version_b")
+                                if isinstance(va_val, float):
+                                    va_val = f"{va_val:,.1f}"
+                                if isinstance(vb_val, float):
+                                    vb_val = f"{vb_val:,.1f}"
+                                diff_rows.append({
+                                    "field": c["field"],
+                                    "version_a": str(va_val) if va_val is not None else "—",
+                                    "version_b": str(vb_val) if vb_val is not None else "—",
+                                })
+                            ui.table(
+                                columns=[
+                                    {"name": "field", "label": "Field", "field": "field", "align": "left"},
+                                    {"name": "version_a", "label": f"v{va}", "field": "version_a", "align": "right"},
+                                    {"name": "version_b", "label": f"v{vb}", "field": "version_b", "align": "right"},
+                                ],
+                                rows=diff_rows,
+                                row_key="field",
+                            ).classes("w-full q-mb-md")
 
-        # ------------------------------------------------------------------ #
-        # Hours breakdown                                                      #
-        # ------------------------------------------------------------------ #
-        ui.label("Hours Breakdown").classes("text-h6 q-mb-sm")
-        with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
-            _hours_card("Tester Hours", est.get("total_tester_hours", 0), "person")
-            _hours_card("Leader Hours", est.get("total_leader_hours", 0), "manage_accounts")
-            _hours_card("PR Fix Hours", est.get("pr_fix_hours", 0), "bug_report")
-            if est.get("pr_no_test_hours", 0) > 0:
-                _hours_card("PR Test Creation", est["pr_no_test_hours"], "science")
-            _hours_card("Study Hours", est.get("study_hours", 0), "school")
-            if est.get("release_extra_hours", 0) > 0:
-                _hours_card("Release Extra Hours", est["release_extra_hours"], "rocket_launch")
-            if est.get("documentation_hours", 0) > 0:
-                _hours_card("Documentation Hours", est["documentation_hours"], "description")
-            _hours_card("Buffer Hours", est.get("buffer_hours", 0), "security")
-            _hours_card("Grand Total Hours", est.get("grand_total_hours", 0), "summarize")
-            _hours_card("Grand Total (Person-Days)", est.get("grand_total_days", 0), "calendar_today")
-            _ww = round(est.get("grand_total_days", 0) / 5.0, 1) if est.get("grand_total_days", 0) else 0
-            if _ww > 0:
-                _hours_card("Working Weeks", _ww, "date_range")
+                        modified = diff.get("modified_tasks", [])
+                        if modified:
+                            ui.label("Modified Tasks").classes("text-subtitle1 text-weight-medium q-mt-sm")
+                            mod_rows = []
+                            for m in modified:
+                                delta = (m.get("hours_b", 0) or 0) - (m.get("hours_a", 0) or 0)
+                                mod_rows.append({
+                                    "task": m["task_name"],
+                                    "hours_a": f"{m.get('hours_a', 0):.1f}",
+                                    "hours_b": f"{m.get('hours_b', 0):.1f}",
+                                    "delta": f"{delta:+.1f}",
+                                })
+                            ui.table(
+                                columns=[
+                                    {"name": "task", "label": "Task", "field": "task", "align": "left"},
+                                    {"name": "hours_a", "label": f"v{va} Hours", "field": "hours_a", "align": "right"},
+                                    {"name": "hours_b", "label": f"v{vb} Hours", "field": "hours_b", "align": "right"},
+                                    {"name": "delta", "label": "Delta", "field": "delta", "align": "right"},
+                                ],
+                                rows=mod_rows,
+                                row_key="task",
+                            ).classes("w-full q-mb-md")
 
-        _el_days = est.get("elapsed_days", 0)
-        _el_weeks = est.get("elapsed_weeks", 0)
-        if _el_days > 0 and _el_days != est.get("grand_total_days", 0):
-            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle1 q-mb-sm")
-            ui.label(
-                "Parallelizable tasks divided by team size; sequential tasks run by one person."
-            ).classes("text-caption text-grey q-mb-xs")
-            with ui.row().classes("q-gutter-md flex-wrap q-mb-md"):
-                _hours_card("Elapsed Hours", est.get("elapsed_hours", 0), "hourglass_top")
-                _hours_card("Elapsed Days", _el_days, "today")
-                _hours_card("Elapsed Weeks", _el_weeks, "date_range")
-                if est.get("estimated_completion_date"):
-                    with ui.card().classes("q-pa-sm text-center"):
-                        ui.icon("event_available").classes("text-h5 text-primary")
-                        ui.label(str(est["estimated_completion_date"])).classes("text-h6")
-                        ui.label("Est. Completion").classes("text-caption text-grey")
+                        added = diff.get("added_tasks", [])
+                        removed = diff.get("removed_tasks", [])
+                        if added:
+                            ui.label(f"Added Tasks (v{vb})").classes("text-subtitle2 text-positive q-mt-sm")
+                            for t in added:
+                                ui.label(f"  + {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
+                        if removed:
+                            ui.label(f"Removed Tasks (v{va})").classes("text-subtitle2 text-negative q-mt-sm")
+                            for t in removed:
+                                ui.label(f"  - {t['task_name']} ({t.get('calculated_hours', 0):.1f}h)").classes("text-body2")
 
-        # ------------------------------------------------------------------ #
-        # Task breakdown table                                                 #
-        # ------------------------------------------------------------------ #
-        tasks: list[dict] = est.get("tasks", [])
-        if tasks:
-            ui.label("Task Breakdown").classes("text-h6 q-mb-sm")
-            task_cols = [
-                {"name": "feature",   "label": "Feature",    "field": "feature_name",     "align": "left",  "sortable": True},
-                {"name": "task_name", "label": "Task",       "field": "task_name",        "align": "left",  "sortable": True},
-                {"name": "task_type", "label": "Type",       "field": "task_type",        "align": "left",  "sortable": True},
-                {"name": "base_hours","label": "Base h",     "field": "base_hours",       "align": "right", "sortable": True},
-                {"name": "formula",   "label": "Formula",    "field": "formula",          "align": "left",  "sortable": False},
-                {"name": "calc_hours","label": "Calc h",     "field": "calculated_hours", "align": "right", "sortable": True},
-                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center", "sortable": True},
-                {"name": "new_study", "label": "New Feature","field": "is_new_feature_study", "align": "center"},
-            ]
-            tbl = ui.table(
-                columns=task_cols,
-                rows=tasks,
-                row_key="id",
-                pagination={"rowsPerPage": 15},
-            ).classes("w-full shadow-1 q-mb-md")
-            tbl.add_slot(
-                "body-cell-feature",
-                r"""
-                <q-td :props="props">
-                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
-                    <span v-else class="text-grey-5 text-italic">Global</span>
-                </q-td>
-                """,
-            )
-            tbl.add_slot(
-                "body-cell-new_study",
-                r"""
-                <q-td :props="props">
-                    <q-badge
-                        :color="props.value ? 'orange' : 'transparent'"
-                        :label="props.value ? 'Study' : ''"
-                        :text-color="props.value ? 'white' : 'transparent'"
-                    />
-                </q-td>
-                """,
-            )
-        else:
-            ui.label("No task breakdown available.").classes("text-grey q-mb-md")
+                        input_changes = diff.get("input_changes", {})
+                        if input_changes:
+                            ui.label("Input Changes").classes("text-subtitle1 text-weight-medium q-mt-md")
+                            for key, vals in input_changes.items():
+                                label = key.replace("_", " ").title()
+                                added_ids = vals.get("added", [])
+                                removed_ids = vals.get("removed", [])
+                                if added_ids:
+                                    ui.label(f"  {label} added: {added_ids}").classes("text-body2 text-positive")
+                                if removed_ids:
+                                    ui.label(f"  {label} removed: {removed_ids}").classes("text-body2 text-negative")
 
-        # ------------------------------------------------------------------ #
-        # Document Deliverables                                                #
-        # ------------------------------------------------------------------ #
-        _doc_deliverables = est.get("document_deliverables") or []
-        if _doc_deliverables:
-            ui.label("Document Deliverables").classes("text-h6 q-mb-sm")
-            doc_cols = [
-                {"name": "name",           "label": "Document Type",  "field": "name",             "align": "left",  "sortable": True},
-                {"name": "category",       "label": "Category",       "field": "category",         "align": "left",  "sortable": True},
-                {"name": "linked_task",    "label": "Linked Task",    "field": "linked_task",      "align": "left"},
-                {"name": "count",          "label": "Count",          "field": "count",            "align": "right"},
-                {"name": "total_hours",    "label": "Total Hours",    "field": "total_hours",      "align": "right"},
-                {"name": "effective_hours", "label": "Effective Hours","field": "effective_hours",  "align": "right"},
-                {"name": "overlap_note",   "label": "Note",           "field": "overlap_note",     "align": "left"},
-            ]
-            # Replace None linked_task / overlap_note with display-friendly values
-            _doc_rows = []
-            for dd in _doc_deliverables:
-                _doc_rows.append({
-                    **dd,
-                    "linked_task": dd.get("linked_task") or "—",
-                    "overlap_note": dd.get("overlap_note") or "",
-                })
-            doc_tbl = ui.table(
-                columns=doc_cols,
-                rows=_doc_rows,
-                row_key="name",
-                pagination={"rowsPerPage": 15},
-            ).classes("w-full shadow-1 q-mb-md")
-            # Highlight rows with overlap deduction
-            doc_tbl.add_slot(
-                "body-cell-overlap_note",
-                r"""
-                <q-td :props="props">
-                    <span v-if="props.value" class="text-orange">{{ props.value }}</span>
-                    <span v-else></span>
-                </q-td>
-                """,
-            )
-            # Show documentation hours total
-            ui.label(f"Documentation Hours Total: {est.get('documentation_hours', 0):.1f}h").classes(
-                "text-body2 text-bold q-mb-md"
-            )
+                        if not changes and not modified and not added and not removed and not input_changes:
+                            ui.label("No differences found between the two versions.").classes("text-grey q-mt-md")
 
-        # ------------------------------------------------------------------ #
-        # PR Fixes breakdown                                                   #
-        # ------------------------------------------------------------------ #
-        _wizard = {}
-        try:
-            _wizard = _json.loads(est.get("wizard_inputs_json") or "{}")
-        except Exception:
-            pass
-        _pr_fixes = _wizard.get("pr_fixes", {})
-        _pr_simple = _pr_fixes.get("simple", 0)
-        _pr_medium = _pr_fixes.get("medium", 0)
-        _pr_complex = _pr_fixes.get("complex", 0)
-        _pr_details = _wizard.get("pr_details", [])
-        _pr_total = est.get("pr_fix_count", 0)
-
-        if _pr_total > 0 or _pr_details:
-            ui.label("PR Fixes").classes("text-h6 q-mb-sm")
-            with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
-                with ui.card().classes("q-pa-sm"):
-                    ui.label("Simple").classes("text-caption text-grey")
-                    ui.label(f"{_pr_simple} × 2h = {_pr_simple * 2}h").classes("text-body2")
-                with ui.card().classes("q-pa-sm"):
-                    ui.label("Medium").classes("text-caption text-grey")
-                    ui.label(f"{_pr_medium} × 4h = {_pr_medium * 4}h").classes("text-body2")
-                with ui.card().classes("q-pa-sm"):
-                    ui.label("Complex").classes("text-caption text-grey")
-                    ui.label(f"{_pr_complex} × 8h = {_pr_complex * 8}h").classes("text-body2")
-                with ui.card().classes("q-pa-sm"):
-                    ui.label("Total PR Hours").classes("text-caption text-grey")
-                    ui.label(f"{est.get('pr_fix_hours', 0):.1f}h").classes("text-body2 text-bold")
-
-            if _pr_details:
-                pr_detail_cols = [
-                    {"name": "pr_number",      "label": "PR #",           "field": "pr_number",      "align": "left"},
-                    {"name": "link",           "label": "Link",           "field": "link",           "align": "left"},
-                    {"name": "description",    "label": "Description",    "field": "description",    "align": "left"},
-                    {"name": "priority",       "label": "Priority",       "field": "priority",       "align": "left"},
-                    {"name": "complexity",     "label": "Complexity",     "field": "complexity",     "align": "left"},
-                    {"name": "status",         "label": "Status",         "field": "status",         "align": "left"},
-                    {"name": "test_available", "label": "Test Available", "field": "test_available", "align": "center"},
-                ]
-                pr_tbl = ui.table(
-                    columns=pr_detail_cols,
-                    rows=_pr_details,
-                    row_key="pr_number",
-                    pagination={"rowsPerPage": 15},
-                ).classes("w-full shadow-1 q-mb-md")
-                # Make links clickable
-                pr_tbl.add_slot(
-                    "body-cell-link",
-                    r"""
-                    <q-td :props="props">
-                        <a v-if="props.value" :href="props.value" target="_blank" class="text-primary">
-                            {{ props.value }}
-                        </a>
-                        <span v-else>—</span>
-                    </q-td>
-                    """,
-                )
-                pr_tbl.add_slot(
-                    "body-cell-test_available",
-                    r"""
-                    <q-td :props="props">
-                        <q-badge :color="props.value === false ? 'negative' : 'positive'"
-                                 :label="props.value === false ? 'No' : 'Yes'" />
-                    </q-td>
-                    """,
-                )
-
-        # ------------------------------------------------------------------ #
-        # Team Allocation                                                      #
-        # ------------------------------------------------------------------ #
-        team_allocs = est.get("team_allocations") or []
-        if team_allocs:
-            ui.label("Team Allocation").classes("text-h6 q-mb-sm")
-            alloc_cols = [
-                {"name": "team_member_name", "label": "Member",  "field": "team_member_name", "align": "left"},
-                {"name": "role",             "label": "Role",    "field": "role",             "align": "left"},
-                {"name": "allocated_hours",  "label": "Hours",   "field": "allocated_hours",  "align": "right"},
-            ]
-            ui.table(
-                columns=alloc_cols,
-                rows=team_allocs,
-                row_key="team_member_id",
-                pagination={"rowsPerPage": 15},
-            ).classes("w-full shadow-1 q-mb-md")
-
-        # ------------------------------------------------------------------ #
-        # Status transition buttons                                            #
-        # ------------------------------------------------------------------ #
-        ui.label("Workflow Actions").classes("text-h6 q-mb-sm")
-        status_row = ui.row().classes("q-gutter-sm q-mb-md")
+                ui.button("Compare", icon="compare_arrows", on_click=_run_diff).props("color=primary")
+                ui.separator().classes("q-mt-md")
+                ui.button("Close", on_click=dlg.close).props("flat")
+            dlg.open()
 
         async def _do_status_transition(target: str) -> None:
             try:
@@ -2351,74 +2212,23 @@ async def estimation_detail_page(estimation_id: int) -> None:
                     json={"status": target},
                 )
                 ui.notify(f"Status changed to {target}.", type="positive")
-                # Reload the page to reflect new state (edit button, etc.)
                 ui.navigate.to(f"/estimation/{estimation_id}")
             except Exception as exc:
                 ui.notify(f"Status update failed: {exc}", type="negative")
-                # Refresh data so buttons reflect actual current status
                 try:
                     est_state["data"] = await api_get(f"/estimations/{estimation_id}")
                     _rebuild_status_buttons()
                 except Exception:
                     pass
 
-        _STATUS_BTN_PROPS: dict[str, str] = {
-            "FINAL":    "color=primary",
-            "APPROVED": "color=positive",
-            "REVISED":  "color=orange",
-            "DRAFT":    "color=grey",
-        }
-
-        def _rebuild_status_buttons() -> None:
-            status_row.clear()
-            current_status = est_state["data"].get("status", "DRAFT")
-            allowed = _STATUS_TRANSITIONS.get(current_status, [])
-            with status_row:
-                if not allowed:
-                    ui.label(f"No further transitions from {current_status}.").classes(
-                        "text-caption text-grey"
-                    )
-                else:
-                    for target in allowed:
-                        btn_props = _STATUS_BTN_PROPS.get(target, "color=grey")
-                        # Use default arg capture to avoid late-binding closure bug
-                        ui.button(
-                            f"Move to {target}",
-                            on_click=lambda t=target: _do_status_transition(t),
-                        ).props(btn_props)
-
-        _rebuild_status_buttons()
-
-        # ------------------------------------------------------------------ #
-        # Archive to History (Feature 6)                                       #
-        # ------------------------------------------------------------------ #
-        if est.get("status") == "APPROVED":
-            async def _archive_to_history() -> None:
-                try:
-                    await api_post(f"/estimations/{estimation_id}/archive")
-                    ui.notify("Estimation archived to Historical Projects.", type="positive")
-                except Exception as exc:
-                    ui.notify(f"Archive failed: {exc}", type="negative")
-
-            with ui.row().classes("q-mb-md"):
-                ui.button(
-                    "Archive to History",
-                    icon="archive",
-                    on_click=_archive_to_history,
-                ).props("color=accent outline")
-
-        # ------------------------------------------------------------------ #
-        # Report download buttons                                              #
-        # ------------------------------------------------------------------ #
-        ui.label("Download Reports").classes("text-h6 q-mb-sm")
+        async def _archive_to_history() -> None:
+            try:
+                await api_post(f"/estimations/{estimation_id}/archive")
+                ui.notify("Estimation archived to Historical Projects.", type="positive")
+            except Exception as exc:
+                ui.notify(f"Archive failed: {exc}", type="negative")
 
         def _download_js(fmt: str, filename: str) -> str:
-            """Return JavaScript that fetches a report blob and triggers download.
-
-            Uses a relative /api/ path so the request goes through the same
-            origin the browser is connected to (nginx reverse proxy), instead
-            of the internal API_URL which is unreachable from the browser.
-            """
             url = f"/api/estimations/{estimation_id}/report/{fmt}"
             return (
                 f'fetch("{url}", {{'
@@ -2434,35 +2244,565 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 f'.catch(err => console.error("Download failed:", err));'
             )
 
-        with ui.row().classes("q-gutter-sm q-mb-lg"):
-            ui.button(
-                "Excel (.xlsx)",
-                icon="table_chart",
-                on_click=lambda: ui.run_javascript(
-                    _download_js("xlsx", f"estimation_{estimation_id}.xlsx")
-                ),
-            ).props("color=positive outline")
+        _STATUS_BTN_PROPS: dict[str, str] = {
+            "FINAL":    "color=primary",
+            "APPROVED": "color=positive",
+            "REVISED":  "color=orange",
+            "DRAFT":    "color=grey",
+        }
 
-            ui.button(
-                "Word (.docx)",
-                icon="description",
-                on_click=lambda: ui.run_javascript(
-                    _download_js("docx", f"estimation_{estimation_id}.docx")
-                ),
-            ).props("color=primary outline")
+        # ─────────────────────────────────────────────────────────────
+        # 1. STICKY ACTION TOOLBAR
+        # ─────────────────────────────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button(icon="arrow_back",
+                      on_click=lambda: ui.navigate.to("/estimations")) \
+                .props("flat dense").tooltip("Back to estimations")
 
-            ui.button(
-                "PDF (.pdf)",
-                icon="picture_as_pdf",
-                on_click=lambda: ui.run_javascript(
-                    _download_js("pdf", f"estimation_{estimation_id}.pdf")
-                ),
-            ).props("color=negative outline")
+            ui.element("div").classes("ed-toolbar-spacer")
 
+            if est.get("status") == "REVISED":
+                ui.button("Edit", icon="edit",
+                          on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}/edit")) \
+                    .props("flat dense color=orange")
 
-# ---------------------------------------------------------------------------
-# Route 3: /estimation/{id}/edit  — Edit wizard for REVISED estimations
-# ---------------------------------------------------------------------------
+            if est.get("request_id"):
+                ui.button("Export to External", icon="cloud_upload",
+                          on_click=_do_export).props("flat dense color=accent")
+
+            ui.button("Export Tasks", icon="account_tree",
+                      on_click=_open_export_tasks_dialog).props("flat dense color=teal")
+
+            if version > 1:
+                ui.button(f"Compare ({version} versions)", icon="compare_arrows",
+                          on_click=_open_version_diff_dialog).props("flat dense")
+
+            ui.element("div").classes("ed-toolbar-grow")
+
+            with ui.element("div").classes(f"ed-status-now ed-status-{feasibility} ed-status-{status}"):
+                ui.element("span").classes("ed-status-dot")
+                ui.label(f"{feasibility or 'UNKNOWN'} · {status or 'DRAFT'}")
+
+        # ─────────────────────────────────────────────────────────────
+        # 2. HERO CARD — project identity + grand total
+        # ─────────────────────────────────────────────────────────────
+        stripe_class = (
+            f"ed-stripe-{feasibility}"
+            if feasibility in ("FEASIBLE", "AT_RISK", "NOT_FEASIBLE")
+            else "ed-stripe-default"
+        )
+
+        with ui.element("div").classes("ed-shell"):
+            with ui.element("div").classes("ed-hero"):
+                ui.element("div").classes(f"ed-hero-stripe {stripe_class}")
+
+                # Left column: identity
+                with ui.element("div").classes("ed-hero-left"):
+                    with ui.element("div").classes("ed-hero-meta"):
+                        ui.label("Estimation").classes("ed-eyebrow")
+                        if est.get("estimation_number"):
+                            ui.label(est["estimation_number"]).classes("ed-hero-num-pill")
+                        if version > 1:
+                            ui.label(f"v{version}").classes("ed-hero-ver-pill")
+                        if est.get("project_type"):
+                            ui.label(f"· {est['project_type']}").classes("ed-hero-ptype")
+
+                    ui.label(est.get("project_name", f"Estimation {estimation_id}")) \
+                        .classes("ed-hero-title")
+
+                    _bits = []
+                    if est.get("dut_count"):
+                        _bits.append(f"{est['dut_count']} DUT{'s' if est['dut_count'] != 1 else ''}")
+                    if est.get("profile_count"):
+                        _bits.append(f"{est['profile_count']} profile{'s' if est['profile_count'] != 1 else ''}")
+                    if est.get("dut_profile_combinations"):
+                        _bits.append(f"{est['dut_profile_combinations']} combinations")
+                    if est.get("expected_releases", 1) > 1:
+                        _bits.append(f"{est['expected_releases']} releases")
+                    if _bits:
+                        ui.label(" · ".join(_bits)).classes("ed-hero-sub")
+
+                # Right column: grand total
+                with ui.element("div").classes("ed-hero-right"):
+                    ui.label("Grand Total").classes("ed-eyebrow")
+                    ui.label(f"{est.get('grand_total_hours', 0):,.0f}").classes("ed-hero-bignum")
+                    _gd = est.get("grand_total_days", 0)
+                    _gw = round(_gd / 5.0, 1) if _gd else 0
+                    ui.label(f"hours · {_gd:,.1f} days · {_gw:,.1f} weeks") \
+                        .classes("ed-hero-unit")
+                    if est.get("estimated_completion_date"):
+                        with ui.element("div").classes("ed-hero-completion"):
+                            ui.label("Est. Completion").classes("ed-hero-completion-label")
+                            ui.label(str(est["estimated_completion_date"])).classes("ed-mono")
+
+        # ─────────────────────────────────────────────────────────────
+        # 3. TABS
+        # ─────────────────────────────────────────────────────────────
+        with ui.element("div").classes("ed-shell"):
+            with ui.tabs().classes("ed-tabs").props("inline-label align=left no-caps") as _tabs:
+                ui.tab("overview", label="Overview", icon="dashboard")
+                ui.tab("tasks",    label=f"Tasks ({len(est.get('tasks', []))})", icon="checklist")
+                ui.tab("docs",     label=f"Documents ({len(est.get('document_deliverables') or [])})", icon="description")
+                ui.tab("prs",      label=f"PR Fixes ({est.get('pr_fix_count', 0)})", icon="bug_report")
+                ui.tab("team",     label=f"Team ({len(est.get('team_allocations') or [])})", icon="groups")
+                ui.tab("workflow", label="Workflow", icon="account_tree")
+
+            with ui.tab_panels(_tabs, value="overview").classes("ed-panels w-full"):
+
+                # ─── OVERVIEW ─────────────────────────────────────────
+                with ui.tab_panel("overview"):
+
+                    # Project Specification card
+                    with ui.element("div").classes("ed-card"):
+                        ui.label("Project Specification").classes("ed-cap")
+
+                        with ui.element("div").classes("ed-spec"):
+                            def _spec(label_txt: str, value: str, long: bool = False) -> None:
+                                with ui.element("div").classes("ed-spec-row"):
+                                    ui.label(label_txt).classes("ed-spec-label")
+                                    cls = "ed-spec-value long" if long else "ed-spec-value"
+                                    ui.label(value).classes(cls)
+
+                            _spec("Project Type", est.get("project_type") or "—")
+                            _spec("DUTs", str(est.get("dut_count", 0)))
+                            _spec("Profiles", str(est.get("profile_count", 0)))
+                            _spec("Combinations", str(est.get("dut_profile_combinations", 0)))
+                            _spec("Start Date", str(est.get("start_date") or "—"))
+                            _spec("Deadline", str(est.get("expected_delivery") or "—"))
+                            _spec(
+                                "Created",
+                                str(est.get("created_at", ""))[:10] if est.get("created_at") else "—",
+                            )
+                            _spec("Releases", str(est.get("expected_releases") or 1))
+                            if est.get("team_name"):
+                                _spec("Team", est["team_name"])
+                            if est.get("project_reference"):
+                                _spec("Reference", est["project_reference"])
+                            if est.get("target_customer"):
+                                _spec("Target Customer", est["target_customer"])
+                            if est.get("project_goals"):
+                                _spec("Project Goals", est["project_goals"], long=True)
+
+                    # Hours Breakdown card
+                    with ui.element("div").classes("ed-card"):
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("Hours Breakdown").classes("ed-cap")
+                            ui.label(f"TOTAL · {est.get('grand_total_hours', 0):,.1f}h") \
+                                .classes("ed-card-head-meta")
+
+                        _gtot = max(est.get("grand_total_hours", 0) or 1, 1)
+                        _hour_items = [
+                            ("Tester Hours",     est.get("total_tester_hours", 0),  "person"),
+                            ("Leader Hours",     est.get("total_leader_hours", 0),  "manage_accounts"),
+                            ("PR Fix Hours",     est.get("pr_fix_hours", 0),         "bug_report"),
+                            ("PR Test Creation", est.get("pr_no_test_hours", 0),     "science"),
+                            ("Study Hours",      est.get("study_hours", 0),          "school"),
+                            ("Release Extra",    est.get("release_extra_hours", 0),  "rocket_launch"),
+                            ("Documentation",    est.get("documentation_hours", 0),  "description"),
+                            ("Buffer",           est.get("buffer_hours", 0),         "security"),
+                        ]
+                        for label_txt, val, icon in _hour_items:
+                            if not val:
+                                continue
+                            pct = max((val / _gtot) * 100, 0.5)
+                            with ui.element("div").classes("ed-bar-row"):
+                                with ui.element("div").classes("ed-bar-label"):
+                                    ui.icon(icon).classes("ed-bar-icon")
+                                    ui.label(label_txt)
+                                with ui.element("div").classes("ed-bar-track"):
+                                    ui.element("div").classes("ed-bar-fill") \
+                                        .style(f"width: {pct:.1f}%")
+                                ui.label(f"{val:,.1f}h").classes("ed-bar-value")
+
+                        # Grand total row
+                        with ui.element("div").classes("ed-bar-row total"):
+                            with ui.element("div").classes("ed-bar-label"):
+                                ui.icon("summarize").classes("ed-bar-icon")
+                                ui.label("Grand Total")
+                            with ui.element("div").classes("ed-bar-track"):
+                                ui.element("div").classes("ed-bar-fill") \
+                                    .style("width: 100%")
+                            ui.label(f"{est.get('grand_total_hours', 0):,.1f}h") \
+                                .classes("ed-bar-value")
+
+                    # Elapsed Time strip
+                    _el_days = est.get("elapsed_days", 0)
+                    _el_weeks = est.get("elapsed_weeks", 0)
+                    if _el_days > 0 and _el_days != est.get("grand_total_days", 0):
+                        with ui.element("div").classes("ed-card"):
+                            with ui.element("div").classes("ed-card-head"):
+                                ui.label("Elapsed Time · Wall Clock").classes("ed-cap")
+                                ui.label("parallelizable ÷ team · sequential by one") \
+                                    .classes("ed-eyebrow")
+
+                            with ui.element("div").classes("ed-strip"):
+                                for lbl, val, unit in [
+                                    ("Elapsed Hours", est.get("elapsed_hours", 0), "h"),
+                                    ("Elapsed Days",  _el_days, "d"),
+                                    ("Elapsed Weeks", _el_weeks, "w"),
+                                ]:
+                                    with ui.element("div").classes("ed-strip-cell"):
+                                        ui.label(lbl).classes("ed-eyebrow")
+                                        with ui.element("div").classes("ed-strip-num"):
+                                            ui.label(f"{val:,.1f}")
+                                            ui.label(unit).classes("ed-strip-unit")
+                                if est.get("estimated_completion_date"):
+                                    with ui.element("div").classes("ed-strip-cell"):
+                                        ui.label("Est. Completion").classes("ed-eyebrow")
+                                        ui.label(str(est["estimated_completion_date"])) \
+                                            .classes("ed-strip-date")
+
+                    # Risks
+                    est_risks = est.get("risks") or []
+                    if est_risks:
+                        with ui.element("div").classes("ed-card"):
+                            with ui.element("div").classes("ed-card-head"):
+                                ui.label("Associated Risks").classes("ed-cap")
+                                ui.label(f"{len(est_risks)} flagged").classes("ed-card-head-meta")
+                            with ui.element("div").classes("ed-chips"):
+                                for risk in est_risks:
+                                    risk_name = risk.get("risk_item_name") or risk.get("name") or f"Risk #{risk.get('risk_item_id', '?')}"
+                                    risk_cat = risk.get("category") or ""
+                                    chip_label = f"{risk_cat}: {risk_name}" if risk_cat else risk_name
+                                    ui.chip(chip_label, icon="warning").props("color=warning outline dense")
+
+                # ─── TASKS ────────────────────────────────────────────
+                with ui.tab_panel("tasks"):
+                    tasks: list[dict] = est.get("tasks", [])
+                    with ui.element("div").classes("ed-card"):
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("Task Breakdown").classes("ed-cap")
+                            _tasks_total = sum(t.get("calculated_hours", 0) for t in tasks)
+                            ui.label(f"{len(tasks)} tasks · {_tasks_total:,.1f}h total") \
+                                .classes("ed-card-head-meta")
+                        if tasks:
+                            task_cols = [
+                                {"name": "feature",          "label": "Feature",   "field": "feature_name",        "align": "left",  "sortable": True},
+                                {"name": "task_name",        "label": "Task",      "field": "task_name",           "align": "left",  "sortable": True},
+                                {"name": "task_type",        "label": "Type",      "field": "task_type",           "align": "left",  "sortable": True},
+                                {"name": "base_hours",       "label": "Base h",    "field": "base_hours",          "align": "right", "sortable": True},
+                                {"name": "formula",          "label": "Formula",   "field": "formula",             "align": "left",  "sortable": False},
+                                {"name": "calc_hours",       "label": "Calc h",    "field": "calculated_hours",    "align": "right", "sortable": True},
+                                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers",    "align": "center","sortable": True},
+                                {"name": "new_study",        "label": "Study",     "field": "is_new_feature_study","align": "center"},
+                            ]
+                            tbl = ui.table(
+                                columns=task_cols,
+                                rows=tasks,
+                                row_key="id",
+                                pagination={"rowsPerPage": 25},
+                            ).classes("w-full").props("flat")
+                            tbl.add_slot(
+                                "body-cell-feature",
+                                r"""
+                                <q-td :props="props">
+                                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
+                                    <span v-else class="text-grey-5 text-italic">Global</span>
+                                </q-td>
+                                """,
+                            )
+                            tbl.add_slot(
+                                "body-cell-new_study",
+                                r"""
+                                <q-td :props="props">
+                                    <q-badge
+                                        :color="props.value ? 'orange' : 'transparent'"
+                                        :label="props.value ? '★' : ''"
+                                        :text-color="props.value ? 'white' : 'transparent'"
+                                    />
+                                </q-td>
+                                """,
+                            )
+                        else:
+                            ui.label("No task breakdown available").classes("ed-empty")
+
+                # ─── DOCUMENTS ────────────────────────────────────────
+                with ui.tab_panel("docs"):
+                    _doc_deliverables = est.get("document_deliverables") or []
+                    with ui.element("div").classes("ed-card"):
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("Document Deliverables").classes("ed-cap")
+                            ui.label(f"{est.get('documentation_hours', 0):.1f}h documentation total") \
+                                .classes("ed-card-head-meta")
+                        if _doc_deliverables:
+                            doc_cols = [
+                                {"name": "name",            "label": "Document Type",   "field": "name",             "align": "left",  "sortable": True},
+                                {"name": "category",        "label": "Category",        "field": "category",         "align": "left",  "sortable": True},
+                                {"name": "linked_task",     "label": "Linked Task",     "field": "linked_task",      "align": "left"},
+                                {"name": "count",           "label": "Count",           "field": "count",            "align": "right"},
+                                {"name": "total_hours",     "label": "Total Hours",     "field": "total_hours",      "align": "right"},
+                                {"name": "effective_hours", "label": "Effective Hours", "field": "effective_hours",  "align": "right"},
+                                {"name": "overlap_note",    "label": "Note",            "field": "overlap_note",     "align": "left"},
+                            ]
+                            _doc_rows = []
+                            for dd in _doc_deliverables:
+                                _doc_rows.append({
+                                    **dd,
+                                    "linked_task": dd.get("linked_task") or "—",
+                                    "overlap_note": dd.get("overlap_note") or "",
+                                })
+                            doc_tbl = ui.table(
+                                columns=doc_cols,
+                                rows=_doc_rows,
+                                row_key="name",
+                                pagination={"rowsPerPage": 25},
+                            ).classes("w-full").props("flat")
+                            doc_tbl.add_slot(
+                                "body-cell-overlap_note",
+                                r"""
+                                <q-td :props="props">
+                                    <span v-if="props.value" class="text-orange">{{ props.value }}</span>
+                                    <span v-else></span>
+                                </q-td>
+                                """,
+                            )
+                        else:
+                            ui.label("No document deliverables").classes("ed-empty")
+
+                # ─── PRs ──────────────────────────────────────────────
+                with ui.tab_panel("prs"):
+                    _wizard = {}
+                    try:
+                        _wizard = _json.loads(est.get("wizard_inputs_json") or "{}")
+                    except Exception:
+                        pass
+                    _pr_fixes = _wizard.get("pr_fixes", {})
+                    _pr_simple = _pr_fixes.get("simple", 0)
+                    _pr_medium = _pr_fixes.get("medium", 0)
+                    _pr_complex = _pr_fixes.get("complex", 0)
+                    _pr_details = _wizard.get("pr_details", [])
+                    _pr_total = est.get("pr_fix_count", 0)
+
+                    with ui.element("div").classes("ed-card"):
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("PR Fix Summary").classes("ed-cap")
+                            ui.label(f"{_pr_total} PRs · {est.get('pr_fix_hours', 0):.1f}h") \
+                                .classes("ed-card-head-meta")
+
+                        if _pr_total > 0 or _pr_details:
+                            with ui.element("div").classes("ed-pr-grid"):
+                                for label_txt, count, rate in [
+                                    ("Simple",  _pr_simple,  2),
+                                    ("Medium",  _pr_medium,  4),
+                                    ("Complex", _pr_complex, 8),
+                                ]:
+                                    with ui.element("div").classes("ed-pr-tile"):
+                                        ui.label(label_txt).classes("ed-eyebrow")
+                                        ui.label(str(count)).classes("ed-pr-tile-num")
+                                        with ui.element("div").classes("ed-pr-tile-x"):
+                                            ui.html(f"× {rate}h = <strong>{count * rate}h</strong>")
+                                with ui.element("div").classes("ed-pr-tile total"):
+                                    ui.label("Total PR Hours").classes("ed-eyebrow")
+                                    with ui.element("div").classes("ed-pr-tile-num"):
+                                        ui.label(f"{est.get('pr_fix_hours', 0):.1f}")
+                                        ui.label("h").classes("ed-pr-unit")
+
+                            if _pr_details:
+                                ui.label("PR Details").classes("ed-cap").style("margin-top: 24px;")
+                                pr_detail_cols = [
+                                    {"name": "pr_number",      "label": "PR #",           "field": "pr_number",      "align": "left"},
+                                    {"name": "link",           "label": "Link",           "field": "link",           "align": "left"},
+                                    {"name": "description",    "label": "Description",    "field": "description",    "align": "left"},
+                                    {"name": "priority",       "label": "Priority",       "field": "priority",       "align": "left"},
+                                    {"name": "complexity",     "label": "Complexity",     "field": "complexity",     "align": "left"},
+                                    {"name": "status",         "label": "Status",         "field": "status",         "align": "left"},
+                                    {"name": "test_available", "label": "Test Available", "field": "test_available", "align": "center"},
+                                ]
+                                pr_tbl = ui.table(
+                                    columns=pr_detail_cols,
+                                    rows=_pr_details,
+                                    row_key="pr_number",
+                                    pagination={"rowsPerPage": 15},
+                                ).classes("w-full q-mt-md").props("flat")
+                                pr_tbl.add_slot(
+                                    "body-cell-link",
+                                    r"""
+                                    <q-td :props="props">
+                                        <a v-if="props.value" :href="props.value" target="_blank" class="text-primary">
+                                            {{ props.value }}
+                                        </a>
+                                        <span v-else>—</span>
+                                    </q-td>
+                                    """,
+                                )
+                                pr_tbl.add_slot(
+                                    "body-cell-test_available",
+                                    r"""
+                                    <q-td :props="props">
+                                        <q-badge :color="props.value === false ? 'negative' : 'positive'"
+                                                 :label="props.value === false ? 'No' : 'Yes'" />
+                                    </q-td>
+                                    """,
+                                )
+                        else:
+                            ui.label("No PR fixes").classes("ed-empty")
+
+                # ─── TEAM ─────────────────────────────────────────────
+                with ui.tab_panel("team"):
+                    team_allocs = est.get("team_allocations") or []
+                    with ui.element("div").classes("ed-card"):
+                        _alloc_total = sum(a.get("allocated_hours", 0) for a in team_allocs)
+                        _alloc_n = len(team_allocs)
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("Team Allocation").classes("ed-cap")
+                            ui.label(
+                                f"{_alloc_n} member{'s' if _alloc_n != 1 else ''} · {_alloc_total:,.1f}h"
+                            ).classes("ed-card-head-meta")
+                        if team_allocs:
+                            alloc_cols = [
+                                {"name": "team_member_name", "label": "Member", "field": "team_member_name", "align": "left"},
+                                {"name": "role",             "label": "Role",   "field": "role",             "align": "left"},
+                                {"name": "allocated_hours",  "label": "Hours",  "field": "allocated_hours",  "align": "right"},
+                            ]
+                            ui.table(
+                                columns=alloc_cols,
+                                rows=team_allocs,
+                                row_key="team_member_id",
+                                pagination={"rowsPerPage": 25},
+                            ).classes("w-full").props("flat")
+                        else:
+                            ui.label("No team allocations").classes("ed-empty")
+
+                # ─── WORKFLOW ─────────────────────────────────────────
+                with ui.tab_panel("workflow"):
+
+                    # Assignment card
+                    with ui.element("div").classes("ed-card"):
+                        ui.label("Assignment").classes("ed-cap")
+                        assign_row = ui.row().classes("items-center q-gutter-md q-mt-sm")
+
+                        async def _build_assign_ui() -> None:
+                            assign_row.clear()
+                            current_est = est_state["data"]
+                            with assign_row:
+                                assigned_name = current_est.get("assigned_to_name")
+                                with ui.element("div").classes("ed-assign-block"):
+                                    if assigned_name:
+                                        ui.icon("person", color="primary").classes("text-h5")
+                                        with ui.column().classes("gap-0"):
+                                            ui.label("Assigned To").classes("ed-eyebrow")
+                                            ui.label(assigned_name).classes("ed-assign-name")
+                                    else:
+                                        ui.icon("person_off", color="grey").classes("text-h5")
+                                        with ui.column().classes("gap-0"):
+                                            ui.label("Unassigned").classes("ed-eyebrow")
+                                            ui.label("No assignee set").classes("ed-assign-empty")
+
+                                try:
+                                    users_list: list[dict] = await api_get("/users")
+                                except Exception:
+                                    users_list = []
+
+                                if users_list:
+                                    user_options = {u["id"]: u.get("display_name") or u["username"] for u in users_list}
+                                    current_id = current_est.get("assigned_to_id")
+                                    sel = ui.select(
+                                        options=user_options,
+                                        value=current_id,
+                                        label="Reassign to",
+                                        with_input=True,
+                                        clearable=True,
+                                    ).classes("w-64")
+
+                                    async def _do_assign() -> None:
+                                        uid = sel.value
+                                        if uid is None:
+                                            ui.notify("Select a user first.", type="warning")
+                                            return
+                                        try:
+                                            await api_post(
+                                                f"/estimations/{estimation_id}/assign",
+                                                params={"assigned_to_id": uid},
+                                            )
+                                            est_state["data"] = await api_get(f"/estimations/{estimation_id}")
+                                            ui.notify(f"Assigned to {user_options.get(uid, uid)}.", type="positive")
+                                            await _build_assign_ui()
+                                        except Exception as exc:
+                                            ui.notify(f"Assignment failed: {exc}", type="negative")
+
+                                    ui.button("Assign", icon="person_add",
+                                              on_click=_do_assign).props("flat dense color=primary")
+
+                        await _build_assign_ui()
+
+                    # Status transitions card
+                    with ui.element("div").classes("ed-card"):
+                        with ui.element("div").classes("ed-card-head"):
+                            ui.label("Status Transitions").classes("ed-cap")
+                            ui.label(f"current · {status}").classes("ed-card-head-meta")
+                        status_row = ui.row().classes("q-gutter-sm q-mt-sm")
+
+                        def _rebuild_status_buttons() -> None:
+                            status_row.clear()
+                            current_status = est_state["data"].get("status", "DRAFT")
+                            allowed = _STATUS_TRANSITIONS.get(current_status, [])
+                            with status_row:
+                                if not allowed:
+                                    ui.label(f"No further transitions from {current_status}") \
+                                        .classes("ed-eyebrow").style("padding: 8px 0;")
+                                else:
+                                    for target in allowed:
+                                        btn_props = _STATUS_BTN_PROPS.get(target, "color=grey")
+                                        ui.button(
+                                            f"Move to {target}",
+                                            icon="arrow_forward",
+                                            on_click=lambda t=target: _do_status_transition(t),
+                                        ).props(f"outline {btn_props}")
+
+                        _rebuild_status_buttons()
+
+                    # Archive (only when APPROVED)
+                    if est.get("status") == "APPROVED":
+                        with ui.element("div").classes("ed-card"):
+                            ui.label("Archive").classes("ed-cap")
+                            ui.label(
+                                "Move this approved estimation into Historical Projects "
+                                "for future calibration."
+                            ).style(
+                                "opacity:0.7; font-size:13px; margin: 14px 0;"
+                            )
+                            ui.button(
+                                "Archive to History",
+                                icon="archive",
+                                on_click=_archive_to_history,
+                            ).props("outline color=accent")
+
+        # ─────────────────────────────────────────────────────────────
+        # 4. FOOTER — DOWNLOAD REPORTS
+        # ─────────────────────────────────────────────────────────────
+        with ui.element("div").classes("ed-shell"):
+            with ui.element("div").classes("ed-download"):
+                with ui.column().classes("gap-1"):
+                    ui.label("Export").classes("ed-eyebrow")
+                    ui.label("Download report").classes("ed-dl-meta-title")
+                    ui.label(
+                        "A formatted summary of this estimation in your preferred format."
+                    ).classes("ed-dl-meta-sub")
+
+                ui.button(
+                    "Excel",
+                    icon="table_chart",
+                    on_click=lambda: ui.run_javascript(
+                        _download_js("xlsx", f"estimation_{estimation_id}.xlsx")
+                    ),
+                ).props("outline color=positive").classes("ed-dl-btn")
+
+                ui.button(
+                    "Word",
+                    icon="description",
+                    on_click=lambda: ui.run_javascript(
+                        _download_js("docx", f"estimation_{estimation_id}.docx")
+                    ),
+                ).props("outline color=primary").classes("ed-dl-btn")
+
+                ui.button(
+                    "PDF",
+                    icon="picture_as_pdf",
+                    on_click=lambda: ui.run_javascript(
+                        _download_js("pdf", f"estimation_{estimation_id}.pdf")
+                    ),
+                ).props("outline color=negative").classes("ed-dl-btn")
+
 
 @ui.page("/estimation/{estimation_id}/edit")
 async def edit_estimation_page(estimation_id: int) -> None:

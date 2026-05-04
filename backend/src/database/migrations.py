@@ -28,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 19  # v19 adds estimated_completion_date on estimations
+SCHEMA_VERSION = 20  # v20 replaces unique(features.name) with unique(name, category)
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -585,6 +585,54 @@ def _migrate_v18_to_v19(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v19_to_v20(engine, session: Session) -> None:
+    """Replace UNIQUE(features.name) with UNIQUE(name, category).
+
+    Allows the same feature name to exist under different categories.
+    SQLite has no DROP CONSTRAINT, so we rebuild the table.
+    """
+    is_sqlite = engine.dialect.name == "sqlite"
+    if is_sqlite:
+        # Rebuild the features table with the new constraint shape.
+        session.execute(text("""
+            CREATE TABLE features_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR NOT NULL,
+                category VARCHAR,
+                complexity_weight FLOAT NOT NULL DEFAULT 1.0,
+                has_existing_tests BOOLEAN NOT NULL DEFAULT 0,
+                description TEXT,
+                product_type VARCHAR,
+                study_effort_hours FLOAT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_features_name_category UNIQUE (name, category)
+            )
+        """))
+        session.execute(text("""
+            INSERT INTO features_new (id, name, category, complexity_weight,
+                has_existing_tests, description, product_type, study_effort_hours, created_at)
+            SELECT id, name, category, complexity_weight,
+                has_existing_tests, description, product_type, study_effort_hours, created_at
+            FROM features
+        """))
+        session.execute(text("DROP TABLE features"))
+        session.execute(text("ALTER TABLE features_new RENAME TO features"))
+    else:
+        # MySQL / Postgres: drop the column-level unique index then add composite.
+        try:
+            session.execute(text("ALTER TABLE features DROP INDEX name"))
+        except Exception:
+            pass
+        try:
+            session.execute(text(
+                "ALTER TABLE features ADD CONSTRAINT uq_features_name_category UNIQUE (name, category)"
+            ))
+        except Exception:
+            pass
+    _set_schema_version(session, 20)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -639,6 +687,8 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v17_to_v18(engine, session)
         if current_version < 19:
             _migrate_v18_to_v19(engine, session)
+        if current_version < 20:
+            _migrate_v19_to_v20(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)

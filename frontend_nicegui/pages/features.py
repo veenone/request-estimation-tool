@@ -14,6 +14,7 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     api_put,
+    extract_error_detail,
     is_authenticated,
     sidebar,
 )
@@ -137,7 +138,13 @@ async def features_page() -> None:
                 table.rows = filtered
                 table.update()
             except Exception as exc:
-                ui.notify(f"Failed to load features: {exc}", type="negative")
+                ui.notify(
+                    f"Failed to load features: {extract_error_detail(exc)}",
+                    type="negative",
+                    timeout=6000,
+                    multi_line=True,
+                    close_button="OK",
+                )
 
         # ------------------------------------------------------------------ #
         # Add dialog                                                            #
@@ -203,7 +210,13 @@ async def features_page() -> None:
                         ui.notify("Feature created.", type="positive")
                         await refresh()
                     except Exception as exc:
-                        ui.notify(f"Error creating feature: {exc}", type="negative")
+                        ui.notify(
+                            extract_error_detail(exc),
+                            type="negative",
+                            timeout=6000,
+                            multi_line=True,
+                            close_button="OK",
+                        )
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -281,7 +294,13 @@ async def features_page() -> None:
                         ui.notify("Feature updated.", type="positive")
                         await refresh()
                     except Exception as exc:
-                        ui.notify(f"Error updating feature: {exc}", type="negative")
+                        ui.notify(
+                            extract_error_detail(exc),
+                            type="negative",
+                            timeout=6000,
+                            multi_line=True,
+                            close_button="OK",
+                        )
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -307,7 +326,13 @@ async def features_page() -> None:
                         ui.notify("Feature deleted.", type="positive")
                         await refresh()
                     except Exception as exc:
-                        ui.notify(f"Error deleting feature: {exc}", type="negative")
+                        ui.notify(
+                            extract_error_detail(exc),
+                            type="negative",
+                            timeout=6000,
+                            multi_line=True,
+                            close_button="OK",
+                        )
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
