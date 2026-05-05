@@ -105,19 +105,40 @@ async def settings_page():
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Settings").classes("text-h4 q-mb-md")
+    # ---- Load configuration before building UI ----------------------------------
+    try:
+        config_list: list[dict] = await api_get("/configuration")
+    except Exception as exc:
+        show_error_page(exc)
+        return
 
-        # ---- load ----------------------------------------------------------------
-        try:
-            config_list: list[dict] = await api_get("/configuration")
-        except Exception as exc:
-            show_error_page(exc)
-            return
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        if not config_list:
-            ui.label("No configuration entries found.").classes("text-grey")
-            return
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Save Changes", icon="save",
+                      on_click=lambda: save_changes()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Reset Defaults", icon="restart_alt",
+                      on_click=lambda: confirm_reset()) \
+                .props("flat dense color=warning")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                ui.label(f"{len(config_list)} CONFIG KEYS").classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Settings").classes("text-h4 q-mb-md")
+            ui.label(
+                "Configure application behavior, branding, integrations, "
+                "and authentication. Changes apply immediately after saving."
+            ).classes("ed-eyebrow").style("margin-bottom: 22px;")
+
+            if not config_list:
+                ui.label("No configuration entries found").classes("ed-empty")
+                return
 
         # ---- state ---------------------------------------------------------------
         # original_values: key -> str  (server-side values at page load)
@@ -214,6 +235,9 @@ async def settings_page():
                                                 new_url = result.get("logo_url", "")
                                                 if logo_input and new_url:
                                                     logo_input.value = new_url
+                                                # Invalidate the sidebar/theme cache so the next render
+                                                # picks up the freshly-saved logo URL.
+                                                _safe_storage().pop("_rbac_cache", None)
                                                 ui.notify(
                                                     "Logo uploaded and saved. Reloading page...",
                                                     type="positive",
@@ -403,79 +427,57 @@ async def settings_page():
             status_label.set_text("Reloaded from server.")
             ui.notify("Configuration reloaded from server.", type="info")
 
-        with ui.row().classes("q-mt-lg gap-2"):
-            ui.button("Save Changes", icon="save", on_click=save_changes).props(
-                "color=primary"
-            )
-            ui.button(
-                "Reset to Defaults",
-                icon="restart_alt",
-                on_click=confirm_reset,
-            ).props("flat color=warning")
+        # ---- Connection test functions ──────────────────────────────────────
+        async def test_smtp():
+            ui.notify("Testing SMTP connection...", type="info", timeout=2000)
+            try:
+                result = await api_post("/integrations/EMAIL/test")
+                if result.get("success"):
+                    ui.notify(f"SMTP OK: {result.get('message', '')}",
+                              type="positive", timeout=5000)
+                else:
+                    ui.notify(f"SMTP failed: {result.get('message', '')}",
+                              type="warning", timeout=6000)
+            except Exception as exc:
+                ui.notify(f"SMTP test error: {exc}", type="negative")
 
-        # ---- Connection test buttons -----------------------------------------
-        ui.separator().classes("q-my-md")
-        ui.label("Connection Tests").classes("text-h6")
+        async def test_ldap():
+            ui.notify("Testing LDAP connection...", type="info", timeout=2000)
+            try:
+                result = await api_post("/integrations/LDAP/test")
+                if result.get("success"):
+                    ui.notify(f"LDAP OK: {result.get('message', '')}",
+                              type="positive", timeout=5000)
+                else:
+                    ui.notify(f"LDAP failed: {result.get('message', '')}",
+                              type="warning", timeout=6000)
+            except Exception as exc:
+                ui.notify(f"LDAP test error: {exc}", type="negative")
 
-        with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
+        async def sync_ldap_users():
+            ui.notify("Syncing LDAP users...", type="info", timeout=2000)
+            try:
+                result = await api_post("/auth/ldap/sync")
+                synced = result.get("synced", 0)
+                created = result.get("created", 0)
+                updated = result.get("updated", 0)
+                ui.notify(
+                    f"LDAP sync complete: {synced} synced, "
+                    f"{created} created, {updated} updated",
+                    type="positive", timeout=5000,
+                )
+            except Exception as exc:
+                ui.notify(f"LDAP sync error: {exc}", type="negative")
 
-            async def test_smtp():
-                ui.notify("Testing SMTP connection...", type="info", timeout=2000)
-                try:
-                    result = await api_post("/integrations/EMAIL/test")
-                    if result.get("success"):
-                        ui.notify(
-                            f"SMTP OK: {result.get('message', '')}",
-                            type="positive", timeout=5000,
-                        )
-                    else:
-                        ui.notify(
-                            f"SMTP failed: {result.get('message', '')}",
-                            type="warning", timeout=6000,
-                        )
-                except Exception as exc:
-                    ui.notify(f"SMTP test error: {exc}", type="negative")
-
-            ui.button(
-                "Test SMTP", icon="email", on_click=test_smtp,
-            ).props("flat color=secondary")
-
-            async def test_ldap():
-                ui.notify("Testing LDAP connection...", type="info", timeout=2000)
-                try:
-                    result = await api_post("/integrations/LDAP/test")
-                    if result.get("success"):
-                        ui.notify(
-                            f"LDAP OK: {result.get('message', '')}",
-                            type="positive", timeout=5000,
-                        )
-                    else:
-                        ui.notify(
-                            f"LDAP failed: {result.get('message', '')}",
-                            type="warning", timeout=6000,
-                        )
-                except Exception as exc:
-                    ui.notify(f"LDAP test error: {exc}", type="negative")
-
-            ui.button(
-                "Test LDAP", icon="domain", on_click=test_ldap,
-            ).props("flat color=secondary")
-
-            async def sync_ldap_users():
-                ui.notify("Syncing LDAP users...", type="info", timeout=2000)
-                try:
-                    result = await api_post("/auth/ldap/sync")
-                    synced = result.get("synced", 0)
-                    created = result.get("created", 0)
-                    updated = result.get("updated", 0)
-                    ui.notify(
-                        f"LDAP sync complete: {synced} synced, "
-                        f"{created} created, {updated} updated",
-                        type="positive", timeout=5000,
-                    )
-                except Exception as exc:
-                    ui.notify(f"LDAP sync error: {exc}", type="negative")
-
-            ui.button(
-                "Sync LDAP Users", icon="sync", on_click=sync_ldap_users,
-            ).props("flat color=accent")
+        # ---- Connection test card ──────────────────────────────────────────
+        with ui.element("div").classes("ed-card").style("margin-top: 22px;"):
+            with ui.element("div").classes("ed-card-head"):
+                ui.label("Connection Tests").classes("ed-cap")
+                ui.label("validate integration credentials").classes("ed-card-head-meta")
+            with ui.row().classes("gap-2 flex-wrap"):
+                ui.button("Test SMTP", icon="email",
+                          on_click=test_smtp).props("flat color=secondary")
+                ui.button("Test LDAP", icon="domain",
+                          on_click=test_ldap).props("flat color=secondary")
+                ui.button("Sync LDAP Users", icon="sync",
+                          on_click=sync_ldap_users).props("flat color=accent")

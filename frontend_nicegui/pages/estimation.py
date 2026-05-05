@@ -318,1406 +318,1617 @@ async def new_estimation_page(request_id: str | None = None) -> None:
     # ------------------------------------------------------------------ #
     # Page title                                                           #
     # ------------------------------------------------------------------ #
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("New Estimation — 7-Step Wizard").classes("text-h4 q-mb-md")
-
-        if linked_request_id is not None:
-            ui.label(f"Linked to Request ID: {linked_request_id}").classes(
-                "text-caption text-primary q-mb-sm"
-            )
-
-        # -------------------------------------------------------------- #
-        # Stepper                                                          #
-        # -------------------------------------------------------------- #
-        with ui.stepper().props("vertical=false animated").classes("w-full") as stepper:
-
-            # ---------------------------------------------------------- #
-            # Step 1 — Project Info                                       #
-            # ---------------------------------------------------------- #
-            with ui.step("Project Info"):
-                ui.label("Enter the basic project details.").classes(
-                    "text-body2 text-grey q-mb-md"
-                )
-
-                name_input = ui.input(
-                    "Project Name *",
-                    value=state["project_name"],
-                    placeholder="e.g. SIM Toolkit v2.1 Regression",
-                ).classes("w-full")
-                name_input.on(
-                    "update:model-value",
-                    lambda e: state.update({"project_name": e.args}),
-                )
-
-                type_select = ui.select(
-                    options=_project_types,
-                    label="Project Type",
-                    value=state["project_type"],
-                ).classes("w-full q-mt-sm")
-                type_select.on(
-                    "update:model-value",
-                    lambda e: state.update({"project_type": e.args}),
-                )
-
-                # Project Reference — shown only for CHANGE_REQUEST
-                _ref_opts = list(_est_ref_options.keys())
-                _ref_val = state.get("project_reference", "") or None
-                if _ref_val and _ref_val not in _ref_opts:
-                    _ref_opts.append(_ref_val)
-                ref_input = ui.select(
-                    options=_ref_opts,
-                    label="Project Reference *",
-                    value=_ref_val,
-                    with_input=True,
-                    new_value_mode="add-unique",
-                ).classes("w-full q-mt-sm")
-                ref_input.bind_visibility_from(type_select, "value", backward=lambda v: v == "CHANGE_REQUEST")
-                ref_input.on(
-                    "update:model-value",
-                    lambda e: state.update({"project_reference": e.args}),
-                )
-
-                desc_input = ui.textarea(
-                    "Description (optional)",
-                    value=state["description"],
-                    placeholder="Briefly describe the scope or context.",
-                ).classes("w-full q-mt-sm")
-                desc_input.on(
-                    "update:model-value",
-                    lambda e: state.update({"description": e.args}),
-                )
-
-                goals_input = ui.textarea(
-                    "Project Goals (optional)",
-                    value=state["project_goals"],
-                    placeholder="What are the main goals of this project?",
-                ).classes("w-full q-mt-sm")
-                goals_input.on(
-                    "update:model-value",
-                    lambda e: state.update({"project_goals": e.args}),
-                )
-
-                customer_input = ui.input(
-                    "Target Customer (optional)",
-                    value=state["target_customer"],
-                    placeholder="e.g. Vodafone, Deutsche Telekom",
-                ).classes("w-full q-mt-sm")
-                customer_input.on(
-                    "update:model-value",
-                    lambda e: state.update({"target_customer": e.args}),
-                )
-
-                ui.separator().classes("q-mt-md")
-                ui.label("Product Type Filter").classes("text-subtitle2")
-                ui.label(
-                    "Select a product type to filter Features, DUTs, and Profiles in subsequent steps."
-                ).classes("text-caption text-grey q-mb-xs")
-                pt_filter_select = ui.select(
-                    options=["All"] + product_types,
-                    value=state["product_type_filter"],
-                    label="Product Type",
-                ).classes("w-64")
-
-                with ui.stepper_navigation():
-                    def _go_step2() -> None:
-                        state["project_name"] = name_input.value or ""
-                        state["project_type"] = type_select.value or "EVOLUTION"
-                        state["product_type_filter"] = pt_filter_select.value or "All"
-                        state["description"] = desc_input.value or ""
-                        state["project_goals"] = goals_input.value or ""
-                        state["target_customer"] = customer_input.value or ""
-                        state["project_reference"] = ref_input.value or ""
-                        if not state["project_name"].strip():
-                            ui.notify("Project Name is required.", type="warning")
-                            return
-                        if state["project_type"] == "CHANGE_REQUEST" and not state["project_reference"].strip():
-                            ui.notify("Project Reference is required for Change Request.", type="warning")
-                            return
-                        # Rebuild feature list with current product type filter
-                        _rebuild_feature_list()
-                        stepper.next()
-
-                    ui.button("Next", on_click=_go_step2).props("color=primary icon-right=arrow_forward")
-
-            # ---------------------------------------------------------- #
-            # Step 2 — Features                                           #
-            # ---------------------------------------------------------- #
-            with ui.step("Features"):
-                ui.label(
-                    "Select the features under test. Toggle 'New' for features that require study time."
-                ).classes("text-body2 text-grey q-mb-md")
-
-                pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
-
-                # We need checkbox refs to read values on navigation
-                feature_checkbox_refs: dict[int, ui.checkbox] = {}
-                new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
-
-                features_container = ui.column().classes("w-full")
-
-                # -- Select All checkbox (outside container so it persists) --
-                _programmatic_select_all = [False]
-
-                def _rebuild_feature_list() -> None:
-                    """Rebuild the feature checkbox list based on the product type filter from Step 1."""
-                    # Collect current selections before clearing
-                    for _fid, _cb in feature_checkbox_refs.items():
-                        if _cb.value and _fid not in state["feature_ids"]:
-                            state["feature_ids"].append(_fid)
-                        elif not _cb.value and _fid in state["feature_ids"]:
-                            state["feature_ids"].remove(_fid)
-                    for _fid, _cb in new_feat_checkbox_refs.items():
-                        if _cb.value and _fid not in state["new_feature_ids"]:
-                            state["new_feature_ids"].append(_fid)
-                        elif not _cb.value and _fid in state["new_feature_ids"]:
-                            state["new_feature_ids"].remove(_fid)
-
-                    feature_checkbox_refs.clear()
-                    new_feat_checkbox_refs.clear()
-                    features_container.clear()
-
-                    selected_pt = state.get("product_type_filter") or "All"
-                    if selected_pt and selected_pt != "All":
-                        visible_features = [f for f in all_features if f.get("product_type") == selected_pt]
-                        pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
-                    else:
-                        visible_features = list(all_features)
-                        pt_info_label.set_text("")
-
-                    # Group visible features by category
-                    vis_by_cat: dict[str, list[dict]] = {}
-                    for feat in visible_features:
-                        cat = feat.get("category") or "Other"
-                        vis_by_cat.setdefault(cat, []).append(feat)
-
-                    with features_container:
-                        if not visible_features:
-                            ui.label("No features match the selected product type.").classes("text-grey")
-                            return
-
-                        all_pre_selected = all(f["id"] in state["feature_ids"] for f in visible_features)
-                        select_all_cb = ui.checkbox(
-                            f"Select all ({len(visible_features)} features)",
-                            value=all_pre_selected,
-                        ).classes("text-weight-bold q-mb-sm")
-
-                        def _toggle_select_all(e):
-                            if _programmatic_select_all[0]:
-                                return
-                            checked = e.value
-                            for _fid, _cb in feature_checkbox_refs.items():
-                                _cb.value = checked
-                                if not checked and _fid in new_feat_checkbox_refs:
-                                    new_feat_checkbox_refs[_fid].value = False
-
-                        select_all_cb.on_value_change(_toggle_select_all)
-
-                        def _update_select_all_state() -> None:
-                            if not feature_checkbox_refs:
-                                return
-                            all_checked = all(cb.value for cb in feature_checkbox_refs.values())
-                            if select_all_cb.value != all_checked:
-                                _programmatic_select_all[0] = True
-                                select_all_cb.value = all_checked
-                                _programmatic_select_all[0] = False
-
-                        ui.separator()
-
-                        for cat_name, cat_features in vis_by_cat.items():
-                            ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
-
-                            with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
-                                ui.label("Feature").classes("text-caption text-grey")
-                                ui.label("Complexity").classes("text-caption text-grey text-center")
-                                ui.label("New?").classes("text-caption text-grey text-center")
-
-                                for feat in cat_features:
-                                    fid = feat["id"]
-                                    fname = feat.get("name", f"Feature {fid}")
-                                    fweight = feat.get("complexity_weight", 1.0)
-
-                                    cb = ui.checkbox(
-                                        fname,
-                                        value=(fid in state["feature_ids"]),
-                                    )
-                                    feature_checkbox_refs[fid] = cb
-
-                                    ui.label(f"x{fweight:.1f}").classes("text-center")
-
-                                    new_cb = ui.checkbox(
-                                        "New",
-                                        value=(fid in state["new_feature_ids"]),
-                                    ).props("dense color=orange").classes("text-caption")
-                                    new_feat_checkbox_refs[fid] = new_cb
-
-                                    def _make_sync(f_id: int, n_cb: ui.checkbox):
-                                        def _sync(e) -> None:
-                                            if not feature_checkbox_refs[f_id].value:
-                                                n_cb.value = False
-                                            _update_select_all_state()
-                                        return _sync
-
-                                    cb.on("update:model-value", _make_sync(fid, new_cb))
-
-                _rebuild_feature_list()
-
-                def _collect_features() -> None:
-                    state["feature_ids"] = [
-                        fid for fid, cb in feature_checkbox_refs.items() if cb.value
-                    ]
-                    state["new_feature_ids"] = [
-                        fid
-                        for fid, cb in new_feat_checkbox_refs.items()
-                        if cb.value and feature_checkbox_refs[fid].value
-                    ]
-
-                with ui.stepper_navigation():
-                    def _back_step2() -> None:
-                        _collect_features()
-                        stepper.previous()
-
-                    def _next_step2() -> None:
-                        _collect_features()
-                        if not state["feature_ids"]:
-                            ui.notify(
-                                "Select at least one feature to continue.",
-                                type="warning",
-                            )
-                            return
-                        stepper.next()
-
-                    ui.button("Back", on_click=_back_step2).props("flat")
-                    ui.button("Next", on_click=_next_step2).props(
-                        "color=primary icon-right=arrow_forward"
-                    )
-
-            # ---------------------------------------------------------- #
-            # Step 3 — Reference Projects                                 #
-            # ---------------------------------------------------------- #
-            with ui.step("Reference Projects"):
-                ui.label(
-                    "Pick historical projects to use as baselines for calibration (optional)."
-                ).classes("text-body2 text-grey q-mb-md")
-
-                ref_checkbox_refs: dict[int, ui.checkbox] = {}
-
-                if not all_hist:
-                    ui.label("No historical projects available.").classes("text-grey")
-                else:
-                    with ui.grid(columns=1).classes("w-full"):
-                        for proj in all_hist:
-                            pid = proj["id"]
-                            pname = proj.get("project_name", f"Project {pid}")
-                            est_h = proj.get("estimated_hours") or 0
-                            act_h = proj.get("actual_hours") or 0
-                            accuracy = (act_h / est_h) if est_h else None
-                            acc_txt = (
-                                f"  accuracy ratio: {accuracy:.2f}"
-                                if accuracy is not None
-                                else "  (no accuracy data)"
-                            )
-                            label = f"{pname}  [{proj.get('project_type', '')}]{acc_txt}"
-                            cb = ui.checkbox(
-                                label,
-                                value=(pid in state["reference_project_ids"]),
-                            )
-                            ref_checkbox_refs[pid] = cb
-
-                def _collect_refs() -> None:
-                    state["reference_project_ids"] = [
-                        pid for pid, cb in ref_checkbox_refs.items() if cb.value
-                    ]
-
-                with ui.stepper_navigation():
-                    def _back_step3() -> None:
-                        _collect_refs()
-                        stepper.previous()
-
-                    def _next_step3() -> None:
-                        _collect_refs()
-                        # Rebuild DUT/Profile lists with current product type filter
-                        _rebuild_dut_prof_lists()
-                        stepper.next()
-
-                    ui.button("Back", on_click=_back_step3).props("flat")
-                    ui.button("Next", on_click=_next_step3).props(
-                        "color=primary icon-right=arrow_forward"
-                    )
-
-            # ---------------------------------------------------------- #
-            # Step 4 — DUT x Profile Matrix                               #
-            # ---------------------------------------------------------- #
-            with ui.step("DUT x Profile Matrix"):
-                ui.label(
-                    "Select the DUTs and Profiles to test, then tick the combinations you actually need."
-                ).classes("text-body2 text-grey q-mb-md")
-
-                dut_pt_info = ui.label("").classes("text-caption text-primary q-mb-sm")
-
-                dut_cb_refs: dict[int, ui.checkbox] = {}
-                prof_cb_refs: dict[int, ui.checkbox] = {}
-                matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
-                matrix_container = ui.column().classes("w-full q-mt-md")
-                dut_container = ui.column().classes("w-full")
-                prof_container = ui.column().classes("w-full")
-
-                def _rebuild_matrix() -> None:
-                    """Repaint the DUT×Profile combination grid."""
-                    matrix_container.clear()
-                    # Apply product type filter to matrix
-                    _mpt = state.get("product_type_filter") or "All"
-                    if _mpt and _mpt != "All":
-                        _m_duts = [d for d in all_duts if d.get("product_type") == _mpt or not d.get("product_type")]
-                        _m_profs = [p for p in all_profiles if p.get("product_type") == _mpt or not p.get("product_type")]
-                    else:
-                        _m_duts = all_duts
-                        _m_profs = all_profiles
-                    sel_duts = [
-                        d for d in _m_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value
-                    ]
-                    sel_profs = [
-                        p for p in _m_profs if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value
-                    ]
-                    matrix_cb_refs.clear()
-
-                    if not sel_duts or not sel_profs:
-                        with matrix_container:
-                            ui.label("Select at least one DUT and one Profile to see the matrix.").classes(
-                                "text-grey text-caption"
-                            )
-                        return
-
-                    with matrix_container:
-                        ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
-                        n_cols = len(sel_profs) + 1
-                        with ui.grid(columns=n_cols).classes("w-full items-center"):
-                            # Header row
-                            ui.label("DUT \\ Profile").classes(
-                                "text-caption text-grey text-weight-bold"
-                            )
-                            for prof in sel_profs:
-                                ui.label(prof.get("name", f"P{prof['id']}")).classes(
-                                    "text-caption text-center text-weight-bold"
-                                )
-
-                            # Data rows
-                            for dut in sel_duts:
-                                ui.label(dut.get("name", f"D{dut['id']}")).classes(
-                                    "text-caption"
-                                )
-                                for prof in sel_profs:
-                                    key = (dut["id"], prof["id"])
-                                    pre_checked = key in [
-                                        tuple(pair)
-                                        for pair in state["dut_profile_matrix"]
-                                    ]
-                                    with ui.column().classes("items-center justify-center"):
-                                        cb = ui.checkbox("", value=pre_checked).props(
-                                            "dense"
-                                        )
-                                    matrix_cb_refs[key] = cb
-
-                def _rebuild_dut_prof_lists() -> None:
-                    """Rebuild DUT and Profile checkbox lists filtered by product type."""
-                    # Preserve current selections
-                    for _did, _cb in dut_cb_refs.items():
-                        if _cb.value and _did not in state["dut_ids"]:
-                            state["dut_ids"].append(_did)
-                        elif not _cb.value and _did in state["dut_ids"]:
-                            state["dut_ids"].remove(_did)
-                    for _pid, _cb in prof_cb_refs.items():
-                        if _cb.value and _pid not in state["profile_ids"]:
-                            state["profile_ids"].append(_pid)
-                        elif not _cb.value and _pid in state["profile_ids"]:
-                            state["profile_ids"].remove(_pid)
-
-                    dut_cb_refs.clear()
-                    prof_cb_refs.clear()
-                    dut_container.clear()
-                    prof_container.clear()
-
-                    selected_pt = state.get("product_type_filter") or "All"
-                    if selected_pt and selected_pt != "All":
-                        visible_duts = [d for d in all_duts if d.get("product_type") == selected_pt or not d.get("product_type")]
-                        visible_profs = [p for p in all_profiles if p.get("product_type") == selected_pt or not p.get("product_type")]
-                        dut_pt_info.set_text(f"Filtered by product type: {selected_pt} (items without product type are also shown)")
-                    else:
-                        visible_duts = list(all_duts)
-                        visible_profs = list(all_profiles)
-                        dut_pt_info.set_text("")
-
-                    with dut_container:
-                        if not visible_duts:
-                            ui.label("No DUT types found.").classes("text-grey")
-                        else:
-                            ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
-                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 250px; overflow-y: auto;"):
-                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
-                                    for dut in visible_duts:
-                                        did = dut["id"]
-                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
-                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
-                                                cb = ui.checkbox(
-                                                    "",
-                                                    value=(did in state["dut_ids"]),
-                                                ).props("dense")
-                                                dut_cb_refs[did] = cb
-                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
-                                            with ui.element("td").style("padding: 2px 4px;"):
-                                                ui.label(dut.get("name", f"DUT {did}")).classes("text-body2")
-                                            with ui.element("td").style("padding: 2px 4px;"):
-                                                ui.label(dut.get("category", "")).classes("text-caption text-grey")
-
-                    with prof_container:
-                        if not visible_profs:
-                            ui.label("No profiles found.").classes("text-grey")
-                        else:
-                            ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
-                            with ui.element("div").classes("w-full q-mb-md").style("max-height: 200px; overflow-y: auto;"):
-                                with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
-                                    for prof in visible_profs:
-                                        pid = prof["id"]
-                                        with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
-                                            with ui.element("td").style("padding: 2px 4px; width: 40px;"):
-                                                cb = ui.checkbox(
-                                                    "",
-                                                    value=(pid in state["profile_ids"]),
-                                                ).props("dense")
-                                                prof_cb_refs[pid] = cb
-                                                cb.on("update:model-value", lambda _: _rebuild_matrix())
-                                            with ui.element("td").style("padding: 2px 4px;"):
-                                                ui.label(prof.get("name", f"Profile {pid}")).classes("text-body2")
-
-                    _rebuild_matrix()
-
-                # Initial render
-                _rebuild_dut_prof_lists()
-
-                def _collect_matrix() -> None:
-                    state["dut_ids"] = [
-                        did for did, cb in dut_cb_refs.items() if cb.value
-                    ]
-                    state["profile_ids"] = [
-                        pid for pid, cb in prof_cb_refs.items() if cb.value
-                    ]
-                    state["dut_profile_matrix"] = [
-                        list(pair)
-                        for pair, cb in matrix_cb_refs.items()
-                        if cb.value
-                    ]
-
-                with ui.stepper_navigation():
-                    def _back_step4() -> None:
-                        _collect_matrix()
-                        stepper.previous()
-
-                    def _next_step4() -> None:
-                        _collect_matrix()
-                        if not state["dut_ids"]:
-                            ui.notify("Select at least one DUT.", type="warning")
-                            return
-                        if not state["profile_ids"]:
-                            ui.notify("Select at least one Profile.", type="warning")
-                            return
-                        if not state["dut_profile_matrix"]:
-                            ui.notify(
-                                "Tick at least one DUT×Profile combination in the matrix.",
-                                type="warning",
-                            )
-                            return
-                        stepper.next()
-
-                    ui.button("Back", on_click=_back_step4).props("flat")
-                    ui.button("Next", on_click=_next_step4).props(
-                        "color=primary icon-right=arrow_forward"
-                    )
-
-            # ---------------------------------------------------------- #
-            # Step 5 — PR Fixes                                           #
-            # ---------------------------------------------------------- #
-            with ui.step("PR Fixes"):
-                ui.label(
-                    "Enter the expected number of PR fixes by complexity. These add fixed effort per PR."
-                ).classes("text-body2 text-grey q-mb-md")
-
-                with ui.card().classes("w-full q-pa-sm q-mb-md").props("flat bordered"):
-                    ui.label("PR Fix Calculation:").classes("text-caption text-weight-bold")
-                    for _info_line in [
-                        "Each PR is validated per DUT (scales with DUT count)",
-                        "Simple: 2h x DUT count, Medium: 4h x DUT count, Complex: 8h x DUT count",
-                        "Total PR Fix Hours = (simple x 2 + medium x 4 + complex x 8) x DUT_count [x profile_count if enabled]",
-                        "Configurable via 'pr_fix_base_hours' and 'pr_scales_with_profile' settings",
-                    ]:
-                        ui.label(f"  {_info_line}").classes("text-caption text-grey")
-
-                pr_simple_input = ui.number(
-                    "Simple PRs (2 h each)",
-                    value=state["pr_simple"],
-                    min=0,
-                    step=1,
-                    precision=0,
-                ).classes("w-full")
-                pr_medium_input = ui.number(
-                    "Medium PRs (4 h each)",
-                    value=state["pr_medium"],
-                    min=0,
-                    step=1,
-                    precision=0,
-                ).classes("w-full q-mt-sm")
-                pr_complex_input = ui.number(
-                    "Complex PRs (8 h each)",
-                    value=state["pr_complex"],
-                    min=0,
-                    step=1,
-                    precision=0,
-                ).classes("w-full q-mt-sm")
-
-                subtotal_label = ui.label("").classes("text-subtitle2 q-mt-sm text-primary")
-
-                def _update_pr_subtotal() -> None:
-                    s = int(pr_simple_input.value or 0)
-                    m = int(pr_medium_input.value or 0)
-                    c = int(pr_complex_input.value or 0)
-                    total = s * 2 + m * 4 + c * 8
-                    subtotal_label.set_text(f"PR fix subtotal: {total} h")
-
-                pr_simple_input.on("update:model-value", lambda _: _update_pr_subtotal())
-                pr_medium_input.on("update:model-value", lambda _: _update_pr_subtotal())
-                pr_complex_input.on("update:model-value", lambda _: _update_pr_subtotal())
-                _update_pr_subtotal()
-
-                # -- PR Details (optional) --
-                ui.separator().classes("q-mt-md")
-                with ui.expansion("PR Details (optional)", icon="list").classes("w-full"):
-                    ui.label(
-                        "Optionally add individual PR details for tracking."
-                    ).classes("text-body2 text-grey q-mb-sm")
-
-                    pr_details_container = ui.column().classes("w-full")
-                    pr_detail_rows: list[dict] = list(state.get("pr_details", []))
-
-                    def _render_pr_details() -> None:
-                        pr_details_container.clear()
-                        with pr_details_container:
-                            for idx, pr in enumerate(pr_detail_rows):
-                                with ui.card().classes("w-full q-pa-xs q-mb-xs").props("flat bordered"):
-                                    with ui.row().classes("items-center q-gutter-sm w-full"):
-                                        _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
-                                        _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
-                                        _pri_opts = list(_pr_priority_list)
-                                        _pri_val = pr.get("priority", _pri_opts[1] if len(_pri_opts) > 1 else _pri_opts[0])
-                                        if _pri_val not in _pri_opts:
-                                            _pri_opts.append(_pri_val)
-                                        _pri = ui.select(
-                                            options=_pri_opts,
-                                            value=_pri_val,
-                                            label="Priority",
-                                        ).classes("w-28")
-                                        _cx_opts = ["simple", "medium", "complex"]
-                                        _cx_val = pr.get("complexity", "simple")
-                                        if _cx_val not in _cx_opts:
-                                            _cx_opts.append(_cx_val)
-                                        _cx = ui.select(
-                                            options=_cx_opts,
-                                            value=_cx_val,
-                                            label="Complexity",
-                                        ).classes("w-32")
-                                        _st_options = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
-                                        _st_val = pr.get("status", "Open")
-                                        if _st_val not in _st_options:
-                                            _st_options.append(_st_val)
-                                        _st = ui.select(
-                                            options=_st_options,
-                                            value=_st_val,
-                                            label="Status",
-                                        ).classes("w-28")
-
-                                        def _make_remove(i: int):
-                                            def _remove():
-                                                pr_detail_rows.pop(i)
-                                                _render_pr_details()
-                                            return _remove
-
-                                        ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
-
-                                    with ui.row().classes("items-center q-gutter-sm w-full"):
-                                        _desc = ui.input(
-                                            "Description",
-                                            value=pr.get("description", ""),
-                                            placeholder="Brief issue description",
-                                        ).classes("flex-1")
-                                        _ta = ui.switch(
-                                            "Test Available",
-                                            value=pr.get("test_available", True),
-                                        ).classes("q-ml-md")
-
-                                    # Bind updates back to data
-                                    def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
-                                        def _upd(_=None):
-                                            if i < len(pr_detail_rows):
-                                                pr_detail_rows[i] = {
-                                                    "pr_number": n.value or "",
-                                                    "link": l.value or "",
-                                                    "priority": p.value or "",
-                                                    "complexity": c.value or "simple",
-                                                    "status": s.value or "Open",
-                                                    "description": d.value or "",
-                                                    "test_available": bool(ta.value),
-                                                }
-                                        return _upd
-
-                                    updater = _make_updater(idx)
-                                    _num.on("update:model-value", updater)
-                                    _link.on("update:model-value", updater)
-                                    _pri.on("update:model-value", updater)
-                                    _cx.on("update:model-value", updater)
-                                    _st.on("update:model-value", updater)
-                                    _desc.on("update:model-value", updater)
-                                    _ta.on("update:model-value", updater)
-
-                    def _add_pr_detail() -> None:
-                        _default_pri = _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]
-                        pr_detail_rows.append({"pr_number": "", "link": "", "priority": _default_pri, "complexity": "simple", "status": "Open", "description": "", "test_available": True})
-                        _render_pr_details()
-
-                    with ui.row().classes("items-center gap-2"):
-                        ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
-
-                        async def _import_from_jira(
-                            _pr_rows=pr_detail_rows,
-                            _render=_render_pr_details,
-                        ) -> None:
-                            """Open dialog to fetch and import PR items from Jira."""
-                            try:
-                                jira_config = await api_get("/integrations/JIRA")
-                                if not jira_config.get("enabled"):
-                                    ui.notify("Jira integration is not enabled.", type="warning")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
+
+        # ── Inject wizard component CSS ─────────────────────────
+        ui.add_head_html("""
+        <style>
+          /* Wizard 2-column grid */
+          .ed-wizard-grid   { display: grid !important;
+                              grid-template-columns: 1fr 320px; gap: 22px;
+                              align-items: start; }
+          @media (max-width: 960px) {
+            .ed-wizard-grid { grid-template-columns: 1fr; }
+            .ed-summary-rail { position: static !important; max-height: none !important; }
+          }
+
+          /* Hide Quasar default stepper header */
+          .ed-wizard-grid .q-stepper__header { display: none !important; }
+          .ed-wizard-grid .q-stepper { box-shadow: none !important;
+                                       background: transparent !important;
+                                       border: 1px solid var(--ed-line);
+                                       border-radius: 4px; }
+          .ed-wizard-grid .q-stepper__step-inner { padding: 24px 26px !important; }
+          /* Sticky per-step nav */
+          .ed-wizard-grid .q-stepper__nav { padding: 16px 26px !important;
+                                            position: sticky; bottom: 0;
+                                            background: var(--ed-bg-soft);
+                                            backdrop-filter: blur(10px);
+                                            border-top: 1px solid var(--ed-line); }
+
+          /* Custom progress strip */
+          .ed-progress      { display: grid !important;
+                              grid-auto-flow: column;
+                              grid-auto-columns: 1fr;
+                              align-items: start; gap: 0;
+                              padding: 18px 24px;
+                              border: 1px solid var(--ed-line); border-radius: 4px;
+                              margin-bottom: 24px; }
+          .ed-progress-step { display: flex !important; flex-direction: column;
+                              align-items: center; gap: 8px;
+                              cursor: pointer; position: relative;
+                              text-align: center; }
+          .ed-progress-step:not(:last-child)::after {
+                              content: ""; position: absolute;
+                              top: 14px; left: calc(50% + 18px); right: calc(-50% + 18px);
+                              height: 1px; background: var(--ed-line); z-index: 0; }
+          .ed-progress-step.done:not(:last-child)::after { background: var(--q-primary); }
+          .ed-progress-num  { width: 28px; height: 28px; border-radius: 50%;
+                              border: 1px solid var(--ed-line);
+                              display: flex !important; align-items: center; justify-content: center;
+                              font-family: var(--ed-mono); font-size: 12px; font-weight: 500;
+                              background: var(--q-page, transparent); z-index: 1;
+                              transition: all 200ms ease; }
+          .ed-progress-step.active .ed-progress-num {
+                              border: 2px solid var(--q-primary); color: var(--q-primary);
+                              transform: scale(1.05); }
+          .ed-progress-step.done .ed-progress-num {
+                              background: var(--q-primary); border-color: var(--q-primary);
+                              color: white; }
+          .ed-progress-label{ font-family: inherit; font-size: 11px;
+                              text-transform: uppercase; letter-spacing: 0.10em;
+                              font-weight: 500; opacity: 0.6;
+                              line-height: 1.2; max-width: 100px; }
+          .ed-progress-step.active .ed-progress-label { opacity: 1; color: var(--q-primary); }
+          .ed-progress-step.done .ed-progress-label   { opacity: 0.85; }
+
+          /* Summary rail */
+          .ed-summary-rail  { position: sticky; top: 88px;
+                              border: 1px solid var(--ed-line); border-radius: 4px;
+                              padding: 22px;
+                              display: flex !important; flex-direction: column; gap: 0;
+                              max-height: calc(100vh - 110px); overflow-y: auto; }
+          .ed-summary-title { font-family: inherit; font-size: 16px; font-weight: 600;
+                              line-height: 1.25; margin: 4px 0 16px 0;
+                              word-break: break-word; }
+          .ed-summary-section { margin-top: 14px; padding-top: 14px;
+                                border-top: 1px dashed var(--ed-line-soft); }
+          .ed-summary-row   { display: grid !important; grid-template-columns: 1fr auto;
+                              align-items: baseline; gap: 8px; padding: 5px 0; }
+          .ed-summary-label { font-family: inherit; text-transform: uppercase;
+                              letter-spacing: 0.10em; font-size: 10px;
+                              font-weight: 600; opacity: 0.6; }
+          .ed-summary-value { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
+                              font-size: 13px; }
+          .ed-summary-value.empty { opacity: 0.35; font-style: italic;
+                                    font-family: inherit; font-size: 12px; }
+          .ed-summary-total { margin-top: 18px; padding-top: 16px;
+                              border-top: 1px solid var(--ed-line);
+                              text-align: right; }
+          .ed-summary-total-num { font-family: var(--ed-mono);
+                                  font-variant-numeric: tabular-nums;
+                                  font-size: 28px; font-weight: 500;
+                                  line-height: 1; margin-top: 6px; }
+        </style>
+        """)
+
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button(icon="arrow_back",
+                      on_click=lambda: ui.navigate.to("/estimations")) \
+                .props("flat dense").tooltip("Back to estimations")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.label("New Estimation").classes("ed-eyebrow")
+            title_label = ui.label("Untitled estimation").classes("ed-mono") \
+                .style("font-size: 13px; opacity: 0.85;")
+            ui.element("div").classes("ed-toolbar-grow")
+            if linked_request_id is not None:
+                ui.label(f"REQ · {linked_request_id}").classes("ed-mono") \
+                    .style("opacity: 0.7;")
+
+        with ui.element("div").classes("ed-shell"):
+            ui.label("New Estimation").classes("text-h4 q-mb-md")
+
+            # Define wizard step metadata (display labels for progress strip)
+            WIZARD_STEPS = [
+                ("Project Info",          "Project Info"),
+                ("Features",              "Features"),
+                ("Reference Projects",    "References"),
+                ("DUT x Profile Matrix",  "DUTs / Profiles"),
+                ("PR Fixes",              "PR Fixes"),
+                ("Delivery & Team",       "Schedule"),
+                ("Review & Save",         "Review"),
+            ]
+            progress_container = ui.element("div").classes("ed-progress")
+
+            with ui.element("div").classes("ed-wizard-grid"):
+                with ui.stepper().props("vertical=false animated").classes("w-full") as stepper:
+
+                    # ---------------------------------------------------------- #
+                    # Step 1 — Project Info                                       #
+                    # ---------------------------------------------------------- #
+                    with ui.step("Project Info"):
+                        ui.label("Enter the basic project details.").classes(
+                            "text-body2 text-grey q-mb-md"
+                        )
+
+                        name_input = ui.input(
+                            "Project Name *",
+                            value=state["project_name"],
+                            placeholder="e.g. SIM Toolkit v2.1 Regression",
+                        ).classes("w-full")
+                        name_input.on(
+                            "update:model-value",
+                            lambda e: state.update({"project_name": e.args}),
+                        )
+
+                        type_select = ui.select(
+                            options=_project_types,
+                            label="Project Type",
+                            value=state["project_type"],
+                        ).classes("w-full q-mt-sm")
+                        type_select.on(
+                            "update:model-value",
+                            lambda e: state.update({"project_type": e.args}),
+                        )
+
+                        # Project Reference — shown only for CHANGE_REQUEST
+                        _ref_opts = list(_est_ref_options.keys())
+                        _ref_val = state.get("project_reference", "") or None
+                        if _ref_val and _ref_val not in _ref_opts:
+                            _ref_opts.append(_ref_val)
+                        ref_input = ui.select(
+                            options=_ref_opts,
+                            label="Project Reference *",
+                            value=_ref_val,
+                            with_input=True,
+                            new_value_mode="add-unique",
+                        ).classes("w-full q-mt-sm")
+                        ref_input.bind_visibility_from(type_select, "value", backward=lambda v: v == "CHANGE_REQUEST")
+                        ref_input.on(
+                            "update:model-value",
+                            lambda e: state.update({"project_reference": e.args}),
+                        )
+
+                        desc_input = ui.textarea(
+                            "Description (optional)",
+                            value=state["description"],
+                            placeholder="Briefly describe the scope or context.",
+                        ).classes("w-full q-mt-sm")
+                        desc_input.on(
+                            "update:model-value",
+                            lambda e: state.update({"description": e.args}),
+                        )
+
+                        goals_input = ui.textarea(
+                            "Project Goals (optional)",
+                            value=state["project_goals"],
+                            placeholder="What are the main goals of this project?",
+                        ).classes("w-full q-mt-sm")
+                        goals_input.on(
+                            "update:model-value",
+                            lambda e: state.update({"project_goals": e.args}),
+                        )
+
+                        customer_input = ui.input(
+                            "Target Customer (optional)",
+                            value=state["target_customer"],
+                            placeholder="e.g. Vodafone, Deutsche Telekom",
+                        ).classes("w-full q-mt-sm")
+                        customer_input.on(
+                            "update:model-value",
+                            lambda e: state.update({"target_customer": e.args}),
+                        )
+
+                        ui.separator().classes("q-mt-md")
+                        ui.label("Product Type Filter").classes("text-subtitle2")
+                        ui.label(
+                            "Select a product type to filter Features, DUTs, and Profiles in subsequent steps."
+                        ).classes("text-caption text-grey q-mb-xs")
+                        pt_filter_select = ui.select(
+                            options=["All"] + product_types,
+                            value=state["product_type_filter"],
+                            label="Product Type",
+                        ).classes("w-64")
+
+                        with ui.stepper_navigation():
+                            def _go_step2() -> None:
+                                state["project_name"] = name_input.value or ""
+                                state["project_type"] = type_select.value or "EVOLUTION"
+                                state["product_type_filter"] = pt_filter_select.value or "All"
+                                state["description"] = desc_input.value or ""
+                                state["project_goals"] = goals_input.value or ""
+                                state["target_customer"] = customer_input.value or ""
+                                state["project_reference"] = ref_input.value or ""
+                                if not state["project_name"].strip():
+                                    ui.notify("Project Name is required.", type="warning")
                                     return
-                            except Exception:
-                                ui.notify("Jira integration not configured.", type="warning")
-                                return
+                                if state["project_type"] == "CHANGE_REQUEST" and not state["project_reference"].strip():
+                                    ui.notify("Project Reference is required for Change Request.", type="warning")
+                                    return
+                                # Rebuild feature list with current product type filter
+                                _rebuild_feature_list()
+                                stepper.next()
 
-                            with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
-                                ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
+                            ui.button("Next", on_click=_go_step2).props("color=primary icon-right=arrow_forward")
 
-                                jira_items_table = ui.table(
-                                    columns=[
-                                        {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
-                                        {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
-                                        {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
-                                        {"name": "status", "label": "Status", "field": "status", "align": "left"},
-                                    ],
-                                    rows=[],
-                                    row_key="key",
-                                    selection="multiple",
-                                    pagination={"rowsPerPage": 15},
-                                ).classes("w-full")
+                    # ---------------------------------------------------------- #
+                    # Step 2 — Features                                           #
+                    # ---------------------------------------------------------- #
+                    with ui.step("Features"):
+                        ui.label(
+                            "Select the features under test. Toggle 'New' for features that require study time."
+                        ).classes("text-body2 text-grey q-mb-md")
 
-                                async def _fetch_jira_prs() -> None:
-                                    try:
-                                        items = await api_get("/integrations/JIRA/pr-items")
-                                        jira_items_table.rows = items if isinstance(items, list) else []
-                                        jira_items_table.update()
-                                        ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
-                                    except Exception as exc:
-                                        ui.notify(f"Failed to fetch: {exc}", type="negative")
+                        pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
 
-                                ui.button("Fetch PR Items", icon="refresh", on_click=_fetch_jira_prs).props("color=secondary flat dense")
+                        # We need checkbox refs to read values on navigation
+                        feature_checkbox_refs: dict[int, ui.checkbox] = {}
+                        new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
 
-                                async def _import_selected() -> None:
-                                    selected = jira_items_table.selected
-                                    if not selected:
-                                        ui.notify("No items selected.", type="warning")
+                        features_container = ui.column().classes("w-full")
+
+                        # -- Select All checkbox (outside container so it persists) --
+                        _programmatic_select_all = [False]
+
+                        def _rebuild_feature_list() -> None:
+                            """Rebuild the feature checkbox list based on the product type filter from Step 1."""
+                            # Collect current selections before clearing
+                            for _fid, _cb in feature_checkbox_refs.items():
+                                if _cb.value and _fid not in state["feature_ids"]:
+                                    state["feature_ids"].append(_fid)
+                                elif not _cb.value and _fid in state["feature_ids"]:
+                                    state["feature_ids"].remove(_fid)
+                            for _fid, _cb in new_feat_checkbox_refs.items():
+                                if _cb.value and _fid not in state["new_feature_ids"]:
+                                    state["new_feature_ids"].append(_fid)
+                                elif not _cb.value and _fid in state["new_feature_ids"]:
+                                    state["new_feature_ids"].remove(_fid)
+
+                            feature_checkbox_refs.clear()
+                            new_feat_checkbox_refs.clear()
+                            features_container.clear()
+
+                            selected_pt = state.get("product_type_filter") or "All"
+                            if selected_pt and selected_pt != "All":
+                                visible_features = [f for f in all_features if f.get("product_type") == selected_pt]
+                                pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
+                            else:
+                                visible_features = list(all_features)
+                                pt_info_label.set_text("")
+
+                            # Group visible features by category
+                            vis_by_cat: dict[str, list[dict]] = {}
+                            for feat in visible_features:
+                                cat = feat.get("category") or "Other"
+                                vis_by_cat.setdefault(cat, []).append(feat)
+
+                            with features_container:
+                                if not visible_features:
+                                    ui.label("No features match the selected product type.").classes("text-grey")
+                                    return
+
+                                all_pre_selected = all(f["id"] in state["feature_ids"] for f in visible_features)
+                                select_all_cb = ui.checkbox(
+                                    f"Select all ({len(visible_features)} features)",
+                                    value=all_pre_selected,
+                                ).classes("text-weight-bold q-mb-sm")
+
+                                def _toggle_select_all(e):
+                                    if _programmatic_select_all[0]:
                                         return
-                                    # Fetch Jira base URL once for building links
-                                    _jira_base = ""
-                                    try:
-                                        jira_cfg = await api_get("/integrations/JIRA")
-                                        _jira_base = (jira_cfg.get("base_url") or "").rstrip("/")
-                                    except Exception:
-                                        pass
-                                    imported = 0
-                                    for item in selected:
-                                        key = item.get("key", "")
-                                        existing_nums = {r.get("pr_number") for r in _pr_rows}
-                                        if key and key not in existing_nums:
-                                            priority = (item.get("priority") or "Medium").lower()
-                                            complexity = "simple"
-                                            if priority in ("high", "highest", "critical", "blocker"):
-                                                complexity = "complex"
-                                            elif priority in ("medium",):
-                                                complexity = "medium"
-                                            jira_link = f"{_jira_base}/browse/{key}" if _jira_base else ""
-                                            _pr_rows.append({
-                                                "pr_number": key,
-                                                "link": jira_link,
-                                                "description": item.get("summary", ""),
-                                                "priority": item.get("priority", "Medium"),
-                                                "complexity": complexity,
-                                                "status": item.get("status", "Open"),
-                                                "test_available": True,
-                                            })
-                                            imported += 1
-                                    _render()
-                                    ui.notify(f"Imported {imported} PR item(s).", type="positive")
-                                    dlg.close()
+                                    checked = e.value
+                                    for _fid, _cb in feature_checkbox_refs.items():
+                                        _cb.value = checked
+                                        if not checked and _fid in new_feat_checkbox_refs:
+                                            new_feat_checkbox_refs[_fid].value = False
 
-                                with ui.row().classes("q-mt-md gap-2"):
-                                    ui.button("Import Selected", icon="download", on_click=_import_selected).props("color=primary")
-                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                                select_all_cb.on_value_change(_toggle_select_all)
 
-                            await _fetch_jira_prs()
-                            dlg.open()
+                                def _update_select_all_state() -> None:
+                                    if not feature_checkbox_refs:
+                                        return
+                                    all_checked = all(cb.value for cb in feature_checkbox_refs.values())
+                                    if select_all_cb.value != all_checked:
+                                        _programmatic_select_all[0] = True
+                                        select_all_cb.value = all_checked
+                                        _programmatic_select_all[0] = False
 
-                        ui.button("Import from Jira", icon="bug_report", on_click=_import_from_jira).props("flat dense color=secondary")
+                                ui.separator()
 
-                    _render_pr_details()
+                                for cat_name, cat_features in vis_by_cat.items():
+                                    ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                # -- Documentation Deliverables --
-                ui.separator().classes("q-mt-lg")
-                with ui.expansion("Documentation Deliverables", icon="description").classes("w-full"):
-                    ui.label(
-                        "Select document types to be created and specify the count for each. "
-                        "Document effort hours are added to the total estimation."
-                    ).classes("text-body2 text-grey q-mb-sm")
+                                    with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                                        ui.label("Feature").classes("text-caption text-grey")
+                                        ui.label("Complexity").classes("text-caption text-grey text-center")
+                                        ui.label("New?").classes("text-caption text-grey text-center")
 
-                    doc_types_container = ui.column().classes("w-full")
-                    doc_cb_refs: dict[int, ui.checkbox] = {}
-                    doc_count_refs: dict[int, ui.number] = {}
+                                        for feat in cat_features:
+                                            fid = feat["id"]
+                                            fname = feat.get("name", f"Feature {fid}")
+                                            fweight = feat.get("complexity_weight", 1.0)
 
-                    async def _load_doc_types() -> None:
-                        try:
-                            doc_types = await api_get("/document-types")
-                        except Exception:
-                            doc_types = []
-                        doc_types_container.clear()
-                        doc_cb_refs.clear()
-                        doc_count_refs.clear()
-                        saved_ids = state.get("document_type_ids", [])
-                        saved_counts = state.get("document_counts", {})
-                        with doc_types_container:
-                            if not doc_types:
-                                ui.label("No document types configured.").classes("text-grey")
-                                return
-                            with ui.grid(columns="1fr 120px 200px").classes("w-full q-pl-md items-center"):
-                                ui.label("Document Type").classes("text-caption text-grey")
-                                ui.label("Count").classes("text-caption text-grey text-center")
-                                ui.label("Base Hours (each)").classes("text-caption text-grey")
-                                for dt in doc_types:
-                                    did = dt["id"]
-                                    cb = ui.checkbox(
-                                        dt.get("name", ""),
-                                        value=(did in saved_ids),
+                                            cb = ui.checkbox(
+                                                fname,
+                                                value=(fid in state["feature_ids"]),
+                                            )
+                                            feature_checkbox_refs[fid] = cb
+
+                                            ui.label(f"x{fweight:.1f}").classes("text-center")
+
+                                            new_cb = ui.checkbox(
+                                                "New",
+                                                value=(fid in state["new_feature_ids"]),
+                                            ).props("dense color=orange").classes("text-caption")
+                                            new_feat_checkbox_refs[fid] = new_cb
+
+                                            def _make_sync(f_id: int, n_cb: ui.checkbox):
+                                                def _sync(e) -> None:
+                                                    if not feature_checkbox_refs[f_id].value:
+                                                        n_cb.value = False
+                                                    _update_select_all_state()
+                                                return _sync
+
+                                            cb.on("update:model-value", _make_sync(fid, new_cb))
+
+                        _rebuild_feature_list()
+
+                        def _collect_features() -> None:
+                            state["feature_ids"] = [
+                                fid for fid, cb in feature_checkbox_refs.items() if cb.value
+                            ]
+                            state["new_feature_ids"] = [
+                                fid
+                                for fid, cb in new_feat_checkbox_refs.items()
+                                if cb.value and feature_checkbox_refs[fid].value
+                            ]
+
+                        with ui.stepper_navigation():
+                            def _back_step2() -> None:
+                                _collect_features()
+                                stepper.previous()
+
+                            def _next_step2() -> None:
+                                _collect_features()
+                                if not state["feature_ids"]:
+                                    ui.notify(
+                                        "Select at least one feature to continue.",
+                                        type="warning",
                                     )
-                                    doc_cb_refs[did] = cb
-                                    cnt = ui.number(
-                                        "",
-                                        value=int(saved_counts.get(str(did), 1)),
-                                        min=1, step=1, precision=0,
-                                    ).props("dense").classes("w-20")
-                                    doc_count_refs[did] = cnt
-                                    ui.label(f"{dt.get('base_effort_hours', 0):.1f}h").classes("text-caption")
+                                    return
+                                stepper.next()
 
-                    await _load_doc_types()
+                            ui.button("Back", on_click=_back_step2).props("flat")
+                            ui.button("Next", on_click=_next_step2).props(
+                                "color=primary icon-right=arrow_forward"
+                            )
 
-                def _collect_prs() -> None:
-                    state["pr_simple"] = int(pr_simple_input.value or 0)
-                    state["pr_medium"] = int(pr_medium_input.value or 0)
-                    state["pr_complex"] = int(pr_complex_input.value or 0)
-                    state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
-                    # Collect document types
-                    state["document_type_ids"] = [did for did, cb in doc_cb_refs.items() if cb.value]
-                    state["document_counts"] = {
-                        str(did): int(cnt.value or 1) for did, cnt in doc_count_refs.items()
-                    }
+                    # ---------------------------------------------------------- #
+                    # Step 3 — Reference Projects                                 #
+                    # ---------------------------------------------------------- #
+                    with ui.step("Reference Projects"):
+                        ui.label(
+                            "Pick historical projects to use as baselines for calibration (optional)."
+                        ).classes("text-body2 text-grey q-mb-md")
 
-                with ui.stepper_navigation():
-                    def _back_step5() -> None:
-                        _collect_prs()
-                        stepper.previous()
+                        ref_checkbox_refs: dict[int, ui.checkbox] = {}
 
-                    def _next_step5() -> None:
-                        _collect_prs()
-                        stepper.next()
+                        if not all_hist:
+                            ui.label("No historical projects available.").classes("text-grey")
+                        else:
+                            with ui.grid(columns=1).classes("w-full"):
+                                for proj in all_hist:
+                                    pid = proj["id"]
+                                    pname = proj.get("project_name", f"Project {pid}")
+                                    est_h = proj.get("estimated_hours") or 0
+                                    act_h = proj.get("actual_hours") or 0
+                                    accuracy = (act_h / est_h) if est_h else None
+                                    acc_txt = (
+                                        f"  accuracy ratio: {accuracy:.2f}"
+                                        if accuracy is not None
+                                        else "  (no accuracy data)"
+                                    )
+                                    label = f"{pname}  [{proj.get('project_type', '')}]{acc_txt}"
+                                    cb = ui.checkbox(
+                                        label,
+                                        value=(pid in state["reference_project_ids"]),
+                                    )
+                                    ref_checkbox_refs[pid] = cb
 
-                    ui.button("Back", on_click=_back_step5).props("flat")
-                    ui.button("Next", on_click=_next_step5).props(
-                        "color=primary icon-right=arrow_forward"
-                    )
+                        def _collect_refs() -> None:
+                            state["reference_project_ids"] = [
+                                pid for pid, cb in ref_checkbox_refs.items() if cb.value
+                            ]
 
-            # ---------------------------------------------------------- #
-            # Step 6 — Delivery & Team                                    #
-            # ---------------------------------------------------------- #
-            with ui.step("Delivery & Team"):
-                ui.label(
-                    "Specify the start date, deadline, and team capacity for feasibility assessment."
-                ).classes("text-body2 text-grey q-mb-md")
+                        with ui.stepper_navigation():
+                            def _back_step3() -> None:
+                                _collect_refs()
+                                stepper.previous()
 
-                with ui.row().classes("w-full q-gutter-md"):
-                    with ui.input(
-                        "Project Start Date - T0 (optional)",
-                        value=state.get("start_date") or "",
-                    ).classes("flex-1") as start_date_input:
-                        with ui.menu() as start_menu:
-                            with ui.date().bind_value(start_date_input) as _start_dp:
-                                _start_dp.on("update:model-value", lambda: start_menu.close())
-                        with start_date_input.add_slot("append"):
-                            ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
+                            def _next_step3() -> None:
+                                _collect_refs()
+                                # Rebuild DUT/Profile lists with current product type filter
+                                _rebuild_dut_prof_lists()
+                                stepper.next()
 
-                    with ui.input(
-                        "Testing Start Date (optional)",
-                        value=state.get("testing_start_date") or "",
-                    ).classes("flex-1") as testing_start_input:
-                        with ui.menu() as testing_start_menu:
-                            with ui.date().bind_value(testing_start_input) as _testing_dp:
-                                _testing_dp.on("update:model-value", lambda: testing_start_menu.close())
-                        with testing_start_input.add_slot("append"):
-                            ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
+                            ui.button("Back", on_click=_back_step3).props("flat")
+                            ui.button("Next", on_click=_next_step3).props(
+                                "color=primary icon-right=arrow_forward"
+                            )
 
-                    with ui.input(
-                        "Deadline (optional)",
-                        value=state.get("delivery_date") or "",
-                    ).classes("flex-1") as delivery_input:
-                        with ui.menu() as delivery_menu:
-                            with ui.date().bind_value(delivery_input) as _delivery_dp:
-                                _delivery_dp.on("update:model-value", lambda: delivery_menu.close())
-                        with delivery_input.add_slot("append"):
-                            ui.icon("edit_calendar").on("click", delivery_menu.open).classes("cursor-pointer")
+                    # ---------------------------------------------------------- #
+                    # Step 4 — DUT x Profile Matrix                               #
+                    # ---------------------------------------------------------- #
+                    with ui.step("DUT x Profile Matrix"):
+                        ui.label(
+                            "Select the DUTs and Profiles to test, then tick the combinations you actually need."
+                        ).classes("text-body2 text-grey q-mb-md")
 
-                working_days_input = ui.number(
-                    "Working Days Available",
-                    value=state["working_days"],
-                    min=1,
-                    step=1,
-                    precision=0,
-                ).classes("w-full q-mt-sm")
+                        dut_pt_info = ui.label("").classes("text-caption text-primary q-mb-sm")
 
-                auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
+                        dut_cb_refs: dict[int, ui.checkbox] = {}
+                        prof_cb_refs: dict[int, ui.checkbox] = {}
+                        matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
+                        matrix_container = ui.column().classes("w-full q-mt-md")
+                        dut_container = ui.column().classes("w-full")
+                        prof_container = ui.column().classes("w-full")
 
-                def _auto_calc_working_days() -> None:
-                    sd = testing_start_input.value
-                    dd = delivery_input.value
-                    if sd and dd:
-                        try:
-                            from datetime import date as _date, timedelta
-                            if isinstance(sd, str):
-                                s = _date.fromisoformat(sd)
+                        def _rebuild_matrix() -> None:
+                            """Repaint the DUT×Profile combination grid."""
+                            matrix_container.clear()
+                            # Apply product type filter to matrix
+                            _mpt = state.get("product_type_filter") or "All"
+                            if _mpt and _mpt != "All":
+                                _m_duts = [d for d in all_duts if d.get("product_type") == _mpt or not d.get("product_type")]
+                                _m_profs = [p for p in all_profiles if p.get("product_type") == _mpt or not p.get("product_type")]
                             else:
-                                s = sd
-                            if isinstance(dd, str):
-                                d = _date.fromisoformat(dd)
+                                _m_duts = all_duts
+                                _m_profs = all_profiles
+                            sel_duts = [
+                                d for d in _m_duts if dut_cb_refs.get(d["id"]) and dut_cb_refs[d["id"]].value
+                            ]
+                            sel_profs = [
+                                p for p in _m_profs if prof_cb_refs.get(p["id"]) and prof_cb_refs[p["id"]].value
+                            ]
+                            matrix_cb_refs.clear()
+
+                            if not sel_duts or not sel_profs:
+                                with matrix_container:
+                                    ui.label("Select at least one DUT and one Profile to see the matrix.").classes(
+                                        "text-grey text-caption"
+                                    )
+                                return
+
+                            with matrix_container:
+                                ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
+                                n_cols = len(sel_profs) + 1
+                                with ui.grid(columns=n_cols).classes("w-full items-center"):
+                                    # Header row
+                                    ui.label("DUT \\ Profile").classes(
+                                        "text-caption text-grey text-weight-bold"
+                                    )
+                                    for prof in sel_profs:
+                                        ui.label(prof.get("name", f"P{prof['id']}")).classes(
+                                            "text-caption text-center text-weight-bold"
+                                        )
+
+                                    # Data rows
+                                    for dut in sel_duts:
+                                        ui.label(dut.get("name", f"D{dut['id']}")).classes(
+                                            "text-caption"
+                                        )
+                                        for prof in sel_profs:
+                                            key = (dut["id"], prof["id"])
+                                            pre_checked = key in [
+                                                tuple(pair)
+                                                for pair in state["dut_profile_matrix"]
+                                            ]
+                                            with ui.column().classes("items-center justify-center"):
+                                                cb = ui.checkbox("", value=pre_checked).props(
+                                                    "dense"
+                                                )
+                                            matrix_cb_refs[key] = cb
+
+                        def _rebuild_dut_prof_lists() -> None:
+                            """Rebuild DUT and Profile checkbox lists filtered by product type."""
+                            # Preserve current selections
+                            for _did, _cb in dut_cb_refs.items():
+                                if _cb.value and _did not in state["dut_ids"]:
+                                    state["dut_ids"].append(_did)
+                                elif not _cb.value and _did in state["dut_ids"]:
+                                    state["dut_ids"].remove(_did)
+                            for _pid, _cb in prof_cb_refs.items():
+                                if _cb.value and _pid not in state["profile_ids"]:
+                                    state["profile_ids"].append(_pid)
+                                elif not _cb.value and _pid in state["profile_ids"]:
+                                    state["profile_ids"].remove(_pid)
+
+                            dut_cb_refs.clear()
+                            prof_cb_refs.clear()
+                            dut_container.clear()
+                            prof_container.clear()
+
+                            selected_pt = state.get("product_type_filter") or "All"
+                            if selected_pt and selected_pt != "All":
+                                visible_duts = [d for d in all_duts if d.get("product_type") == selected_pt or not d.get("product_type")]
+                                visible_profs = [p for p in all_profiles if p.get("product_type") == selected_pt or not p.get("product_type")]
+                                dut_pt_info.set_text(f"Filtered by product type: {selected_pt} (items without product type are also shown)")
                             else:
-                                d = dd
-                            days = 0
-                            cur = s
-                            while cur <= d:
-                                if cur.weekday() < 5:
-                                    days += 1
-                                cur += timedelta(days=1)
-                            if days > 0:
-                                working_days_input.value = days
-                                auto_calc_label.set_text(f"Auto-calculated: {days} working days between dates")
+                                visible_duts = list(all_duts)
+                                visible_profs = list(all_profiles)
+                                dut_pt_info.set_text("")
+
+                            with dut_container:
+                                if not visible_duts:
+                                    ui.label("No DUT types found.").classes("text-grey")
+                                else:
+                                    ui.label("DUT Types").classes("text-subtitle2 q-mb-xs")
+                                    with ui.element("div").classes("w-full q-mb-md").style("max-height: 250px; overflow-y: auto;"):
+                                        with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                            for dut in visible_duts:
+                                                did = dut["id"]
+                                                with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                                    with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                        cb = ui.checkbox(
+                                                            "",
+                                                            value=(did in state["dut_ids"]),
+                                                        ).props("dense")
+                                                        dut_cb_refs[did] = cb
+                                                        cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                                    with ui.element("td").style("padding: 2px 4px;"):
+                                                        ui.label(dut.get("name", f"DUT {did}")).classes("text-body2")
+                                                    with ui.element("td").style("padding: 2px 4px;"):
+                                                        ui.label(dut.get("category", "")).classes("text-caption text-grey")
+
+                            with prof_container:
+                                if not visible_profs:
+                                    ui.label("No profiles found.").classes("text-grey")
+                                else:
+                                    ui.label("Test Profiles").classes("text-subtitle2 q-mb-xs")
+                                    with ui.element("div").classes("w-full q-mb-md").style("max-height: 200px; overflow-y: auto;"):
+                                        with ui.element("table").classes("w-full").style("border-collapse: collapse;"):
+                                            for prof in visible_profs:
+                                                pid = prof["id"]
+                                                with ui.element("tr").style("border-bottom: 1px solid rgba(128,128,128,0.2);"):
+                                                    with ui.element("td").style("padding: 2px 4px; width: 40px;"):
+                                                        cb = ui.checkbox(
+                                                            "",
+                                                            value=(pid in state["profile_ids"]),
+                                                        ).props("dense")
+                                                        prof_cb_refs[pid] = cb
+                                                        cb.on("update:model-value", lambda _: _rebuild_matrix())
+                                                    with ui.element("td").style("padding: 2px 4px;"):
+                                                        ui.label(prof.get("name", f"Profile {pid}")).classes("text-body2")
+
+                            _rebuild_matrix()
+
+                        # Initial render
+                        _rebuild_dut_prof_lists()
+
+                        def _collect_matrix() -> None:
+                            state["dut_ids"] = [
+                                did for did, cb in dut_cb_refs.items() if cb.value
+                            ]
+                            state["profile_ids"] = [
+                                pid for pid, cb in prof_cb_refs.items() if cb.value
+                            ]
+                            state["dut_profile_matrix"] = [
+                                list(pair)
+                                for pair, cb in matrix_cb_refs.items()
+                                if cb.value
+                            ]
+
+                        with ui.stepper_navigation():
+                            def _back_step4() -> None:
+                                _collect_matrix()
+                                stepper.previous()
+
+                            def _next_step4() -> None:
+                                _collect_matrix()
+                                if not state["dut_ids"]:
+                                    ui.notify("Select at least one DUT.", type="warning")
+                                    return
+                                if not state["profile_ids"]:
+                                    ui.notify("Select at least one Profile.", type="warning")
+                                    return
+                                if not state["dut_profile_matrix"]:
+                                    ui.notify(
+                                        "Tick at least one DUT×Profile combination in the matrix.",
+                                        type="warning",
+                                    )
+                                    return
+                                stepper.next()
+
+                            ui.button("Back", on_click=_back_step4).props("flat")
+                            ui.button("Next", on_click=_next_step4).props(
+                                "color=primary icon-right=arrow_forward"
+                            )
+
+                    # ---------------------------------------------------------- #
+                    # Step 5 — PR Fixes                                           #
+                    # ---------------------------------------------------------- #
+                    with ui.step("PR Fixes"):
+                        ui.label(
+                            "Enter the expected number of PR fixes by complexity. These add fixed effort per PR."
+                        ).classes("text-body2 text-grey q-mb-md")
+
+                        with ui.card().classes("w-full q-pa-sm q-mb-md").props("flat bordered"):
+                            ui.label("PR Fix Calculation:").classes("text-caption text-weight-bold")
+                            for _info_line in [
+                                "Each PR is validated per DUT (scales with DUT count)",
+                                "Simple: 2h x DUT count, Medium: 4h x DUT count, Complex: 8h x DUT count",
+                                "Total PR Fix Hours = (simple x 2 + medium x 4 + complex x 8) x DUT_count [x profile_count if enabled]",
+                                "Configurable via 'pr_fix_base_hours' and 'pr_scales_with_profile' settings",
+                            ]:
+                                ui.label(f"  {_info_line}").classes("text-caption text-grey")
+
+                        pr_simple_input = ui.number(
+                            "Simple PRs (2 h each)",
+                            value=state["pr_simple"],
+                            min=0,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full")
+                        pr_medium_input = ui.number(
+                            "Medium PRs (4 h each)",
+                            value=state["pr_medium"],
+                            min=0,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full q-mt-sm")
+                        pr_complex_input = ui.number(
+                            "Complex PRs (8 h each)",
+                            value=state["pr_complex"],
+                            min=0,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full q-mt-sm")
+
+                        subtotal_label = ui.label("").classes("text-subtitle2 q-mt-sm text-primary")
+
+                        def _update_pr_subtotal() -> None:
+                            s = int(pr_simple_input.value or 0)
+                            m = int(pr_medium_input.value or 0)
+                            c = int(pr_complex_input.value or 0)
+                            total = s * 2 + m * 4 + c * 8
+                            subtotal_label.set_text(f"PR fix subtotal: {total} h")
+
+                        pr_simple_input.on("update:model-value", lambda _: _update_pr_subtotal())
+                        pr_medium_input.on("update:model-value", lambda _: _update_pr_subtotal())
+                        pr_complex_input.on("update:model-value", lambda _: _update_pr_subtotal())
+                        _update_pr_subtotal()
+
+                        # -- PR Details (optional) --
+                        ui.separator().classes("q-mt-md")
+                        with ui.expansion("PR Details (optional)", icon="list").classes("w-full"):
+                            ui.label(
+                                "Optionally add individual PR details for tracking."
+                            ).classes("text-body2 text-grey q-mb-sm")
+
+                            pr_details_container = ui.column().classes("w-full")
+                            pr_detail_rows: list[dict] = list(state.get("pr_details", []))
+
+                            def _render_pr_details() -> None:
+                                pr_details_container.clear()
+                                with pr_details_container:
+                                    for idx, pr in enumerate(pr_detail_rows):
+                                        with ui.card().classes("w-full q-pa-xs q-mb-xs").props("flat bordered"):
+                                            with ui.row().classes("items-center q-gutter-sm w-full"):
+                                                _num = ui.input("PR #", value=pr.get("pr_number", "")).classes("w-24")
+                                                _link = ui.input("Link", value=pr.get("link", "")).classes("flex-1")
+                                                _pri_opts = list(_pr_priority_list)
+                                                _pri_val = pr.get("priority", _pri_opts[1] if len(_pri_opts) > 1 else _pri_opts[0])
+                                                if _pri_val not in _pri_opts:
+                                                    _pri_opts.append(_pri_val)
+                                                _pri = ui.select(
+                                                    options=_pri_opts,
+                                                    value=_pri_val,
+                                                    label="Priority",
+                                                ).classes("w-28")
+                                                _cx_opts = ["simple", "medium", "complex"]
+                                                _cx_val = pr.get("complexity", "simple")
+                                                if _cx_val not in _cx_opts:
+                                                    _cx_opts.append(_cx_val)
+                                                _cx = ui.select(
+                                                    options=_cx_opts,
+                                                    value=_cx_val,
+                                                    label="Complexity",
+                                                ).classes("w-32")
+                                                _st_options = ["Open", "In Progress", "Postponed", "Merged", "Closed"]
+                                                _st_val = pr.get("status", "Open")
+                                                if _st_val not in _st_options:
+                                                    _st_options.append(_st_val)
+                                                _st = ui.select(
+                                                    options=_st_options,
+                                                    value=_st_val,
+                                                    label="Status",
+                                                ).classes("w-28")
+
+                                                def _make_remove(i: int):
+                                                    def _remove():
+                                                        pr_detail_rows.pop(i)
+                                                        _render_pr_details()
+                                                    return _remove
+
+                                                ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
+
+                                            with ui.row().classes("items-center q-gutter-sm w-full"):
+                                                _desc = ui.input(
+                                                    "Description",
+                                                    value=pr.get("description", ""),
+                                                    placeholder="Brief issue description",
+                                                ).classes("flex-1")
+                                                _ta = ui.switch(
+                                                    "Test Available",
+                                                    value=pr.get("test_available", True),
+                                                ).classes("q-ml-md")
+
+                                            # Bind updates back to data
+                                            def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
+                                                def _upd(_=None):
+                                                    if i < len(pr_detail_rows):
+                                                        pr_detail_rows[i] = {
+                                                            "pr_number": n.value or "",
+                                                            "link": l.value or "",
+                                                            "priority": p.value or "",
+                                                            "complexity": c.value or "simple",
+                                                            "status": s.value or "Open",
+                                                            "description": d.value or "",
+                                                            "test_available": bool(ta.value),
+                                                        }
+                                                return _upd
+
+                                            updater = _make_updater(idx)
+                                            _num.on("update:model-value", updater)
+                                            _link.on("update:model-value", updater)
+                                            _pri.on("update:model-value", updater)
+                                            _cx.on("update:model-value", updater)
+                                            _st.on("update:model-value", updater)
+                                            _desc.on("update:model-value", updater)
+                                            _ta.on("update:model-value", updater)
+
+                            def _add_pr_detail() -> None:
+                                _default_pri = _pr_priority_list[1] if len(_pr_priority_list) > 1 else _pr_priority_list[0]
+                                pr_detail_rows.append({"pr_number": "", "link": "", "priority": _default_pri, "complexity": "simple", "status": "Open", "description": "", "test_available": True})
+                                _render_pr_details()
+
+                            with ui.row().classes("items-center gap-2"):
+                                ui.button("Add PR Detail", icon="add", on_click=_add_pr_detail).props("flat dense color=primary")
+
+                                async def _import_from_jira(
+                                    _pr_rows=pr_detail_rows,
+                                    _render=_render_pr_details,
+                                ) -> None:
+                                    """Open dialog to fetch and import PR items from Jira."""
+                                    try:
+                                        jira_config = await api_get("/integrations/JIRA")
+                                        if not jira_config.get("enabled"):
+                                            ui.notify("Jira integration is not enabled.", type="warning")
+                                            return
+                                    except Exception:
+                                        ui.notify("Jira integration not configured.", type="warning")
+                                        return
+
+                                    with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
+                                        ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
+
+                                        jira_items_table = ui.table(
+                                            columns=[
+                                                {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
+                                                {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
+                                                {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
+                                                {"name": "status", "label": "Status", "field": "status", "align": "left"},
+                                            ],
+                                            rows=[],
+                                            row_key="key",
+                                            selection="multiple",
+                                            pagination={"rowsPerPage": 15},
+                                        ).classes("w-full")
+
+                                        async def _fetch_jira_prs() -> None:
+                                            try:
+                                                items = await api_get("/integrations/JIRA/pr-items")
+                                                jira_items_table.rows = items if isinstance(items, list) else []
+                                                jira_items_table.update()
+                                                ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
+                                            except Exception as exc:
+                                                ui.notify(f"Failed to fetch: {exc}", type="negative")
+
+                                        ui.button("Fetch PR Items", icon="refresh", on_click=_fetch_jira_prs).props("color=secondary flat dense")
+
+                                        async def _import_selected() -> None:
+                                            selected = jira_items_table.selected
+                                            if not selected:
+                                                ui.notify("No items selected.", type="warning")
+                                                return
+                                            # Fetch Jira base URL once for building links
+                                            _jira_base = ""
+                                            try:
+                                                jira_cfg = await api_get("/integrations/JIRA")
+                                                _jira_base = (jira_cfg.get("base_url") or "").rstrip("/")
+                                            except Exception:
+                                                pass
+                                            imported = 0
+                                            for item in selected:
+                                                key = item.get("key", "")
+                                                existing_nums = {r.get("pr_number") for r in _pr_rows}
+                                                if key and key not in existing_nums:
+                                                    priority = (item.get("priority") or "Medium").lower()
+                                                    complexity = "simple"
+                                                    if priority in ("high", "highest", "critical", "blocker"):
+                                                        complexity = "complex"
+                                                    elif priority in ("medium",):
+                                                        complexity = "medium"
+                                                    jira_link = f"{_jira_base}/browse/{key}" if _jira_base else ""
+                                                    _pr_rows.append({
+                                                        "pr_number": key,
+                                                        "link": jira_link,
+                                                        "description": item.get("summary", ""),
+                                                        "priority": item.get("priority", "Medium"),
+                                                        "complexity": complexity,
+                                                        "status": item.get("status", "Open"),
+                                                        "test_available": True,
+                                                    })
+                                                    imported += 1
+                                            _render()
+                                            ui.notify(f"Imported {imported} PR item(s).", type="positive")
+                                            dlg.close()
+
+                                        with ui.row().classes("q-mt-md gap-2"):
+                                            ui.button("Import Selected", icon="download", on_click=_import_selected).props("color=primary")
+                                            ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                                    await _fetch_jira_prs()
+                                    dlg.open()
+
+                                ui.button("Import from Jira", icon="bug_report", on_click=_import_from_jira).props("flat dense color=secondary")
+
+                            _render_pr_details()
+
+                        # -- Documentation Deliverables --
+                        ui.separator().classes("q-mt-lg")
+                        with ui.expansion("Documentation Deliverables", icon="description").classes("w-full"):
+                            ui.label(
+                                "Select document types to be created and specify the count for each. "
+                                "Document effort hours are added to the total estimation."
+                            ).classes("text-body2 text-grey q-mb-sm")
+
+                            doc_types_container = ui.column().classes("w-full")
+                            doc_cb_refs: dict[int, ui.checkbox] = {}
+                            doc_count_refs: dict[int, ui.number] = {}
+
+                            async def _load_doc_types() -> None:
+                                try:
+                                    doc_types = await api_get("/document-types")
+                                except Exception:
+                                    doc_types = []
+                                doc_types_container.clear()
+                                doc_cb_refs.clear()
+                                doc_count_refs.clear()
+                                saved_ids = state.get("document_type_ids", [])
+                                saved_counts = state.get("document_counts", {})
+                                with doc_types_container:
+                                    if not doc_types:
+                                        ui.label("No document types configured.").classes("text-grey")
+                                        return
+                                    with ui.grid(columns="1fr 120px 200px").classes("w-full q-pl-md items-center"):
+                                        ui.label("Document Type").classes("text-caption text-grey")
+                                        ui.label("Count").classes("text-caption text-grey text-center")
+                                        ui.label("Base Hours (each)").classes("text-caption text-grey")
+                                        for dt in doc_types:
+                                            did = dt["id"]
+                                            cb = ui.checkbox(
+                                                dt.get("name", ""),
+                                                value=(did in saved_ids),
+                                            )
+                                            doc_cb_refs[did] = cb
+                                            cnt = ui.number(
+                                                "",
+                                                value=int(saved_counts.get(str(did), 1)),
+                                                min=1, step=1, precision=0,
+                                            ).props("dense").classes("w-20")
+                                            doc_count_refs[did] = cnt
+                                            ui.label(f"{dt.get('base_effort_hours', 0):.1f}h").classes("text-caption")
+
+                            await _load_doc_types()
+
+                        def _collect_prs() -> None:
+                            state["pr_simple"] = int(pr_simple_input.value or 0)
+                            state["pr_medium"] = int(pr_medium_input.value or 0)
+                            state["pr_complex"] = int(pr_complex_input.value or 0)
+                            state["pr_details"] = [pr for pr in pr_detail_rows if pr.get("pr_number")]
+                            # Collect document types
+                            state["document_type_ids"] = [did for did, cb in doc_cb_refs.items() if cb.value]
+                            state["document_counts"] = {
+                                str(did): int(cnt.value or 1) for did, cnt in doc_count_refs.items()
+                            }
+
+                        with ui.stepper_navigation():
+                            def _back_step5() -> None:
+                                _collect_prs()
+                                stepper.previous()
+
+                            def _next_step5() -> None:
+                                _collect_prs()
+                                stepper.next()
+
+                            ui.button("Back", on_click=_back_step5).props("flat")
+                            ui.button("Next", on_click=_next_step5).props(
+                                "color=primary icon-right=arrow_forward"
+                            )
+
+                    # ---------------------------------------------------------- #
+                    # Step 6 — Delivery & Team                                    #
+                    # ---------------------------------------------------------- #
+                    with ui.step("Delivery & Team"):
+                        ui.label(
+                            "Specify the start date, deadline, and team capacity for feasibility assessment."
+                        ).classes("text-body2 text-grey q-mb-md")
+
+                        with ui.row().classes("w-full q-gutter-md"):
+                            with ui.input(
+                                "Project Start Date - T0 (optional)",
+                                value=state.get("start_date") or "",
+                            ).classes("flex-1") as start_date_input:
+                                with ui.menu() as start_menu:
+                                    with ui.date().bind_value(start_date_input) as _start_dp:
+                                        _start_dp.on("update:model-value", lambda: start_menu.close())
+                                with start_date_input.add_slot("append"):
+                                    ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
+
+                            with ui.input(
+                                "Testing Start Date (optional)",
+                                value=state.get("testing_start_date") or "",
+                            ).classes("flex-1") as testing_start_input:
+                                with ui.menu() as testing_start_menu:
+                                    with ui.date().bind_value(testing_start_input) as _testing_dp:
+                                        _testing_dp.on("update:model-value", lambda: testing_start_menu.close())
+                                with testing_start_input.add_slot("append"):
+                                    ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
+
+                            with ui.input(
+                                "Deadline (optional)",
+                                value=state.get("delivery_date") or "",
+                            ).classes("flex-1") as delivery_input:
+                                with ui.menu() as delivery_menu:
+                                    with ui.date().bind_value(delivery_input) as _delivery_dp:
+                                        _delivery_dp.on("update:model-value", lambda: delivery_menu.close())
+                                with delivery_input.add_slot("append"):
+                                    ui.icon("edit_calendar").on("click", delivery_menu.open).classes("cursor-pointer")
+
+                        working_days_input = ui.number(
+                            "Working Days Available",
+                            value=state["working_days"],
+                            min=1,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full q-mt-sm")
+
+                        auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
+
+                        def _auto_calc_working_days() -> None:
+                            sd = testing_start_input.value
+                            dd = delivery_input.value
+                            if sd and dd:
+                                try:
+                                    from datetime import date as _date, timedelta
+                                    if isinstance(sd, str):
+                                        s = _date.fromisoformat(sd)
+                                    else:
+                                        s = sd
+                                    if isinstance(dd, str):
+                                        d = _date.fromisoformat(dd)
+                                    else:
+                                        d = dd
+                                    days = 0
+                                    cur = s
+                                    while cur <= d:
+                                        if cur.weekday() < 5:
+                                            days += 1
+                                        cur += timedelta(days=1)
+                                    if days > 0:
+                                        working_days_input.value = days
+                                        auto_calc_label.set_text(f"Auto-calculated: {days} working days between dates")
+                                    else:
+                                        auto_calc_label.set_text("")
+                                except Exception:
+                                    auto_calc_label.set_text("")
                             else:
                                 auto_calc_label.set_text("")
-                        except Exception:
-                            auto_calc_label.set_text("")
-                    else:
-                        auto_calc_label.set_text("")
 
-                testing_start_input.on("update:model-value", lambda _: _auto_calc_working_days())
-                delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                        testing_start_input.on("update:model-value", lambda _: _auto_calc_working_days())
+                        delivery_input.on("update:model-value", lambda _: _auto_calc_working_days())
 
-                team_size_input = ui.number(
-                    "Team Size (testers)",
-                    value=state["team_size"],
-                    min=1,
-                    step=1,
-                    precision=0,
-                ).classes("w-full q-mt-sm")
+                        team_size_input = ui.number(
+                            "Team Size (testers)",
+                            value=state["team_size"],
+                            min=1,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full q-mt-sm")
 
-                leader_toggle = ui.switch(
-                    "Include Test Leader effort",
-                    value=state["has_leader"],
-                ).classes("q-mt-sm")
+                        leader_toggle = ui.switch(
+                            "Include Test Leader effort",
+                            value=state["has_leader"],
+                        ).classes("q-mt-sm")
 
-                releases_input = ui.number(
-                    "Expected Releases",
-                    value=state["expected_releases"],
-                    min=1,
-                    step=1,
-                    precision=0,
-                ).classes("w-full q-mt-sm").tooltip(
-                    "Number of releases within this estimation period. "
-                    "Each additional release adds extra effort for regression and deployment."
-                )
+                        releases_input = ui.number(
+                            "Expected Releases",
+                            value=state["expected_releases"],
+                            min=1,
+                            step=1,
+                            precision=0,
+                        ).classes("w-full q-mt-sm").tooltip(
+                            "Number of releases within this estimation period. "
+                            "Each additional release adds extra effort for regression and deployment."
+                        )
 
-                # Team selector
-                if all_teams:
-                    ui.separator().classes("q-mt-md")
-                    ui.label("Team (optional)").classes("text-subtitle2 q-mt-sm")
-                    team_options = {t["id"]: t.get("name", f"Team {t['id']}") for t in all_teams}
-                    team_select = ui.select(
-                        options={None: "-- No Team --", **team_options},
-                        value=state.get("team_id"),
-                        label="Select Team",
-                        with_input=True,
-                        clearable=True,
-                    ).classes("w-full q-mb-sm")
+                        # Team selector
+                        if all_teams:
+                            ui.separator().classes("q-mt-md")
+                            ui.label("Team (optional)").classes("text-subtitle2 q-mt-sm")
+                            team_options = {t["id"]: t.get("name", f"Team {t['id']}") for t in all_teams}
+                            team_select = ui.select(
+                                options={None: "-- No Team --", **team_options},
+                                value=state.get("team_id"),
+                                label="Select Team",
+                                with_input=True,
+                                clearable=True,
+                            ).classes("w-full q-mb-sm")
 
-                    def _on_team_selected(e) -> None:
-                        selected_team_id = e.args
-                        state["team_id"] = selected_team_id if selected_team_id else None
-                        if selected_team_id and all_team_members:
-                            # Auto-populate allocation rows from team members
-                            team_members = [m for m in all_team_members if m.get("team_id") == selected_team_id]
-                            alloc_rows.clear()
-                            for m in team_members:
-                                alloc_rows.append({
-                                    "team_member_id": m["id"],
-                                    "role": m.get("role", "TESTER"),
-                                    "allocated_hours": 0,
-                                })
+                            def _on_team_selected(e) -> None:
+                                selected_team_id = e.args
+                                state["team_id"] = selected_team_id if selected_team_id else None
+                                if selected_team_id and all_team_members:
+                                    # Auto-populate allocation rows from team members
+                                    team_members = [m for m in all_team_members if m.get("team_id") == selected_team_id]
+                                    alloc_rows.clear()
+                                    for m in team_members:
+                                        alloc_rows.append({
+                                            "team_member_id": m["id"],
+                                            "role": m.get("role", "TESTER"),
+                                            "allocated_hours": 0,
+                                        })
+                                    _render_alloc()
+
+                            team_select.on("update:model-value", _on_team_selected)
+
+                        # Team allocation picker
+                        if all_team_members:
+                            ui.separator().classes("q-mt-md")
+                            ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+
+                            with ui.card().classes("w-full q-pa-sm q-mb-sm").props("flat bordered"):
+                                ui.label("How team parameters affect the calculation:").classes("text-caption text-weight-bold")
+                                for line in [
+                                    "Team Size and Include Leader determine capacity (= working_days x (testers + leader) x hours/day) for feasibility.",
+                                    "Feasibility: <=80% = Feasible, 80-100% = At Risk, >100% = Not Feasible.",
+                                    "Team Allocation below is optional planning metadata — it records who works on the estimation but does not change calculated totals.",
+                                ]:
+                                    ui.label(f"- {line}").classes("text-caption text-grey")
+
+                            ui.label(
+                                "Select team members and assign roles/hours."
+                            ).classes("text-body2 text-grey q-mb-sm")
+
+                            tm_options = {
+                                m["id"]: f"{m.get('name', '')} ({m.get('role', '')})"
+                                for m in all_team_members
+                            }
+                            alloc_container = ui.column().classes("w-full")
+                            alloc_rows: list[dict] = list(state.get("team_allocations", []))
+
+                            def _render_alloc() -> None:
+                                alloc_container.clear()
+                                with alloc_container:
+                                    for idx, alloc in enumerate(alloc_rows):
+                                        with ui.row().classes("items-center q-gutter-sm w-full"):
+                                            _tm = ui.select(
+                                                options=tm_options,
+                                                value=alloc.get("team_member_id"),
+                                                label="Member",
+                                            ).classes("flex-1")
+                                            _role = ui.select(
+                                                options=["TESTER", "LEADER"],
+                                                value=alloc.get("role", "TESTER"),
+                                                label="Role",
+                                            ).classes("w-28")
+                                            _hrs = ui.number(
+                                                "Hours",
+                                                value=alloc.get("allocated_hours", 0),
+                                                min=0,
+                                                step=1,
+                                            ).classes("w-24")
+
+                                            def _make_remove(i: int):
+                                                def _remove():
+                                                    alloc_rows.pop(i)
+                                                    _render_alloc()
+                                                return _remove
+
+                                            ui.button(icon="close", on_click=_make_remove(idx)).props(
+                                                "flat dense round color=negative size=sm"
+                                            )
+
+                                            def _make_updater(i: int, tm=_tm, r=_role, h=_hrs):
+                                                def _upd(_=None):
+                                                    if i < len(alloc_rows):
+                                                        alloc_rows[i] = {
+                                                            "team_member_id": tm.value,
+                                                            "role": r.value or "TESTER",
+                                                            "allocated_hours": float(h.value or 0),
+                                                        }
+                                                return _upd
+
+                                            updater = _make_updater(idx)
+                                            _tm.on("update:model-value", updater)
+                                            _role.on("update:model-value", updater)
+                                            _hrs.on("update:model-value", updater)
+
+                            def _add_alloc() -> None:
+                                alloc_rows.append({"team_member_id": None, "role": "TESTER", "allocated_hours": 0})
+                                _render_alloc()
+
+                            ui.button("Add Team Member", icon="add", on_click=_add_alloc).props(
+                                "flat dense color=primary"
+                            )
                             _render_alloc()
 
-                    team_select.on("update:model-value", _on_team_selected)
+                        # Risk items selection
+                        risk_cb_refs: dict[int, ui.checkbox] = {}
+                        if all_risk_items:
+                            ui.separator().classes("q-mt-md")
+                            ui.label("Risk Items (optional)").classes("text-subtitle2 q-mt-sm")
+                            ui.label("Select applicable risks for this estimation.").classes("text-body2 text-grey q-mb-sm")
 
-                # Team allocation picker
-                if all_team_members:
-                    ui.separator().classes("q-mt-md")
-                    ui.label("Team Allocation (optional)").classes("text-subtitle2 q-mt-sm")
+                            # Group risk items by category
+                            risks_by_cat: dict[str, list[dict]] = {}
+                            for ri in all_risk_items:
+                                rcat = ri.get("category") or "General"
+                                risks_by_cat.setdefault(rcat, []).append(ri)
 
-                    with ui.card().classes("w-full q-pa-sm q-mb-sm").props("flat bordered"):
-                        ui.label("How team parameters affect the calculation:").classes("text-caption text-weight-bold")
-                        for line in [
-                            "Team Size and Include Leader determine capacity (= working_days x (testers + leader) x hours/day) for feasibility.",
-                            "Feasibility: <=80% = Feasible, 80-100% = At Risk, >100% = Not Feasible.",
-                            "Team Allocation below is optional planning metadata — it records who works on the estimation but does not change calculated totals.",
-                        ]:
-                            ui.label(f"- {line}").classes("text-caption text-grey")
+                            for rcat_name, rcat_items in risks_by_cat.items():
+                                ui.label(rcat_name).classes("text-caption text-weight-bold text-primary q-mt-xs")
+                                for ri in rcat_items:
+                                    rid = ri["id"]
+                                    rlabel = ri.get("name", f"Risk {rid}")
+                                    if ri.get("likelihood") or ri.get("impact"):
+                                        rlabel += f"  [{ri.get('likelihood', '?')}/{ri.get('impact', '?')}]"
+                                    rcb = ui.checkbox(
+                                        rlabel,
+                                        value=(rid in state.get("risk_item_ids", [])),
+                                    )
+                                    risk_cb_refs[rid] = rcb
 
-                    ui.label(
-                        "Select team members and assign roles/hours."
-                    ).classes("text-body2 text-grey q-mb-sm")
+                        def _collect_delivery() -> None:
+                            raw_start = start_date_input.value
+                            state["start_date"] = raw_start if raw_start else None
+                            raw_testing_start = testing_start_input.value
+                            state["testing_start_date"] = raw_testing_start if raw_testing_start else None
+                            raw = delivery_input.value
+                            state["delivery_date"] = raw if raw else None
+                            state["working_days"] = int(working_days_input.value or 20)
+                            state["team_size"] = int(team_size_input.value or 1)
+                            state["has_leader"] = bool(leader_toggle.value)
+                            state["expected_releases"] = int(releases_input.value or 1)
+                            if all_team_members:
+                                state["team_allocations"] = [
+                                    a for a in alloc_rows if a.get("team_member_id")
+                                ]
+                            state["risk_item_ids"] = [
+                                rid for rid, rcb in risk_cb_refs.items() if rcb.value
+                            ]
 
-                    tm_options = {
-                        m["id"]: f"{m.get('name', '')} ({m.get('role', '')})"
-                        for m in all_team_members
-                    }
-                    alloc_container = ui.column().classes("w-full")
-                    alloc_rows: list[dict] = list(state.get("team_allocations", []))
+                        with ui.stepper_navigation():
+                            def _back_step6() -> None:
+                                _collect_delivery()
+                                stepper.previous()
 
-                    def _render_alloc() -> None:
-                        alloc_container.clear()
-                        with alloc_container:
-                            for idx, alloc in enumerate(alloc_rows):
-                                with ui.row().classes("items-center q-gutter-sm w-full"):
-                                    _tm = ui.select(
-                                        options=tm_options,
-                                        value=alloc.get("team_member_id"),
-                                        label="Member",
-                                    ).classes("flex-1")
-                                    _role = ui.select(
-                                        options=["TESTER", "LEADER"],
-                                        value=alloc.get("role", "TESTER"),
-                                        label="Role",
-                                    ).classes("w-28")
-                                    _hrs = ui.number(
-                                        "Hours",
-                                        value=alloc.get("allocated_hours", 0),
-                                        min=0,
-                                        step=1,
-                                    ).classes("w-24")
+                            def _next_step6() -> None:
+                                _collect_delivery()
+                                if state["team_size"] < 1:
+                                    ui.notify("Team size must be at least 1.", type="warning")
+                                    return
+                                stepper.next()
 
-                                    def _make_remove(i: int):
-                                        def _remove():
-                                            alloc_rows.pop(i)
-                                            _render_alloc()
-                                        return _remove
+                            ui.button("Back", on_click=_back_step6).props("flat")
+                            ui.button("Next", on_click=_next_step6).props(
+                                "color=primary icon-right=arrow_forward"
+                            )
 
-                                    ui.button(icon="close", on_click=_make_remove(idx)).props(
-                                        "flat dense round color=negative size=sm"
+                    # ---------------------------------------------------------- #
+                    # Step 7 — Review & Calculate                                 #
+                    # ---------------------------------------------------------- #
+                    with ui.step("Review & Save"):
+                        ui.label("Review your inputs, run the calculation, then save.").classes(
+                            "text-body2 text-grey q-mb-md"
+                        )
+
+                        # Summary cards — rebuilt when this step becomes visible
+                        summary_container = ui.column().classes("w-full q-mb-md")
+                        result_container = ui.column().classes("w-full")
+
+                        def _render_summary() -> None:
+                            summary_container.clear()
+                            with summary_container:
+                                ui.label("Summary").classes("text-subtitle1 q-mb-xs")
+                                with ui.grid(columns=2).classes("w-full q-gutter-sm"):
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Project").classes("text-caption text-grey")
+                                        ui.label(state["project_name"]).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Type").classes("text-caption text-grey")
+                                        ui.label(state["project_type"]).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Features").classes("text-caption text-grey")
+                                        ui.label(
+                                            f"{len(state['feature_ids'])} selected, "
+                                            f"{len(state['new_feature_ids'])} new"
+                                        ).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Reference Projects").classes("text-caption text-grey")
+                                        ui.label(str(len(state["reference_project_ids"]))).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("DUTs x Profiles").classes("text-caption text-grey")
+                                        ui.label(
+                                            f"{len(state['dut_ids'])} DUTs, "
+                                            f"{len(state['profile_ids'])} profiles, "
+                                            f"{len(state['dut_profile_matrix'])} combinations"
+                                        ).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("PR Fixes").classes("text-caption text-grey")
+                                        ui.label(
+                                            f"{state['pr_simple']}s / {state['pr_medium']}m / {state['pr_complex']}c"
+                                        ).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Working Days").classes("text-caption text-grey")
+                                        ui.label(str(state["working_days"])).classes("text-body2")
+                                    with ui.card().classes("q-pa-sm"):
+                                        ui.label("Team").classes("text-caption text-grey")
+                                        ui.label(
+                                            f"{state['team_size']} tester(s)"
+                                            + (" + leader" if state["has_leader"] else "")
+                                        ).classes("text-body2")
+                                    releases = state.get("expected_releases", 1)
+                                    if releases and releases > 1:
+                                        with ui.card().classes("q-pa-sm"):
+                                            ui.label("Expected Releases").classes("text-caption text-grey")
+                                            ui.label(str(releases)).classes("text-body2")
+                                    if state.get("project_goals"):
+                                        with ui.card().classes("q-pa-sm"):
+                                            ui.label("Project Goals").classes("text-caption text-grey")
+                                            ui.label(state["project_goals"]).classes("text-body2")
+                                    if state.get("target_customer"):
+                                        with ui.card().classes("q-pa-sm"):
+                                            ui.label("Target Customer").classes("text-caption text-grey")
+                                            ui.label(state["target_customer"]).classes("text-body2")
+
+                        def _render_result(res: dict) -> None:
+                            """Render calculation results returned from the API."""
+                            result_container.clear()
+                            with result_container:
+                                ui.separator()
+                                ui.label("Calculation Results").classes("text-subtitle1 q-mt-md q-mb-sm")
+
+                                # Feasibility badge
+                                fs = res.get("feasibility_status", "")
+                                with ui.row().classes("items-center q-gutter-sm q-mb-sm"):
+                                    ui.label("Feasibility:").classes("text-body2")
+                                    _feasibility_badge(fs)
+                                    util = res.get("utilization_pct", 0)
+                                    ui.label(f"({util:.1f}% utilization)").classes("text-caption text-grey")
+
+                                # Hours breakdown row
+                                with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                                    _hours_card("Tester Hours", res.get("total_tester_hours", 0), "person")
+                                    _hours_card("Leader Hours", res.get("total_leader_hours", 0), "manage_accounts")
+                                    _hours_card("PR Fix Hours", res.get("pr_fix_hours", 0), "bug_report")
+                                    if res.get("pr_no_test_hours", 0) > 0:
+                                        _hours_card("PR Test Creation", res["pr_no_test_hours"], "science")
+                                    _hours_card("Study Hours", res.get("study_hours", 0), "school")
+                                    if res.get("release_extra_hours", 0) > 0:
+                                        _hours_card("Release Extra Hours", res["release_extra_hours"], "rocket_launch")
+                                    if res.get("documentation_hours", 0) > 0:
+                                        _hours_card("Documentation Hours", res["documentation_hours"], "description")
+                                    _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
+                                    _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
+                                    _gt_days = res.get("grand_total_days", 0)
+                                    _hours_card("Grand Total (Person-Days)", _gt_days, "calendar_today")
+                                    _ww = round(_gt_days / 5.0, 1) if _gt_days else 0
+                                    if _ww > 0:
+                                        _hours_card("Working Weeks", _ww, "date_range")
+                                    _cap = res.get("capacity_hours", 0)
+                                    if _cap > 0:
+                                        _hours_card("Capacity Hours", _cap, "fitness_center")
+
+                                # Elapsed time (wall-clock estimate)
+                                _el_days = res.get("elapsed_days", 0)
+                                _el_weeks = res.get("elapsed_weeks", 0)
+                                if _el_days > 0 and _el_days != _gt_days:
+                                    ui.separator().classes("q-mt-sm")
+                                    ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
+                                    ui.label(
+                                        "Parallelizable tasks are divided by team size; sequential tasks are not."
+                                    ).classes("text-caption text-grey q-mb-xs")
+                                    with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
+                                        _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
+                                        _hours_card("Elapsed Days", _el_days, "today")
+                                        _hours_card("Elapsed Weeks", _el_weeks, "date_range")
+
+                                # Risk flags
+                                flags = res.get("risk_flags", [])
+                                messages = res.get("risk_messages", [])
+                                if flags:
+                                    ui.label("Risk Flags").classes("text-subtitle2 q-mt-sm q-mb-xs")
+                                    with ui.row().classes("flex-wrap q-gutter-xs q-mb-sm"):
+                                        for flag in flags:
+                                            ui.chip(
+                                                flag.replace("_", " ").title(),
+                                                icon="warning",
+                                            ).props("color=negative outline dense")
+                                    if messages:
+                                        with ui.expansion("Risk Details", icon="info").classes("w-full"):
+                                            for msg in messages:
+                                                ui.label(f"- {msg}").classes("text-body2 text-grey")
+
+                                # Task breakdown table
+                                tasks = res.get("tasks", [])
+                                if tasks:
+                                    # Initialise per-task assigned_testers in state
+                                    if "task_assigned_testers" not in state:
+                                        state["task_assigned_testers"] = {}
+                                    for t in tasks:
+                                        t["assigned_testers"] = state["task_assigned_testers"].get(t["name"], 1)
+                                    ui.label("Task Breakdown").classes("text-subtitle2 q-mt-sm q-mb-xs")
+                                    task_cols = [
+                                        {"name": "feature_name", "label": "Feature", "field": "feature_name", "align": "left", "sortable": True},
+                                        {"name": "name", "label": "Task", "field": "name", "align": "left", "sortable": True},
+                                        {"name": "task_type", "label": "Type", "field": "task_type", "align": "left"},
+                                        {"name": "base_hours", "label": "Base h", "field": "base_hours", "align": "right"},
+                                        {"name": "formula", "label": "Formula", "field": "formula", "align": "left"},
+                                        {"name": "calculated_hours", "label": "Calc h", "field": "calculated_hours", "align": "right"},
+                                        {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center"},
+                                    ]
+                                    _tbl = ui.table(
+                                        columns=task_cols,
+                                        rows=tasks,
+                                        row_key="name",
+                                        pagination={"rowsPerPage": 15},
+                                    ).classes("w-full shadow-1")
+                                    _tbl.add_slot(
+                                        "body-cell-feature_name",
+                                        r"""
+                                        <q-td :props="props">
+                                            <q-badge v-if="props.value" outline color="primary" :label="props.value" />
+                                            <span v-else class="text-grey-5 text-italic">Global</span>
+                                        </q-td>
+                                        """,
+                                    )
+                                    _tbl.add_slot(
+                                        "body-cell-assigned_testers",
+                                        r"""
+                                        <q-td :props="props">
+                                            <q-input
+                                                v-model.number="props.row.assigned_testers"
+                                                type="number"
+                                                dense
+                                                outlined
+                                                :min="1"
+                                                style="max-width: 70px"
+                                                @update:model-value="(v) => $parent.$emit('update_testers', {name: props.row.name, value: v})"
+                                            />
+                                        </q-td>
+                                        """,
+                                    )
+                                    _tbl.on(
+                                        "update_testers",
+                                        lambda e: state["task_assigned_testers"].update(
+                                            {e.args["name"]: max(1, int(e.args["value"] or 1))}
+                                        ),
                                     )
 
-                                    def _make_updater(i: int, tm=_tm, r=_role, h=_hrs):
-                                        def _upd(_=None):
-                                            if i < len(alloc_rows):
-                                                alloc_rows[i] = {
-                                                    "team_member_id": tm.value,
-                                                    "role": r.value or "TESTER",
-                                                    "allocated_hours": float(h.value or 0),
-                                                }
-                                        return _upd
+                        async def run_calculate() -> None:
+                            """Call POST /estimations/calculate and render the result."""
+                            _render_summary()
+                            payload: dict[str, Any] = {
+                                "project_type": state["project_type"],
+                                "feature_ids": state["feature_ids"],
+                                "new_feature_ids": state["new_feature_ids"],
+                                "reference_project_ids": state["reference_project_ids"],
+                                "dut_ids": state["dut_ids"],
+                                "profile_ids": state["profile_ids"],
+                                "dut_profile_matrix": state["dut_profile_matrix"],
+                                "pr_fixes": {
+                                    "simple": state["pr_simple"],
+                                    "medium": state["pr_medium"],
+                                    "complex": state["pr_complex"],
+                                },
+                                "team_size": state["team_size"],
+                                "has_leader": state["has_leader"],
+                                "working_days": state["working_days"],
+                                "delivery_date": state["delivery_date"],
+                                "expected_releases": state.get("expected_releases", 1),
+                                "risk_item_ids": state.get("risk_item_ids", []),
+                                "document_type_ids": state.get("document_type_ids", []),
+                                "document_counts": state.get("document_counts", {}),
+                            }
+                            try:
+                                result = await api_post("/estimations/calculate", json=payload)
+                                state["calc_result"] = result
+                                _render_result(result)
+                                ui.notify("Calculation complete.", type="positive")
+                            except Exception as exc:
+                                ui.notify(f"Calculation failed: {exc}", type="negative")
 
-                                    updater = _make_updater(idx)
-                                    _tm.on("update:model-value", updater)
-                                    _role.on("update:model-value", updater)
-                                    _hrs.on("update:model-value", updater)
+                        async def save_estimation() -> None:
+                            """Call POST /estimations to persist, then navigate to detail page."""
+                            if state["calc_result"] is None:
+                                ui.notify("Run Calculate first.", type="warning")
+                                return
 
-                    def _add_alloc() -> None:
-                        alloc_rows.append({"team_member_id": None, "role": "TESTER", "allocated_hours": 0})
-                        _render_alloc()
+                            user = current_user() or {}
+                            payload: dict[str, Any] = {
+                                "project_name": state["project_name"],
+                                "project_type": state["project_type"],
+                                "feature_ids": state["feature_ids"],
+                                "new_feature_ids": state["new_feature_ids"],
+                                "reference_project_ids": state["reference_project_ids"],
+                                "dut_ids": state["dut_ids"],
+                                "profile_ids": state["profile_ids"],
+                                "dut_profile_matrix": state["dut_profile_matrix"],
+                                "pr_fixes": {
+                                    "simple": state["pr_simple"],
+                                    "medium": state["pr_medium"],
+                                    "complex": state["pr_complex"],
+                                },
+                                "pr_details": state.get("pr_details", []),
+                                "team_size": state["team_size"],
+                                "has_leader": state["has_leader"],
+                                "working_days": state["working_days"],
+                                "start_date": state.get("start_date") or None,
+                                "testing_start_date": state.get("testing_start_date") or None,
+                                "expected_delivery": state.get("delivery_date") or None,
+                                "request_id": linked_request_id,
+                                "created_by": user.get("username"),
+                                "team_allocations": state.get("team_allocations", []),
+                                "expected_releases": state.get("expected_releases", 1),
+                                "project_goals": state.get("project_goals") or None,
+                                "target_customer": state.get("target_customer") or None,
+                                "project_reference": state.get("project_reference") or None,
+                                "team_id": state.get("team_id"),
+                                "risk_item_ids": state.get("risk_item_ids", []),
+                                "document_type_ids": state.get("document_type_ids", []),
+                                "document_counts": state.get("document_counts", {}),
+                                "task_assigned_testers": state.get("task_assigned_testers", {}),
+                                "product_type_filter": state.get("product_type_filter", "All"),
+                            }
+                            try:
+                                saved = await api_post("/estimations", json=payload)
+                                est_id = saved["id"]
+                                ui.notify(f"Estimation saved (ID {est_id}).", type="positive")
+                                ui.navigate.to(f"/estimation/{est_id}")
+                            except Exception as exc:
+                                ui.notify(f"Save failed: {exc}", type="negative")
 
-                    ui.button("Add Team Member", icon="add", on_click=_add_alloc).props(
-                        "flat dense color=primary"
-                    )
-                    _render_alloc()
+                        # Render initial summary when the wizard reaches this step
+                        _render_summary()
 
-                # Risk items selection
-                risk_cb_refs: dict[int, ui.checkbox] = {}
-                if all_risk_items:
-                    ui.separator().classes("q-mt-md")
-                    ui.label("Risk Items (optional)").classes("text-subtitle2 q-mt-sm")
-                    ui.label("Select applicable risks for this estimation.").classes("text-body2 text-grey q-mb-sm")
+                        with ui.stepper_navigation():
+                            ui.button("Back", on_click=lambda: stepper.previous()).props("flat")
+                            ui.button(
+                                "Calculate",
+                                icon="calculate",
+                                on_click=run_calculate,
+                            ).props("color=secondary")
+                            ui.button(
+                                "Save Estimation",
+                                icon="save",
+                                on_click=save_estimation,
+                            ).props("color=primary")
 
-                    # Group risk items by category
-                    risks_by_cat: dict[str, list[dict]] = {}
-                    for ri in all_risk_items:
-                        rcat = ri.get("category") or "General"
-                        risks_by_cat.setdefault(rcat, []).append(ri)
 
-                    for rcat_name, rcat_items in risks_by_cat.items():
-                        ui.label(rcat_name).classes("text-caption text-weight-bold text-primary q-mt-xs")
-                        for ri in rcat_items:
-                            rid = ri["id"]
-                            rlabel = ri.get("name", f"Risk {rid}")
-                            if ri.get("likelihood") or ri.get("impact"):
-                                rlabel += f"  [{ri.get('likelihood', '?')}/{ri.get('impact', '?')}]"
-                            rcb = ui.checkbox(
-                                rlabel,
-                                value=(rid in state.get("risk_item_ids", [])),
-                            )
-                            risk_cb_refs[rid] = rcb
+        # ---------------------------------------------------------------------------
+        # Route 2: /estimation/{id}  — Estimation detail view
+        # ---------------------------------------------------------------------------
 
-                def _collect_delivery() -> None:
-                    raw_start = start_date_input.value
-                    state["start_date"] = raw_start if raw_start else None
-                    raw_testing_start = testing_start_input.value
-                    state["testing_start_date"] = raw_testing_start if raw_testing_start else None
-                    raw = delivery_input.value
-                    state["delivery_date"] = raw if raw else None
-                    state["working_days"] = int(working_days_input.value or 20)
-                    state["team_size"] = int(team_size_input.value or 1)
-                    state["has_leader"] = bool(leader_toggle.value)
-                    state["expected_releases"] = int(releases_input.value or 1)
-                    if all_team_members:
-                        state["team_allocations"] = [
-                            a for a in alloc_rows if a.get("team_member_id")
-                        ]
-                    state["risk_item_ids"] = [
-                        rid for rid, rcb in risk_cb_refs.items() if rcb.value
-                    ]
+                # ── Summary rail (sibling of stepper inside ed-wizard-grid) ──
+                summary_rail = ui.element("div").classes("ed-summary-rail")
 
-                with ui.stepper_navigation():
-                    def _back_step6() -> None:
-                        _collect_delivery()
-                        stepper.previous()
-
-                    def _next_step6() -> None:
-                        _collect_delivery()
-                        if state["team_size"] < 1:
-                            ui.notify("Team size must be at least 1.", type="warning")
-                            return
-                        stepper.next()
-
-                    ui.button("Back", on_click=_back_step6).props("flat")
-                    ui.button("Next", on_click=_next_step6).props(
-                        "color=primary icon-right=arrow_forward"
-                    )
-
-            # ---------------------------------------------------------- #
-            # Step 7 — Review & Calculate                                 #
-            # ---------------------------------------------------------- #
-            with ui.step("Review & Save"):
-                ui.label("Review your inputs, run the calculation, then save.").classes(
-                    "text-body2 text-grey q-mb-md"
+            # ── Live updaters for progress + summary rail ──────────
+            def _render_steps() -> None:
+                current_name = stepper.value or WIZARD_STEPS[0][0]
+                current_idx = next(
+                    (i for i, s in enumerate(WIZARD_STEPS) if s[0] == current_name), 0
                 )
+                progress_container.clear()
+                with progress_container:
+                    for i, (step_name, label_text) in enumerate(WIZARD_STEPS):
+                        cls = "ed-progress-step"
+                        if i < current_idx:
+                            cls += " done"
+                        elif i == current_idx:
+                            cls += " active"
+                        step_el = ui.element("div").classes(cls)
+                        if i <= current_idx:
+                            step_el.on("click",
+                                       lambda _, n=step_name: stepper.set_value(n))
+                        with step_el:
+                            with ui.element("div").classes("ed-progress-num"):
+                                if i < current_idx:
+                                    ui.icon("check").style("font-size: 16px;")
+                                else:
+                                    ui.label(str(i + 1))
+                            ui.label(label_text).classes("ed-progress-label")
 
-                # Summary cards — rebuilt when this step becomes visible
-                summary_container = ui.column().classes("w-full q-mb-md")
-                result_container = ui.column().classes("w-full")
+            def _render_rail() -> None:
+                summary_rail.clear()
+                with summary_rail:
+                    ui.label("Estimation").classes("ed-eyebrow")
+                    ui.label(state.get("project_name") or "Untitled estimation") \
+                        .classes("ed-summary-title")
 
-                def _render_summary() -> None:
-                    summary_container.clear()
-                    with summary_container:
-                        ui.label("Summary").classes("text-subtitle1 q-mb-xs")
-                        with ui.grid(columns=2).classes("w-full q-gutter-sm"):
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Project").classes("text-caption text-grey")
-                                ui.label(state["project_name"]).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Type").classes("text-caption text-grey")
-                                ui.label(state["project_type"]).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Features").classes("text-caption text-grey")
-                                ui.label(
-                                    f"{len(state['feature_ids'])} selected, "
-                                    f"{len(state['new_feature_ids'])} new"
-                                ).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Reference Projects").classes("text-caption text-grey")
-                                ui.label(str(len(state["reference_project_ids"]))).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("DUTs x Profiles").classes("text-caption text-grey")
-                                ui.label(
-                                    f"{len(state['dut_ids'])} DUTs, "
-                                    f"{len(state['profile_ids'])} profiles, "
-                                    f"{len(state['dut_profile_matrix'])} combinations"
-                                ).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("PR Fixes").classes("text-caption text-grey")
-                                ui.label(
-                                    f"{state['pr_simple']}s / {state['pr_medium']}m / {state['pr_complex']}c"
-                                ).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Working Days").classes("text-caption text-grey")
-                                ui.label(str(state["working_days"])).classes("text-body2")
-                            with ui.card().classes("q-pa-sm"):
-                                ui.label("Team").classes("text-caption text-grey")
-                                ui.label(
-                                    f"{state['team_size']} tester(s)"
-                                    + (" + leader" if state["has_leader"] else "")
-                                ).classes("text-body2")
-                            releases = state.get("expected_releases", 1)
-                            if releases and releases > 1:
-                                with ui.card().classes("q-pa-sm"):
-                                    ui.label("Expected Releases").classes("text-caption text-grey")
-                                    ui.label(str(releases)).classes("text-body2")
-                            if state.get("project_goals"):
-                                with ui.card().classes("q-pa-sm"):
-                                    ui.label("Project Goals").classes("text-caption text-grey")
-                                    ui.label(state["project_goals"]).classes("text-body2")
-                            if state.get("target_customer"):
-                                with ui.card().classes("q-pa-sm"):
-                                    ui.label("Target Customer").classes("text-caption text-grey")
-                                    ui.label(state["target_customer"]).classes("text-body2")
+                    def _row(label_txt: str, value: str, empty: bool = False) -> None:
+                        with ui.element("div").classes("ed-summary-row"):
+                            ui.label(label_txt).classes("ed-summary-label")
+                            cls = "ed-summary-value empty" if empty else "ed-summary-value"
+                            ui.label(value).classes(cls)
 
-                def _render_result(res: dict) -> None:
-                    """Render calculation results returned from the API."""
-                    result_container.clear()
-                    with result_container:
-                        ui.separator()
-                        ui.label("Calculation Results").classes("text-subtitle1 q-mt-md q-mb-sm")
+                    with ui.element("div").classes("ed-summary-section"):
+                        _row("Type",     state.get("project_type") or "—",
+                             empty=not state.get("project_type"))
+                        _row("Customer", state.get("target_customer") or "—",
+                             empty=not state.get("target_customer"))
+                        if state.get("product_type_filter") and state["product_type_filter"] != "All":
+                            _row("Product", state["product_type_filter"])
 
-                        # Feasibility badge
-                        fs = res.get("feasibility_status", "")
-                        with ui.row().classes("items-center q-gutter-sm q-mb-sm"):
-                            ui.label("Feasibility:").classes("text-body2")
-                            _feasibility_badge(fs)
-                            util = res.get("utilization_pct", 0)
-                            ui.label(f"({util:.1f}% utilization)").classes("text-caption text-grey")
+                    with ui.element("div").classes("ed-summary-section"):
+                        fids = state.get("feature_ids") or []
+                        nfids = state.get("new_feature_ids") or []
+                        refs = state.get("reference_project_ids") or []
+                        _row("Features",   str(len(fids)) if fids else "—",   empty=not fids)
+                        _row("New Feat.",  str(len(nfids)) if nfids else "—", empty=not nfids)
+                        _row("References", str(len(refs)) if refs else "—",   empty=not refs)
 
-                        # Hours breakdown row
-                        with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
-                            _hours_card("Tester Hours", res.get("total_tester_hours", 0), "person")
-                            _hours_card("Leader Hours", res.get("total_leader_hours", 0), "manage_accounts")
-                            _hours_card("PR Fix Hours", res.get("pr_fix_hours", 0), "bug_report")
-                            if res.get("pr_no_test_hours", 0) > 0:
-                                _hours_card("PR Test Creation", res["pr_no_test_hours"], "science")
-                            _hours_card("Study Hours", res.get("study_hours", 0), "school")
-                            if res.get("release_extra_hours", 0) > 0:
-                                _hours_card("Release Extra Hours", res["release_extra_hours"], "rocket_launch")
-                            if res.get("documentation_hours", 0) > 0:
-                                _hours_card("Documentation Hours", res["documentation_hours"], "description")
-                            _hours_card("Buffer Hours", res.get("buffer_hours", 0), "security")
-                            _hours_card("Grand Total Hours", res.get("grand_total_hours", 0), "summarize")
-                            _gt_days = res.get("grand_total_days", 0)
-                            _hours_card("Grand Total (Person-Days)", _gt_days, "calendar_today")
-                            _ww = round(_gt_days / 5.0, 1) if _gt_days else 0
-                            if _ww > 0:
-                                _hours_card("Working Weeks", _ww, "date_range")
-                            _cap = res.get("capacity_hours", 0)
-                            if _cap > 0:
-                                _hours_card("Capacity Hours", _cap, "fitness_center")
+                    with ui.element("div").classes("ed-summary-section"):
+                        duts = state.get("dut_ids") or []
+                        profs = state.get("profile_ids") or []
+                        _row("DUTs",     str(len(duts)) if duts else "—",   empty=not duts)
+                        _row("Profiles", str(len(profs)) if profs else "—", empty=not profs)
 
-                        # Elapsed time (wall-clock estimate)
-                        _el_days = res.get("elapsed_days", 0)
-                        _el_weeks = res.get("elapsed_weeks", 0)
-                        if _el_days > 0 and _el_days != _gt_days:
-                            ui.separator().classes("q-mt-sm")
-                            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
-                            ui.label(
-                                "Parallelizable tasks are divided by team size; sequential tasks are not."
-                            ).classes("text-caption text-grey q-mb-xs")
-                            with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
-                                _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
-                                _hours_card("Elapsed Days", _el_days, "today")
-                                _hours_card("Elapsed Weeks", _el_weeks, "date_range")
+                    with ui.element("div").classes("ed-summary-section"):
+                        pr_t = (state.get("pr_simple") or 0) + \
+                               (state.get("pr_medium") or 0) + \
+                               (state.get("pr_complex") or 0)
+                        _row("PR Fixes", str(pr_t) if pr_t else "—", empty=not pr_t)
 
-                        # Risk flags
-                        flags = res.get("risk_flags", [])
-                        messages = res.get("risk_messages", [])
-                        if flags:
-                            ui.label("Risk Flags").classes("text-subtitle2 q-mt-sm q-mb-xs")
-                            with ui.row().classes("flex-wrap q-gutter-xs q-mb-sm"):
-                                for flag in flags:
-                                    ui.chip(
-                                        flag.replace("_", " ").title(),
-                                        icon="warning",
-                                    ).props("color=negative outline dense")
-                            if messages:
-                                with ui.expansion("Risk Details", icon="info").classes("w-full"):
-                                    for msg in messages:
-                                        ui.label(f"- {msg}").classes("text-body2 text-grey")
+                    with ui.element("div").classes("ed-summary-section"):
+                        ts = state.get("team_size") or 0
+                        wd = state.get("working_days") or 0
+                        rl = state.get("expected_releases") or 0
+                        _row("Team Size",    str(ts) if ts else "—", empty=not ts)
+                        _row("Working Days", str(wd) if wd else "—", empty=not wd)
+                        _row("Releases",     str(rl) if rl else "—", empty=not rl)
 
-                        # Task breakdown table
-                        tasks = res.get("tasks", [])
-                        if tasks:
-                            # Initialise per-task assigned_testers in state
-                            if "task_assigned_testers" not in state:
-                                state["task_assigned_testers"] = {}
-                            for t in tasks:
-                                t["assigned_testers"] = state["task_assigned_testers"].get(t["name"], 1)
-                            ui.label("Task Breakdown").classes("text-subtitle2 q-mt-sm q-mb-xs")
-                            task_cols = [
-                                {"name": "feature_name", "label": "Feature", "field": "feature_name", "align": "left", "sortable": True},
-                                {"name": "name", "label": "Task", "field": "name", "align": "left", "sortable": True},
-                                {"name": "task_type", "label": "Type", "field": "task_type", "align": "left"},
-                                {"name": "base_hours", "label": "Base h", "field": "base_hours", "align": "right"},
-                                {"name": "formula", "label": "Formula", "field": "formula", "align": "left"},
-                                {"name": "calculated_hours", "label": "Calc h", "field": "calculated_hours", "align": "right"},
-                                {"name": "assigned_testers", "label": "Resources", "field": "assigned_testers", "align": "center"},
-                            ]
-                            _tbl = ui.table(
-                                columns=task_cols,
-                                rows=tasks,
-                                row_key="name",
-                                pagination={"rowsPerPage": 15},
-                            ).classes("w-full shadow-1")
-                            _tbl.add_slot(
-                                "body-cell-feature_name",
-                                r"""
-                                <q-td :props="props">
-                                    <q-badge v-if="props.value" outline color="primary" :label="props.value" />
-                                    <span v-else class="text-grey-5 text-italic">Global</span>
-                                </q-td>
-                                """,
-                            )
-                            _tbl.add_slot(
-                                "body-cell-assigned_testers",
-                                r"""
-                                <q-td :props="props">
-                                    <q-input
-                                        v-model.number="props.row.assigned_testers"
-                                        type="number"
-                                        dense
-                                        outlined
-                                        :min="1"
-                                        style="max-width: 70px"
-                                        @update:model-value="(v) => $parent.$emit('update_testers', {name: props.row.name, value: v})"
-                                    />
-                                </q-td>
-                                """,
-                            )
-                            _tbl.on(
-                                "update_testers",
-                                lambda e: state["task_assigned_testers"].update(
-                                    {e.args["name"]: max(1, int(e.args["value"] or 1))}
-                                ),
-                            )
+                    with ui.element("div").classes("ed-summary-total"):
+                        ui.label("Estimated Total").classes("ed-eyebrow")
+                        cr = state.get("calc_result")
+                        if cr and cr.get("grand_total_hours"):
+                            ui.label(f"{cr['grand_total_hours']:,.0f}h") \
+                                .classes("ed-summary-total-num")
+                        else:
+                            ui.label("TBD").classes("ed-summary-total-num") \
+                                .style("opacity: 0.4;")
 
-                async def run_calculate() -> None:
-                    """Call POST /estimations/calculate and render the result."""
-                    _render_summary()
-                    payload: dict[str, Any] = {
-                        "project_type": state["project_type"],
-                        "feature_ids": state["feature_ids"],
-                        "new_feature_ids": state["new_feature_ids"],
-                        "reference_project_ids": state["reference_project_ids"],
-                        "dut_ids": state["dut_ids"],
-                        "profile_ids": state["profile_ids"],
-                        "dut_profile_matrix": state["dut_profile_matrix"],
-                        "pr_fixes": {
-                            "simple": state["pr_simple"],
-                            "medium": state["pr_medium"],
-                            "complex": state["pr_complex"],
-                        },
-                        "team_size": state["team_size"],
-                        "has_leader": state["has_leader"],
-                        "working_days": state["working_days"],
-                        "delivery_date": state["delivery_date"],
-                        "expected_releases": state.get("expected_releases", 1),
-                        "risk_item_ids": state.get("risk_item_ids", []),
-                        "document_type_ids": state.get("document_type_ids", []),
-                        "document_counts": state.get("document_counts", {}),
-                    }
-                    try:
-                        result = await api_post("/estimations/calculate", json=payload)
-                        state["calc_result"] = result
-                        _render_result(result)
-                        ui.notify("Calculation complete.", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Calculation failed: {exc}", type="negative")
+                # Sync toolbar title with project name
+                if state.get("project_name"):
+                    title_label.set_text(state["project_name"])
 
-                async def save_estimation() -> None:
-                    """Call POST /estimations to persist, then navigate to detail page."""
-                    if state["calc_result"] is None:
-                        ui.notify("Run Calculate first.", type="warning")
-                        return
+            # Re-render on every step transition
+            stepper.on_value_change(lambda _: (_render_steps(), _render_rail()))
+            _render_steps()
+            _render_rail()
 
-                    user = current_user() or {}
-                    payload: dict[str, Any] = {
-                        "project_name": state["project_name"],
-                        "project_type": state["project_type"],
-                        "feature_ids": state["feature_ids"],
-                        "new_feature_ids": state["new_feature_ids"],
-                        "reference_project_ids": state["reference_project_ids"],
-                        "dut_ids": state["dut_ids"],
-                        "profile_ids": state["profile_ids"],
-                        "dut_profile_matrix": state["dut_profile_matrix"],
-                        "pr_fixes": {
-                            "simple": state["pr_simple"],
-                            "medium": state["pr_medium"],
-                            "complex": state["pr_complex"],
-                        },
-                        "pr_details": state.get("pr_details", []),
-                        "team_size": state["team_size"],
-                        "has_leader": state["has_leader"],
-                        "working_days": state["working_days"],
-                        "start_date": state.get("start_date") or None,
-                        "testing_start_date": state.get("testing_start_date") or None,
-                        "expected_delivery": state.get("delivery_date") or None,
-                        "request_id": linked_request_id,
-                        "created_by": user.get("username"),
-                        "team_allocations": state.get("team_allocations", []),
-                        "expected_releases": state.get("expected_releases", 1),
-                        "project_goals": state.get("project_goals") or None,
-                        "target_customer": state.get("target_customer") or None,
-                        "project_reference": state.get("project_reference") or None,
-                        "team_id": state.get("team_id"),
-                        "risk_item_ids": state.get("risk_item_ids", []),
-                        "document_type_ids": state.get("document_type_ids", []),
-                        "document_counts": state.get("document_counts", {}),
-                        "task_assigned_testers": state.get("task_assigned_testers", {}),
-                        "product_type_filter": state.get("product_type_filter", "All"),
-                    }
-                    try:
-                        saved = await api_post("/estimations", json=payload)
-                        est_id = saved["id"]
-                        ui.notify(f"Estimation saved (ID {est_id}).", type="positive")
-                        ui.navigate.to(f"/estimation/{est_id}")
-                    except Exception as exc:
-                        ui.notify(f"Save failed: {exc}", type="negative")
-
-                # Render initial summary when the wizard reaches this step
-                _render_summary()
-
-                with ui.stepper_navigation():
-                    ui.button("Back", on_click=lambda: stepper.previous()).props("flat")
-                    ui.button(
-                        "Calculate",
-                        icon="calculate",
-                        on_click=run_calculate,
-                    ).props("color=secondary")
-                    ui.button(
-                        "Save Estimation",
-                        icon="save",
-                        on_click=save_estimation,
-                    ).props("color=primary")
-
-
-# ---------------------------------------------------------------------------
-# Route 2: /estimation/{id}  — Estimation detail view
-# ---------------------------------------------------------------------------
 
 @ui.page("/estimation/{estimation_id}")
 async def estimation_detail_page(estimation_id: int) -> None:
@@ -1736,56 +1947,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
         # Inject typography + design system CSS (theme-aware via tokens)
         # ─────────────────────────────────────────────────────────────
         ui.add_head_html("""
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
         <style>
-          :root {
-            --ed-line: color-mix(in srgb, currentColor 18%, transparent);
-            --ed-line-soft: color-mix(in srgb, currentColor 11%, transparent);
-            --ed-bg-soft: color-mix(in srgb, currentColor 4%, transparent);
-            --ed-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-            --ed-sans: inherit;
-          }
-
-          /* Layout shell */
-          .ed-shell { width: 100%; max-width: 1340px; margin: 0 auto; }
-
-          /* Mono helper */
-          .ed-mono       { font-family: var(--ed-mono) !important; font-variant-numeric: tabular-nums; }
-
-          .ed-eyebrow    { font-family: var(--ed-sans) !important;
-                           text-transform: uppercase !important; letter-spacing: 0.16em !important;
-                           font-size: 10px !important; font-weight: 600 !important; opacity: 0.62 !important;
-                           line-height: 1.1 !important; }
-          .ed-cap        { font-family: var(--ed-sans) !important;
-                           text-transform: uppercase !important; letter-spacing: 0.18em !important;
-                           font-size: 11px !important; font-weight: 700 !important; opacity: 0.6 !important;
-                           line-height: 1.1 !important; }
-
-          /* Sticky toolbar */
-          .ed-toolbar    { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap;
-                           padding: 12px 24px; backdrop-filter: blur(14px);
-                           background: var(--ed-bg-soft);
-                           border-bottom: 1px solid var(--ed-line);
-                           position: sticky; top: 0; z-index: 60;
-                           margin: -16px -16px 28px -16px; }
-          .ed-toolbar .q-btn { font-family: var(--ed-sans); text-transform: uppercase;
-                               letter-spacing: 0.10em; font-size: 11px; font-weight: 600; }
-          .ed-toolbar-spacer { width: 1px; height: 22px; background: var(--ed-line); margin: 0 8px; }
-          .ed-toolbar-grow   { flex: 1; min-width: 16px; }
-
-          /* Status pill */
-          .ed-status-now { display: inline-flex; align-items: center; gap: 10px;
-                           padding: 7px 14px; border: 1px solid var(--ed-line);
-                           border-radius: 99px; font-family: var(--ed-mono);
-                           font-size: 11px; letter-spacing: 0.04em; }
-          .ed-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--q-info); }
-          .ed-status-FEASIBLE .ed-status-dot, .ed-status-APPROVED .ed-status-dot { background: var(--q-positive); }
-          .ed-status-AT_RISK  .ed-status-dot, .ed-status-REVISED  .ed-status-dot { background: var(--q-warning); }
-          .ed-status-NOT_FEASIBLE .ed-status-dot { background: var(--q-negative); }
-          .ed-status-FINAL .ed-status-dot { background: var(--q-primary); }
-
           /* Hero */
           .ed-hero       { position: relative; display: grid !important;
                            grid-template-columns: 1fr auto; gap: 36px;
@@ -1863,20 +2025,6 @@ async def estimation_detail_page(estimation_id: int) -> None:
           .ed-panels .q-tab-panel { padding: 6px 2px 6px 0 !important;
                                     box-sizing: border-box; }
 
-          /* Cards — always span the full tab-panel width */
-          .ed-card       { display: block !important;
-                           width: 100% !important; box-sizing: border-box;
-                           border: 1px solid var(--ed-line) !important;
-                           border-radius: 4px; padding: 24px 26px;
-                           box-shadow: none !important; background: transparent !important;
-                           margin-bottom: 22px; }
-          /* Empty state spans the full width too */
-          .ed-empty      { width: 100%; box-sizing: border-box; }
-          .ed-card-head  { display: flex !important; align-items: baseline;
-                           justify-content: space-between; margin-bottom: 18px;
-                           gap: 16px; }
-          .ed-card-head-meta { font-family: var(--ed-mono); font-size: 12px; opacity: 0.7; }
-
           /* Spec sheet */
           .ed-spec       { display: grid !important; grid-template-columns: 1fr 1fr;
                            gap: 0 40px; }
@@ -1920,18 +2068,7 @@ async def estimation_detail_page(estimation_id: int) -> None:
                            font-size: 13px; font-weight: 500; text-align: right; }
           .ed-bar-row.total .ed-bar-value { font-size: 16px; font-weight: 600; }
 
-          /* KPI strip */
-          .ed-strip      { display: grid !important;
-                           grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-                           border: 1px solid var(--ed-line); border-radius: 4px;
-                           overflow: hidden; }
-          .ed-strip-cell { padding: 18px 22px;
-                           border-right: 1px dashed var(--ed-line-soft); }
-          .ed-strip-cell:last-child { border-right: none; }
-          .ed-strip-num  { font-family: var(--ed-mono);
-                           font-variant-numeric: tabular-nums;
-                           font-size: 22px; font-weight: 500;
-                           letter-spacing: -0.01em; margin-top: 8px; }
+          /* KPI strip extras (base in global) */
           .ed-strip-unit { opacity: 0.4; font-size: 14px; font-weight: 400; margin-left: 2px; }
           .ed-strip-date { font-family: var(--ed-mono);
                            font-size: 17px; font-weight: 500; margin-top: 8px; }
@@ -1978,24 +2115,6 @@ async def estimation_detail_page(estimation_id: int) -> None:
             letter-spacing: 0.14em; font-size: 11px; font-weight: 600;
           }
 
-          /* Tables — refine Quasar tables */
-          .ed-card .q-table__container { box-shadow: none !important;
-                                         border: 1px solid var(--ed-line);
-                                         background: transparent !important; }
-          .ed-card .q-table thead th { font-family: var(--ed-sans);
-                                       text-transform: uppercase; letter-spacing: 0.10em;
-                                       font-size: 10px; font-weight: 700; opacity: 0.7; }
-          .ed-card .q-table tbody td { font-family: var(--ed-mono);
-                                       font-variant-numeric: tabular-nums;
-                                       font-size: 12.5px; }
-
-          /* Empty state */
-          .ed-empty      { padding: 28px; text-align: center;
-                           border: 1px dashed var(--ed-line); border-radius: 4px;
-                           opacity: 0.55;
-                           font-family: var(--ed-sans);
-                           text-transform: uppercase; letter-spacing: 0.14em;
-                           font-size: 11px; font-weight: 600; }
         </style>
         """)
 

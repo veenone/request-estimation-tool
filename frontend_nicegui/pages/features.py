@@ -51,23 +51,60 @@ async def features_page() -> None:
     except Exception:
         product_types = ["Payment", "Telco"]
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Feature Catalog").classes("text-h4 q-mb-md")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ------------------------------------------------------------------ #
-        # Mutable state — a plain list so closures always see the latest ref  #
-        # ------------------------------------------------------------------ #
-        state: dict = {"rows": [], "filter_category": "All", "filter_product_type": "All"}
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Feature", icon="add",
+                      on_click=lambda: show_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Manage Categories", icon="settings",
+                      on_click=lambda: show_manage_categories_dialog()) \
+                .props("flat dense")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-        # ------------------------------------------------------------------ #
-        # Table                                                                #
-        # ------------------------------------------------------------------ #
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Feature Catalog").classes("text-h4 q-mb-md")
+
+            # ─────────────────────────────────────────────────── #
+            # State                                                #
+            # ─────────────────────────────────────────────────── #
+            state: dict = {"rows": [], "filter_category": "All", "filter_product_type": "All"}
+
+            # ── KPI strip (clickable category tiles) ───────────
+            kpi_container = ui.element("div").classes("ed-strip")
+
+            # ── Segmented category pills ───────────────────────
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            # ── Filter row (product type) ──────────────────────
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+
+                async def on_product_type_change(e) -> None:
+                    state["filter_product_type"] = e.value if e.value else "All"
+                    await refresh()
+
+                ui.select(
+                    ["All"] + product_types,
+                    label="Product Type",
+                    value="All",
+                    on_change=on_product_type_change,
+                ).props("dense outlined").classes("w-48")
+
+            # ── Table card ─────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         # Render category as a badge
         table.add_slot(
@@ -122,21 +159,88 @@ async def features_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
-        # Refresh helper                                                        #
+        # KPI & segment helpers                                                #
         # ------------------------------------------------------------------ #
+        def _count_by_cat(rows: list[dict], cat: str) -> int:
+            return sum(1 for r in rows if (r.get("category") or "") == cat)
+
+        def _set_category(c: str) -> None:
+            state["filter_category"] = c
+            _render_kpis()
+            _render_segments()
+            _apply_filters()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = state["rows"]
+                total = len(rows)
+                with_tests = sum(1 for r in rows if r.get("has_existing_tests"))
+                study_set  = sum(1 for r in rows if r.get("study_effort_hours") is not None)
+                top_cats = sorted(categories, key=lambda c: -_count_by_cat(rows, c))[:2]
+
+                def _tile(label: str, count: int, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_category"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_category(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(str(count)).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                _tile("Total Features", total,
+                      f"{with_tests} with tests · {study_set} have study override",
+                      key="All")
+                for c in top_cats:
+                    n = _count_by_cat(rows, c)
+                    if n:
+                        _tile(c, n, "filter to category", key=c)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = state["rows"]
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_category"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_category(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+
+                _seg("All", "All", len(rows))
+                for c in categories:
+                    n = _count_by_cat(rows, c)
+                    if n or c == state["filter_category"]:
+                        _seg(c, c, n)
+
+        # ------------------------------------------------------------------ #
+        # Refresh + filter helpers                                             #
+        # ------------------------------------------------------------------ #
+        def _apply_filters() -> None:
+            cat = state.get("filter_category") or "All"
+            pt = state.get("filter_product_type") or "All"
+            filtered = list(state["rows"])
+            if cat != "All":
+                filtered = [r for r in filtered if (r.get("category") or "") == cat]
+            if pt != "All":
+                filtered = [r for r in filtered if (r.get("product_type") or "") == pt]
+            table.rows = filtered
+            table.update()
+
         async def refresh() -> None:
             try:
                 all_rows: list = await api_get("/features")
                 state["rows"] = all_rows
-                cat = state.get("filter_category") or "All"
-                pt = state.get("filter_product_type") or "All"
-                filtered = list(all_rows)
-                if cat != "All":
-                    filtered = [r for r in filtered if r.get("category") == cat]
-                if pt != "All":
-                    filtered = [r for r in filtered if (r.get("product_type") or "") == pt]
-                table.rows = filtered
-                table.update()
+                _total_label.set_text(f"TOTAL · {len(all_rows)}")
+                _render_kpis()
+                _render_segments()
+                _apply_filters()
             except Exception as exc:
                 ui.notify(
                     f"Failed to load features: {extract_error_detail(exc)}",
@@ -409,48 +513,6 @@ async def features_page() -> None:
                     ui.button("Close", on_click=cat_dialog.close).props("flat")
 
             cat_dialog.open()
-
-        # ------------------------------------------------------------------ #
-        # Toolbar: category filter + Add button                                #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-gutter-sm q-mb-md"):
-            ui.label("Filter:").classes("text-body2")
-
-            async def on_category_change(e) -> None:
-                state["filter_category"] = e.value if e.value else "All"
-                await refresh()
-
-            category_filter_select = ui.select(
-                ["All"] + categories,
-                label="Category",
-                value="All",
-                on_change=on_category_change,
-            ).classes("w-40")
-
-            async def on_product_type_change(e) -> None:
-                state["filter_product_type"] = e.value if e.value else "All"
-                await refresh()
-
-            ui.select(
-                ["All"] + product_types,
-                label="Product Type",
-                value="All",
-                on_change=on_product_type_change,
-            ).classes("w-48")
-
-            ui.button(
-                "Manage Categories",
-                icon="settings",
-                on_click=show_manage_categories_dialog,
-            ).props("flat dense")
-
-            ui.space()
-
-            ui.button(
-                "Add Feature",
-                icon="add",
-                on_click=show_add_dialog,
-            ).props("color=primary")
 
         # ------------------------------------------------------------------ #
         # Initial data load                                                     #

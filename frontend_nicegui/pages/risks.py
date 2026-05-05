@@ -39,32 +39,42 @@ async def risks_page() -> None:
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Risk Registry").classes("text-h4 q-mb-md")
+    # ── State ────────────────────────────────────────────────────
+    state: dict = {"rows": [], "filter_likelihood": "All"}
 
-        # ------------------------------------------------------------------ #
-        # Mutable state                                                       #
-        # ------------------------------------------------------------------ #
-        state: dict = {"rows": []}
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ------------------------------------------------------------------ #
-        # Search input                                                         #
-        # ------------------------------------------------------------------ #
-        search_input = ui.input(
-            placeholder="Search by name, category, likelihood, impact...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Risk", icon="add",
+                      on_click=lambda: show_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-        # ------------------------------------------------------------------ #
-        # Table                                                                #
-        # ------------------------------------------------------------------ #
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Risk Registry").classes("text-h4 q-mb-md")
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, category, likelihood, impact…",
+                ).props('dense outlined clearable').style("min-width: 320px;")
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         # Color-coded badges for likelihood
         table.add_slot(
@@ -111,15 +121,80 @@ async def risks_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
-        # Filter helper                                                        #
+        # KPI / segments / filter                                              #
         # ------------------------------------------------------------------ #
+        def _count_by_lik(rows: list[dict], v: str) -> int:
+            return sum(1 for r in rows if (r.get("likelihood") or "") == v)
+
+        def _set_lik(v: str) -> None:
+            state["filter_likelihood"] = v
+            _render_kpis()
+            _render_segments()
+            _apply_search()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = state["rows"]
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+                high_n = _count_by_lik(rows, "HIGH")
+                med_n = _count_by_lik(rows, "MEDIUM")
+                low_n = _count_by_lik(rows, "LOW")
+                high_impact = sum(1 for r in rows if (r.get("impact") or "") == "HIGH")
+                cat_n = len({r.get("category") or "" for r in rows} - {""})
+
+                def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_likelihood"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_lik(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(value).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                _tile("Total Risks", str(len(rows)),
+                      f"{cat_n} categor{'ies' if cat_n != 1 else 'y'} · {high_impact} high impact",
+                      key="All")
+                _tile("High Likelihood", str(high_n),
+                      "filter to high", key="HIGH")
+                _tile("Medium", str(med_n),
+                      "filter to medium", key="MEDIUM")
+                _tile("Low", str(low_n),
+                      "filter to low", key="LOW")
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = state["rows"]
+
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_likelihood"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_lik(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+
+                _seg("All", "All", len(rows))
+                for v in LIKELIHOOD_OPTIONS:
+                    n = _count_by_lik(rows, v)
+                    if n or v == state["filter_likelihood"]:
+                        _seg(v.title(), v, n)
+
         def _apply_search() -> None:
             query = (search_input.value or "").strip().lower()
-            if not query:
-                table.rows = list(state["rows"])
-            else:
-                table.rows = [
-                    r for r in state["rows"]
+            lik = state["filter_likelihood"]
+            rows = list(state["rows"])
+            if lik != "All":
+                rows = [r for r in rows if (r.get("likelihood") or "") == lik]
+            if query:
+                rows = [
+                    r for r in rows
                     if query in (r.get("name") or "").lower()
                     or query in (r.get("category") or "").lower()
                     or query in (r.get("likelihood") or "").lower()
@@ -127,6 +202,7 @@ async def risks_page() -> None:
                     or query in (r.get("description") or "").lower()
                     or query in str(r.get("id", ""))
                 ]
+            table.rows = rows
             table.update()
 
         search_input.on("update:model-value", lambda _: _apply_search())
@@ -138,6 +214,8 @@ async def risks_page() -> None:
             try:
                 all_rows: list = await api_get("/risk-items")
                 state["rows"] = all_rows
+                _render_kpis()
+                _render_segments()
                 _apply_search()
             except Exception as exc:
                 ui.notify(f"Failed to load risk items: {exc}", type="negative")
@@ -285,18 +363,6 @@ async def risks_page() -> None:
         # ------------------------------------------------------------------ #
         table.on("edit-row",   lambda e: show_edit_dialog(e.args))
         table.on("delete-row", lambda e: show_delete_dialog(e.args))
-
-        # ------------------------------------------------------------------ #
-        # Toolbar: Add button                                                   #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-gutter-sm q-mb-md"):
-            ui.space()
-
-            ui.button(
-                "Add Risk",
-                icon="add",
-                on_click=show_add_dialog,
-            ).props("color=primary")
 
         # ------------------------------------------------------------------ #
         # Initial data load                                                     #

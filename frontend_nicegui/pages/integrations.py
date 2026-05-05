@@ -1017,49 +1017,88 @@ async def integrations_page() -> None:
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Integrations").classes("text-h4 q-mb-md")
+    # ---- load all integrations BEFORE building UI -----------------------
+    try:
+        raw_list: list[dict] = await api_get("/integrations")
+    except Exception as exc:
+        show_error_page(exc)
+        return
 
-        # ---- load all integrations -----------------------------------------
-        try:
-            raw_list: list[dict] = await api_get("/integrations")
-        except Exception as exc:
-            show_error_page(exc)
-            return
+    # Index by system_name for easy lookup; provide empty defaults if absent
+    by_system: dict[str, dict] = {
+        item["system_name"].upper(): item for item in raw_list
+    }
 
-        # Index by system_name for easy lookup; provide empty defaults if absent
-        by_system: dict[str, dict] = {
-            item["system_name"].upper(): item for item in raw_list
-        }
+    # Fetch assignable users and current watchers for Redmine panel
+    assignable_users: list[dict] = []
+    current_watchers: list[int] = []
+    try:
+        assignable_users = await api_get("/users/assignable")
+    except Exception:
+        pass
+    try:
+        configs = await api_get("/configuration")
+        for cfg in configs:
+            if cfg.get("key") == "webhook_watchers":
+                current_watchers = json.loads(cfg.get("value", "[]"))
+                break
+    except Exception:
+        pass
 
-        # Fetch assignable users and current watchers for Redmine panel
-        assignable_users: list[dict] = []
-        current_watchers: list[int] = []
-        try:
-            assignable_users = await api_get("/users/assignable")
-        except Exception:
-            pass
-        try:
-            configs = await api_get("/configuration")
-            for cfg in configs:
-                if cfg.get("key") == "webhook_watchers":
-                    current_watchers = json.loads(cfg.get("value", "[]"))
-                    break
-        except Exception:
-            pass
+    enabled_n = sum(1 for s in SYSTEMS
+                    if by_system.get(s, {}).get("enabled"))
 
-        # ---- tabs ----------------------------------------------------------
-        with ui.tabs().classes("w-full") as tabs:
-            tab_refs: dict[str, ui.tab] = {}
-            for sys in SYSTEMS:
-                icon = SYSTEM_ICONS.get(sys, "settings")
-                tab_refs[sys] = ui.tab(sys, label=sys, icon=icon)
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        with ui.tab_panels(tabs, value=tab_refs[SYSTEMS[0]]).classes("w-full"):
-            for sys in SYSTEMS:
-                data = by_system.get(sys, {})
-                with ui.tab_panel(tab_refs[sys]):
-                    if sys == "REDMINE":
-                        _PANEL_BUILDERS[sys](data, assignable_users=assignable_users, current_watchers=current_watchers)
-                    else:
-                        _PANEL_BUILDERS[sys](data)
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.label("Integrations").classes("ed-eyebrow")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot") \
+                    .style("background: var(--q-positive);" if enabled_n else "")
+                ui.label(f"{enabled_n} OF {len(SYSTEMS)} ENABLED") \
+                    .classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Integrations").classes("text-h4 q-mb-md")
+            ui.label(
+                "Configure external systems used by the estimation pipeline. "
+                "Each integration has its own credentials and connection settings."
+            ).classes("ed-eyebrow").style("margin-bottom: 22px;")
+
+            # ── KPI strip showing per-system status ─────────────
+            with ui.element("div").classes("ed-strip").style("margin-bottom: 18px;"):
+                for sys in SYSTEMS:
+                    sys_data = by_system.get(sys, {})
+                    is_enabled = bool(sys_data.get("enabled"))
+                    last_sync = sys_data.get("last_sync_at") or "never synced"
+                    icon = SYSTEM_ICONS.get(sys, "settings")
+                    with ui.element("div").classes("ed-strip-cell"):
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon(icon).style(
+                                "font-size: 14px; opacity: 0.7;"
+                            )
+                            ui.label(sys).classes("ed-eyebrow")
+                        ui.label("ON" if is_enabled else "OFF").classes("ed-strip-num") \
+                            .style(f"color: {'var(--q-positive)' if is_enabled else 'var(--q-negative)'}; "
+                                   "font-size: 18px;")
+                        ui.label(str(last_sync)[:10] if last_sync != "never synced" else "never") \
+                            .classes("ed-stat-tile-sub")
+
+            # ── Tabs ────────────────────────────────────────────
+            with ui.tabs().classes("ed-tabs w-full").props("inline-label align=left no-caps") as tabs:
+                tab_refs: dict[str, ui.tab] = {}
+                for sys in SYSTEMS:
+                    icon = SYSTEM_ICONS.get(sys, "settings")
+                    tab_refs[sys] = ui.tab(sys, label=sys, icon=icon)
+
+            with ui.tab_panels(tabs, value=tab_refs[SYSTEMS[0]]).classes("ed-panels w-full"):
+                for sys in SYSTEMS:
+                    data = by_system.get(sys, {})
+                    with ui.tab_panel(tab_refs[sys]):
+                        if sys == "REDMINE":
+                            _PANEL_BUILDERS[sys](data, assignable_users=assignable_users, current_watchers=current_watchers)
+                        else:
+                            _PANEL_BUILDERS[sys](data)

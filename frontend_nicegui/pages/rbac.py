@@ -147,24 +147,44 @@ async def rbac_page() -> None:
     user = current_user()
     role = user.get("role", "VIEWER") if user else "VIEWER"
 
-    with ui.column().classes("q-pa-lg w-full"):
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ---- page header ---------------------------------------------------------
-        with ui.row().classes("w-full items-center justify-between q-mb-md"):
-            ui.label("RBAC Management").classes("text-h4")
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            if role == "ADMIN":
+                ui.button("Save Changes", icon="save",
+                          on_click=lambda: save_matrix()) \
+                    .props("flat dense color=primary")
+                ui.element("div").classes("ed-toolbar-spacer")
+                ui.button("Reset Defaults", icon="restart_alt",
+                          on_click=lambda: reset_to_defaults()) \
+                    .props("flat dense color=warning")
+                ui.element("div").classes("ed-toolbar-spacer")
+                ui.button("Reload", icon="refresh",
+                          on_click=lambda: reload_from_server()) \
+                    .props("flat dense")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                ui.label("ADMIN ONLY").classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("RBAC Management").classes("text-h4 q-mb-md")
             ui.label(
                 "Configure which permissions each role grants across the application."
-            ).classes("text-subtitle2 text-grey")
+            ).classes("ed-eyebrow").style("margin-bottom: 22px;")
 
-        # ---- access guard --------------------------------------------------------
-        if role != "ADMIN":
-            ui.separator()
-            with ui.row().classes("items-center gap-2 q-mt-md"):
-                ui.icon("lock", size="lg").classes("text-warning")
-                ui.label(
-                    "Access denied. ADMIN role is required to manage role permissions."
-                ).classes("text-subtitle1 text-warning")
-            return
+            # ---- access guard --------------------------------------------------
+            if role != "ADMIN":
+                with ui.element("div").classes("ed-card") \
+                        .style("border-color: var(--q-warning);"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("lock", size="lg").classes("text-warning")
+                        ui.label(
+                            "Access denied. ADMIN role is required to manage role permissions."
+                        ).classes("text-subtitle1 text-warning")
+                return
 
         # ---- load current matrix from /configuration ----------------------------
         raw_matrix_value: str | None = None
@@ -188,9 +208,18 @@ async def rbac_page() -> None:
         # checkbox widget registry: (permission_key, role) -> ui.checkbox
         checkbox_refs: dict[tuple[str, str], ui.checkbox] = {}
 
+        # ---- KPI strip showing permission summary per role ----------------
+        with ui.element("div").classes("ed-strip"):
+            for r in _ROLES:
+                with ui.element("div").classes("ed-strip-cell"):
+                    ui.label(r).classes("ed-eyebrow")
+                    ui.label(str(len(matrix.get(r, set())))).classes("ed-strip-num")
+                    total = len(_PERMISSIONS)
+                    ui.label(f"of {total} permissions").classes("ed-stat-tile-sub")
+
         # ---- legend / role badges -----------------------------------------------
-        with ui.row().classes("items-center gap-4 q-mb-md"):
-            ui.label("Roles:").classes("text-caption text-grey")
+        with ui.row().classes("items-center gap-4 q-mt-md q-mb-md"):
+            ui.label("Roles:").classes("ed-eyebrow")
             for r in _ROLES:
                 colour = _ROLE_COLOURS.get(r, "grey")
                 ui.badge(r, color=colour).classes("text-caption")
@@ -200,7 +229,7 @@ async def rbac_page() -> None:
         header_bg = "bg-grey-10" if is_dark else "bg-grey-3"
         row_bg = "bg-grey-9" if is_dark else "bg-grey-2"
 
-        with ui.card().classes("w-full q-pa-none"):
+        with ui.element("div").classes("ed-card").style("padding: 0;"):
 
             # Column header row
             with ui.row().classes(
@@ -359,23 +388,7 @@ async def rbac_page() -> None:
             ui.notify("RBAC matrix reloaded from server.", type="info")
             status_label.set_text("Reloaded from server.")
 
-        # ---- action buttons row --------------------------------------------------
-        with ui.row().classes("q-mt-lg gap-2 items-center"):
-            ui.button("Save Changes", icon="save", on_click=save_matrix).props(
-                "color=primary"
-            )
-            ui.button(
-                "Reset to Defaults",
-                icon="restart_alt",
-                on_click=reset_to_defaults,
-            ).props("flat color=warning")
-            ui.button(
-                "Reload from Server",
-                icon="refresh",
-                on_click=reload_from_server,
-            ).props("flat")
-
-        # ---- info note -----------------------------------------------------------
+        # ---- info note (action buttons live in the sticky toolbar) ---------------
         with ui.row().classes("items-start gap-2 q-mt-md"):
             ui.icon("info", size="xs").classes("text-grey q-mt-xs")
             ui.label(
@@ -384,3 +397,5 @@ async def rbac_page() -> None:
                 "key used by the frontend for UI-level access hints. Backend endpoints "
                 "enforce role checks independently via the RequireRole dependency."
             ).classes("text-caption text-grey")
+
+        status_label  # silence linter — defined above and referenced inside actions

@@ -131,56 +131,161 @@ async def history_page() -> None:
     # ---------------------------------------------------------------------------
     async def refresh_table() -> None:
         await load_projects()
-        if table_ref is not None:
-            table_ref.rows = projects
-            table_ref.update()
+        _total_label.set_text(f"TOTAL · {len(projects)}")
+        _render_kpis()
+        _render_segments()
+        _apply_filters()
+
+    # ---------------------------------------------------------------------------
+    # State
+    # ---------------------------------------------------------------------------
+    state: dict = {"filter_type": "All"}
+    user = current_user()
+    role = user.get("role", "VIEWER") if user else "VIEWER"
+    can_add = role in ("APPROVER", "ADMIN")
+
+    # Load data first
+    await load_projects()
 
     # ---------------------------------------------------------------------------
     # Page layout
     # ---------------------------------------------------------------------------
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Historical Projects").classes("text-h4")
-            with ui.row().classes("gap-2"):
-                ui.button(
-                    "Refresh", icon="refresh", on_click=refresh_table
-                ).props("outline")
-                user = current_user()
-                role = user.get("role", "VIEWER") if user else "VIEWER"
-                if role in ("APPROVER", "ADMIN"):
-                    ui.button(
-                        "Add Project", icon="add", on_click=open_add_dialog
-                    ).props("color=primary")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        await load_projects()
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            if can_add:
+                ui.button("Add Project", icon="add",
+                          on_click=lambda: open_add_dialog()) \
+                    .props("flat dense color=primary")
+                ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Refresh", icon="refresh",
+                      on_click=lambda: refresh_table()) \
+                .props("flat dense")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label(f"TOTAL · {len(projects)}").classes("ed-mono")
 
-        if not projects:
-            ui.label("No historical projects found.").classes("text-grey q-mt-md")
-        else:
-            columns = [
-                {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
-                {"name": "project_name", "label": "Project Name", "field": "project_name", "sortable": True, "align": "left"},
-                {"name": "project_type", "label": "Type", "field": "project_type", "sortable": True, "align": "left"},
-                {"name": "estimated_hours", "label": "Estimated h", "field": "estimated_hours", "sortable": True, "align": "right"},
-                {"name": "actual_hours", "label": "Actual h", "field": "actual_hours", "sortable": True, "align": "right"},
-                {"name": "accuracy_ratio", "label": "Accuracy Ratio", "field": "accuracy_ratio", "sortable": True, "align": "right"},
-                {"name": "completion_date", "label": "Completion Date", "field": "completion_date", "sortable": True, "align": "left"},
-            ]
-            table_ref = ui.table(
-                columns=columns,
-                rows=projects,
-                row_key="id",
-                pagination={"rowsPerPage": 15},
-            ).classes("w-full")
-            table_ref.add_slot(
-                "body-cell-accuracy_ratio",
-                r"""
-                <q-td :props="props">
-                    <span
-                        :class="props.value !== 'N/A' && parseFloat(props.value) > 1.3
-                            ? 'text-negative'
-                            : 'text-positive'"
-                    >{{ props.value }}</span>
-                </q-td>
-                """,
-            )
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Historical Projects").classes("text-h4 q-mb-md")
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            # ── KPI / segment / refresh helpers ────────────────
+            _PROJECT_TYPES = ["NEW", "EVOLUTION", "SUPPORT"]
+
+            def _count_by_type(rows: list[dict], t: str) -> int:
+                return sum(1 for r in rows if (r.get("project_type") or "") == t)
+
+            def _avg_accuracy(rows: list[dict]) -> float:
+                vals = []
+                for r in rows:
+                    a = r.get("accuracy_ratio")
+                    if a and a != "N/A":
+                        try:
+                            vals.append(float(a))
+                        except (ValueError, TypeError):
+                            pass
+                return sum(vals) / len(vals) if vals else 0.0
+
+            def _set_type(t: str) -> None:
+                state["filter_type"] = t
+                _render_kpis()
+                _render_segments()
+                _apply_filters()
+
+            def _render_kpis() -> None:
+                kpi_container.clear()
+                with kpi_container:
+                    avg_acc = _avg_accuracy(projects)
+                    over_n = sum(1 for r in projects
+                                 if r.get("accuracy_ratio") and r["accuracy_ratio"] != "N/A"
+                                 and float(r["accuracy_ratio"]) > 1.3)
+                    total_h = sum((r.get("actual_hours") or 0) for r in projects)
+
+                    def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                        cls = "ed-strip-cell ed-stat-tile"
+                        if key and state["filter_type"] == key:
+                            cls += " active"
+                        el = ui.element("div").classes(cls)
+                        if key is not None:
+                            el.on("click", lambda _, k=key: _set_type(k))
+                        with el:
+                            ui.label(label).classes("ed-eyebrow")
+                            ui.label(value).classes("ed-strip-num")
+                            if sub:
+                                ui.label(sub).classes("ed-stat-tile-sub")
+
+                    _tile("Total Projects", str(len(projects)),
+                          f"{total_h:,.0f}h actual", key="All")
+                    _tile("Avg Accuracy",
+                          f"{avg_acc:.2f}×" if avg_acc else "—",
+                          f"{over_n} over 1.3× ratio", key=None)
+                    for t in _PROJECT_TYPES:
+                        n = _count_by_type(projects, t)
+                        if n:
+                            _tile(t.title(), str(n), "filter to type", key=t)
+
+            def _render_segments() -> None:
+                seg_container.clear()
+                with seg_container:
+                    def _seg(label: str, key: str, count: int) -> None:
+                        cls = "ed-segmented-item" + (
+                            " active" if state["filter_type"] == key else "")
+                        btn = ui.element("button").classes(cls)
+                        btn.on("click", lambda _, k=key: _set_type(k))
+                        with btn:
+                            ui.label(label)
+                            ui.label(f"· {count}").classes("seg-count")
+                    _seg("All", "All", len(projects))
+                    for t in _PROJECT_TYPES:
+                        n = _count_by_type(projects, t)
+                        if n or t == state["filter_type"]:
+                            _seg(t.title(), t, n)
+
+            def _apply_filters() -> None:
+                rows = list(projects)
+                if state["filter_type"] != "All":
+                    rows = [r for r in rows if (r.get("project_type") or "") == state["filter_type"]]
+                if table_ref is not None:
+                    table_ref.rows = rows
+                    table_ref.update()
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                if not projects:
+                    ui.label("No historical projects yet").classes("ed-empty")
+                else:
+                    columns = [
+                        {"name": "project_name", "label": "Project Name", "field": "project_name", "sortable": True, "align": "left"},
+                        {"name": "project_type", "label": "Type", "field": "project_type", "sortable": True, "align": "left"},
+                        {"name": "estimated_hours", "label": "Estimated h", "field": "estimated_hours", "sortable": True, "align": "right"},
+                        {"name": "actual_hours", "label": "Actual h", "field": "actual_hours", "sortable": True, "align": "right"},
+                        {"name": "accuracy_ratio", "label": "Accuracy Ratio", "field": "accuracy_ratio", "sortable": True, "align": "right"},
+                        {"name": "completion_date", "label": "Completion Date", "field": "completion_date", "sortable": True, "align": "left"},
+                    ]
+                    table_ref = ui.table(
+                        columns=columns,
+                        rows=projects,
+                        row_key="id",
+                        pagination={"rowsPerPage": 25},
+                    ).classes("w-full").props("flat")
+                    table_ref.add_slot(
+                        "body-cell-accuracy_ratio",
+                        r"""
+                        <q-td :props="props">
+                            <span
+                                :class="props.value !== 'N/A' && parseFloat(props.value) > 1.3
+                                    ? 'text-negative'
+                                    : 'text-positive'"
+                            >{{ props.value }}</span>
+                        </q-td>
+                        """,
+                    )
+
+            # Initial KPI/segment render
+            _render_kpis()
+            _render_segments()

@@ -79,21 +79,16 @@ async def team_page() -> None:
 
     async def refresh_table() -> None:
         await load_members()
-        if table_ref is not None:
-            si = search_ref.get("input")
-            query = (si.value if si else "").strip().lower()
-            if query:
-                table_ref.rows = [
-                    m for m in members
-                    if query in (m.get("name") or "").lower()
-                    or query in (m.get("role") or "").lower()
-                    or query in (m.get("skills_json") or "").lower()
-                    or query in (m.get("linked_user_name") or "").lower()
-                    or query in str(m.get("id", ""))
-                ]
-            else:
+        try:
+            _total_label.set_text(f"TOTAL · {len(members)}")
+            _render_kpis()
+            _render_segments()
+            _apply_team_filter()
+        except NameError:
+            # Helpers not yet defined on first run — table_ref still updates below
+            if table_ref is not None:
                 table_ref.rows = members
-            table_ref.update()
+                table_ref.update()
 
     # ---------------------------------------------------------------------------
     # Add dialog
@@ -363,62 +358,139 @@ async def team_page() -> None:
             ui.notify(f"Error: {exc}", type="negative")
 
     # ---------------------------------------------------------------------------
+    # State + initial load
+    # ---------------------------------------------------------------------------
+    state: dict = {"filter_role": "All"}
+    await load_members()
+
+    # ---------------------------------------------------------------------------
     # Page layout
     # ---------------------------------------------------------------------------
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Team Management").classes("text-h4")
-            with ui.row().classes("gap-2"):
-                ui.button(
-                    "Create Team", icon="group_add", on_click=open_create_team_dialog
-                ).props("color=secondary outline")
-                ui.button(
-                    "Add Member", icon="person_add", on_click=open_add_dialog
-                ).props("color=primary")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        await load_members()
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Member", icon="person_add",
+                      on_click=lambda: open_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Create Team", icon="group_add",
+                      on_click=lambda: open_create_team_dialog()) \
+                .props("flat dense color=secondary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label(f"TOTAL · {len(members)}").classes("ed-mono")
 
-        # Search input
-        search_input = ui.input(
-            placeholder="Search by name, role, skills, linked user...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
-        search_ref["input"] = search_input
+        with ui.element("div").classes("ed-shell"):
 
-        def _apply_team_filter() -> None:
-            query = (search_input.value or "").strip().lower()
-            if not query:
-                table_ref.rows = members
-            else:
-                table_ref.rows = [
-                    m for m in members
-                    if query in (m.get("name") or "").lower()
-                    or query in (m.get("role") or "").lower()
-                    or query in (m.get("skills_json") or "").lower()
-                    or query in (m.get("linked_user_name") or "").lower()
-                    or query in str(m.get("id", ""))
-                ]
-            table_ref.update()
+            ui.label("Team Management").classes("text-h4 q-mb-md")
 
-        search_input.on("update:model-value", lambda _: _apply_team_filter())
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
 
-        columns = [
-            {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
-            {"name": "name", "label": "Name", "field": "name", "sortable": True, "align": "left"},
-            {"name": "role", "label": "Role", "field": "role", "sortable": True, "align": "left"},
-            {"name": "available_hours_per_day", "label": "Hrs/Day", "field": "available_hours_per_day", "sortable": True, "align": "right"},
-            {"name": "skills_json", "label": "Skills", "field": "skills_json", "align": "left"},
-            {"name": "linked_user_name", "label": "Linked User", "field": "linked_user_name", "sortable": True, "align": "left"},
-            {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
-        ]
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, role, skills, linked user…",
+                ).props('dense outlined clearable').style("min-width: 320px;")
+            search_ref["input"] = search_input
 
-        table_ref = ui.table(
-            columns=columns,
-            rows=members,
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full")
+            # ── KPI / segments / filter ────────────────────────
+            def _count_by_role(rows: list[dict], r: str) -> int:
+                return sum(1 for m in rows if (m.get("role") or "") == r)
+
+            def _set_role(r: str) -> None:
+                state["filter_role"] = r
+                _render_kpis()
+                _render_segments()
+                _apply_team_filter()
+
+            def _render_kpis() -> None:
+                kpi_container.clear()
+                with kpi_container:
+                    rows = members
+                    total_h = sum((m.get("available_hours_per_day") or 0) for m in rows)
+                    linked = sum(1 for m in rows if m.get("linked_user_name"))
+
+                    def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                        cls = "ed-strip-cell ed-stat-tile"
+                        if key and state["filter_role"] == key:
+                            cls += " active"
+                        el = ui.element("div").classes(cls)
+                        if key is not None:
+                            el.on("click", lambda _, k=key: _set_role(k))
+                        with el:
+                            ui.label(label).classes("ed-eyebrow")
+                            ui.label(value).classes("ed-strip-num")
+                            if sub:
+                                ui.label(sub).classes("ed-stat-tile-sub")
+
+                    _tile("Total Members", str(len(rows)),
+                          f"{linked} linked to a user · {total_h:.1f}h/day capacity",
+                          key="All")
+                    for r in _ROLES:
+                        n = _count_by_role(rows, r)
+                        if n:
+                            _tile(r.title(), str(n), "filter to role", key=r)
+
+            def _render_segments() -> None:
+                seg_container.clear()
+                with seg_container:
+                    rows = members
+
+                    def _seg(label: str, key: str, count: int) -> None:
+                        cls = "ed-segmented-item" + (
+                            " active" if state["filter_role"] == key else "")
+                        btn = ui.element("button").classes(cls)
+                        btn.on("click", lambda _, k=key: _set_role(k))
+                        with btn:
+                            ui.label(label)
+                            ui.label(f"· {count}").classes("seg-count")
+
+                    _seg("All", "All", len(rows))
+                    for r in _ROLES:
+                        n = _count_by_role(rows, r)
+                        if n or r == state["filter_role"]:
+                            _seg(r.title(), r, n)
+
+            def _apply_team_filter() -> None:
+                query = (search_input.value or "").strip().lower()
+                role_filter = state["filter_role"]
+                rows = list(members)
+                if role_filter != "All":
+                    rows = [m for m in rows if (m.get("role") or "") == role_filter]
+                if query:
+                    rows = [
+                        m for m in rows
+                        if query in (m.get("name") or "").lower()
+                        or query in (m.get("role") or "").lower()
+                        or query in (m.get("skills_json") or "").lower()
+                        or query in (m.get("linked_user_name") or "").lower()
+                        or query in str(m.get("id", ""))
+                    ]
+                if table_ref is not None:
+                    table_ref.rows = rows
+                    table_ref.update()
+
+            search_input.on("update:model-value", lambda _: _apply_team_filter())
+
+            columns = [
+                {"name": "name", "label": "Name", "field": "name", "sortable": True, "align": "left"},
+                {"name": "role", "label": "Role", "field": "role", "sortable": True, "align": "left"},
+                {"name": "available_hours_per_day", "label": "Hrs/Day", "field": "available_hours_per_day", "sortable": True, "align": "right"},
+                {"name": "skills_json", "label": "Skills", "field": "skills_json", "align": "left"},
+                {"name": "linked_user_name", "label": "Linked User", "field": "linked_user_name", "sortable": True, "align": "left"},
+                {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
+            ]
+
+            with ui.element("div").classes("ed-card"):
+                table_ref = ui.table(
+                    columns=columns,
+                    rows=members,
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         # Render role with a colored chip
         table_ref.add_slot(
@@ -476,25 +548,40 @@ async def team_page() -> None:
         table_ref.on("edit", lambda e: open_edit_dialog(e.args))
         table_ref.on("delete", lambda e: open_delete_dialog(e.args))
 
-        if not members:
-            ui.label("No team members found.").classes("text-grey q-mt-md")
+        # Initial KPI / segments render (table is now ready)
+        _render_kpis()
+        _render_segments()
+        _apply_team_filter()
 
-        # ----- Teams section -----
-        ui.separator().classes("q-my-lg")
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Teams").classes("text-h5")
-
+        # ── Teams section ──────────────────────────────────────
         await load_teams()
-        if teams:
-            with ui.row().classes("flex-wrap q-gutter-md q-mt-sm"):
-                for team in teams:
-                    with ui.card().classes("q-pa-md w-64"):
-                        ui.label(team.get("name", "")).classes("text-h6")
-                        if team.get("description"):
-                            ui.label(team["description"]).classes("text-caption text-grey")
-                        ui.label(f"{team.get('member_count', 0)} member(s)").classes("text-body2 q-mt-xs")
-                        with ui.row().classes("q-mt-sm gap-1"):
-                            ui.button("Manage", icon="settings", on_click=lambda t=team: open_manage_team_dialog(t)).props("flat dense color=primary size=sm")
-                            ui.button("Delete", icon="delete", on_click=lambda t=team: delete_team(t)).props("flat dense color=negative size=sm")
-        else:
-            ui.label("No teams created yet.").classes("text-grey q-mt-md")
+        with ui.element("div").classes("ed-card").style("margin-top: 24px;"):
+            with ui.element("div").classes("ed-card-head"):
+                ui.label("Teams").classes("ed-cap")
+                ui.label(f"{len(teams)} team{'s' if len(teams) != 1 else ''}") \
+                    .classes("ed-card-head-meta")
+            if teams:
+                with ui.row().classes("flex-wrap q-gutter-md"):
+                    for team in teams:
+                        with ui.element("div").classes("ed-card") \
+                                .style("width: 240px; margin-bottom: 0;"):
+                            ui.label(team.get("name", "")).style(
+                                "font-size: 16px; font-weight: 600; margin-bottom: 4px;"
+                            )
+                            if team.get("description"):
+                                ui.label(team["description"]).classes(
+                                    "text-caption text-grey"
+                                ).style("margin-bottom: 6px;")
+                            ui.label(
+                                f"{team.get('member_count', 0)} member"
+                                f"{'s' if team.get('member_count', 0) != 1 else ''}"
+                            ).classes("ed-mono").style("font-size: 12px; opacity: 0.75;")
+                            with ui.row().classes("q-mt-sm gap-1"):
+                                ui.button("Manage", icon="settings",
+                                          on_click=lambda t=team: open_manage_team_dialog(t)) \
+                                    .props("flat dense color=primary size=sm")
+                                ui.button("Delete", icon="delete",
+                                          on_click=lambda t=team: delete_team(t)) \
+                                    .props("flat dense color=negative size=sm")
+            else:
+                ui.label("No teams created yet").classes("ed-empty")

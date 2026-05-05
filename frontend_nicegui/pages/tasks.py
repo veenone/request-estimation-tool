@@ -21,47 +21,75 @@ async def tasks_page():
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Task Templates").classes("text-h4 q-mb-md")
+    try:
+        templates = await api_get("/task-templates")
+        features = await api_get("/features")
+    except Exception as exc:
+        show_error_page(exc)
+        return
 
-        try:
-            templates = await api_get("/task-templates")
-            features = await api_get("/features")
-        except Exception as exc:
-            show_error_page(exc)
-            return
+    # Fetch product types from config
+    try:
+        product_types: list[str] = await api_get("/configuration/product_types")
+    except Exception:
+        product_types = ["Payment", "Telco"]
 
-        # Fetch product types from config
-        try:
-            product_types: list[str] = await api_get("/configuration/product_types")
-        except Exception:
-            product_types = ["Payment", "Telco"]
+    feature_map = {f["id"]: f["name"] for f in features}
+    feature_options = {f["id"]: f["name"] for f in features}
 
-        feature_map = {f["id"]: f["name"] for f in features}
-        feature_options = {f["id"]: f["name"] for f in features}
+    # ── State for filtering ─────────────────────────────────────
+    state: dict = {"filter_type": "All", "filter_product_type": "All"}
 
-        # ------------------------------------------------------------------ #
-        # Table                                                                #
-        # ------------------------------------------------------------------ #
-        cols = [
-            {"name": "id", "label": "ID", "field": "id", "align": "left", "sortable": True},
-            {"name": "name", "label": "Name", "field": "name", "align": "left", "sortable": True},
-            {"name": "task_type", "label": "Type", "field": "task_type", "align": "left", "sortable": True},
-            {"name": "feature", "label": "Feature", "field": "feature", "align": "left", "style": "max-width: 220px"},
-            {"name": "base_effort_hours", "label": "Base Hours", "field": "base_effort_hours", "align": "right", "sortable": True},
-            {"name": "scales_with_dut", "label": "Scales DUT", "field": "scales_with_dut", "align": "center"},
-            {"name": "scales_with_profile", "label": "Scales Profile", "field": "scales_with_profile", "align": "center"},
-            {"name": "is_pr_fix", "label": "PR Fix", "field": "is_pr_fix", "align": "center"},
-            {"name": "product_type", "label": "Product Type", "field": "product_type", "align": "left", "sortable": True},
-            {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
-        ]
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        table = ui.table(
-            columns=cols,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Template", icon="add",
+                      on_click=lambda: _show_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Task Templates").classes("text-h4 q-mb-md")
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+
+                def _on_pt_change(e) -> None:
+                    state["filter_product_type"] = e.args or "All"
+                    _apply_filters()
+                pt_sel = ui.select(["All"] + product_types,
+                                   label="Product Type", value="All") \
+                    .props("dense outlined").classes("w-48")
+                pt_sel.on("update:model-value", _on_pt_change)
+
+            # ── Table ──────────────────────────────────────────
+            cols = [
+                {"name": "name", "label": "Name", "field": "name", "align": "left", "sortable": True},
+                {"name": "task_type", "label": "Type", "field": "task_type", "align": "left", "sortable": True},
+                {"name": "feature", "label": "Feature", "field": "feature", "align": "left", "style": "max-width: 220px"},
+                {"name": "base_effort_hours", "label": "Base Hours", "field": "base_effort_hours", "align": "right", "sortable": True},
+                {"name": "scales_with_dut", "label": "Scales DUT", "field": "scales_with_dut", "align": "center"},
+                {"name": "scales_with_profile", "label": "Scales Profile", "field": "scales_with_profile", "align": "center"},
+                {"name": "is_pr_fix", "label": "PR Fix", "field": "is_pr_fix", "align": "center"},
+                {"name": "product_type", "label": "Product Type", "field": "product_type", "align": "left", "sortable": True},
+                {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
+            ]
+
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=cols,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         table.add_slot(
             "body-cell-actions",
@@ -113,9 +141,78 @@ async def tasks_page():
                 })
             return rows
 
-        def _refresh_table():
-            table.rows = _build_rows()
+        # ── KPI / segments / filters ────────────────────────────
+        _TASK_TYPES = ["SETUP", "EXECUTION", "ANALYSIS", "REPORTING", "STUDY"]
+
+        def _count_by_type(rows: list[dict], t: str) -> int:
+            return sum(1 for r in rows if (r.get("task_type") or "") == t)
+
+        def _set_type(t: str) -> None:
+            state["filter_type"] = t
+            _render_kpis()
+            _render_segments()
+            _apply_filters()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = templates
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+                top = sorted(_TASK_TYPES, key=lambda t: -_count_by_type(rows, t))[:3]
+
+                def _tile(label: str, count: int, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_type"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_type(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(str(count)).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                pr_n = sum(1 for r in rows if r.get("is_pr_fix"))
+                _tile("Total Templates", len(rows),
+                      f"{pr_n} PR-fix templates", key="All")
+                for t in top:
+                    n = _count_by_type(rows, t)
+                    if n:
+                        _tile(t.title(), n, "filter to type", key=t)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = templates
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_type"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_type(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+                _seg("All", "All", len(rows))
+                for t in _TASK_TYPES:
+                    n = _count_by_type(rows, t)
+                    if n or t == state["filter_type"]:
+                        _seg(t.title(), t, n)
+
+        def _apply_filters() -> None:
+            rows = _build_rows()
+            if state["filter_type"] != "All":
+                rows = [r for r in rows if r.get("task_type") == state["filter_type"]]
+            if state["filter_product_type"] != "All":
+                rows = [r for r in rows
+                        if (r.get("product_type") or "") == state["filter_product_type"]]
+            table.rows = rows
             table.update()
+
+        def _refresh_table():
+            _render_kpis()
+            _render_segments()
+            _apply_filters()
 
         # ------------------------------------------------------------------ #
         # Add dialog                                                           #
@@ -364,11 +461,5 @@ async def tasks_page():
         # ------------------------------------------------------------------ #
         table.on("edit-row", lambda e: _show_edit_dialog(e.args))
         table.on("delete-row", lambda e: _show_delete_dialog(e.args))
-
-        # ------------------------------------------------------------------ #
-        # Toolbar                                                              #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("q-mb-md"):
-            ui.button("Add Template", icon="add", on_click=_show_add_dialog).props("color=primary")
 
         _refresh_table()

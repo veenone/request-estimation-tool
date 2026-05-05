@@ -38,6 +38,290 @@ app.add_static_files("/uploads", str(_UPLOADS_DIR))
 
 
 # ---------------------------------------------------------------------------
+# Shared design system — loaded into every page's <head>
+# Pages add component-specific CSS on top of these tokens.
+# ---------------------------------------------------------------------------
+
+ui.add_head_html("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ed-line:      color-mix(in srgb, currentColor 18%, transparent);
+    --ed-line-soft: color-mix(in srgb, currentColor 11%, transparent);
+    --ed-bg-soft:   color-mix(in srgb, currentColor 4%, transparent);
+    --ed-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    --ed-sans: inherit;
+  }
+
+  /* Layout shell */
+  .ed-shell { width: 100%; max-width: 1340px; margin: 0 auto; }
+
+  /* Mono helper */
+  .ed-mono       { font-family: var(--ed-mono) !important; font-variant-numeric: tabular-nums; }
+
+  /* Type tokens */
+  .ed-eyebrow    { font-family: var(--ed-sans) !important;
+                   text-transform: uppercase !important; letter-spacing: 0.16em !important;
+                   font-size: 10px !important; font-weight: 600 !important; opacity: 0.62 !important;
+                   line-height: 1.1 !important; }
+  .ed-cap        { font-family: var(--ed-sans) !important;
+                   text-transform: uppercase !important; letter-spacing: 0.18em !important;
+                   font-size: 11px !important; font-weight: 700 !important; opacity: 0.6 !important;
+                   line-height: 1.1 !important; }
+
+  /* Sticky toolbar */
+  .ed-toolbar    { display: flex !important; align-items: center; gap: 6px; flex-wrap: wrap;
+                   padding: 12px 24px; backdrop-filter: blur(14px);
+                   background: var(--ed-bg-soft);
+                   border-bottom: 1px solid var(--ed-line);
+                   position: sticky; top: 0; z-index: 60;
+                   margin: -16px -16px 28px -16px; }
+  .ed-toolbar .q-btn { font-family: var(--ed-sans); text-transform: uppercase;
+                       letter-spacing: 0.10em; font-size: 11px; font-weight: 600; }
+  .ed-toolbar-spacer { width: 1px; height: 22px; background: var(--ed-line); margin: 0 8px; }
+  .ed-toolbar-grow   { flex: 1; min-width: 16px; }
+
+  /* Status pill (toolbar right) */
+  .ed-status-now { display: inline-flex; align-items: center; gap: 10px;
+                   padding: 7px 14px; border: 1px solid var(--ed-line);
+                   border-radius: 99px; font-family: var(--ed-mono);
+                   font-size: 11px; letter-spacing: 0.04em; }
+  .ed-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--q-info); }
+  .ed-status-FEASIBLE .ed-status-dot, .ed-status-APPROVED .ed-status-dot { background: var(--q-positive); }
+  .ed-status-AT_RISK  .ed-status-dot, .ed-status-REVISED  .ed-status-dot { background: var(--q-warning); }
+  .ed-status-NOT_FEASIBLE .ed-status-dot { background: var(--q-negative); }
+  .ed-status-FINAL .ed-status-dot { background: var(--q-primary); }
+
+  /* Card */
+  .ed-card       { display: block !important;
+                   width: 100% !important; box-sizing: border-box;
+                   border: 1px solid var(--ed-line) !important;
+                   border-radius: 4px; padding: 24px 26px;
+                   box-shadow: none !important; background: transparent !important;
+                   margin-bottom: 22px; }
+  .ed-card-head  { display: flex !important; align-items: baseline;
+                   justify-content: space-between; margin-bottom: 18px;
+                   gap: 16px; flex-wrap: wrap; }
+  .ed-card-head-meta { font-family: var(--ed-mono); font-size: 12px; opacity: 0.7; }
+
+  /* KPI strip (used in detail page; reused in inbox) */
+  .ed-strip      { display: grid !important;
+                   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                   border: 1px solid var(--ed-line); border-radius: 4px;
+                   overflow: hidden; }
+  .ed-strip-cell { padding: 18px 22px;
+                   border-right: 1px dashed var(--ed-line-soft); }
+  .ed-strip-cell:last-child { border-right: none; }
+  .ed-strip-num  { font-family: var(--ed-mono);
+                   font-variant-numeric: tabular-nums;
+                   font-size: 22px; font-weight: 500;
+                   letter-spacing: -0.01em; margin-top: 8px; }
+
+  /* Section header */
+  .ed-section-head { display: flex !important; align-items: baseline;
+                     justify-content: space-between; margin: 28px 0 14px 0;
+                     flex-wrap: wrap; gap: 8px; }
+
+  /* Empty state */
+  .ed-empty      { width: 100%; box-sizing: border-box;
+                   padding: 28px; text-align: center;
+                   border: 1px dashed var(--ed-line); border-radius: 4px;
+                   opacity: 0.55;
+                   font-family: var(--ed-sans);
+                   text-transform: uppercase; letter-spacing: 0.14em;
+                   font-size: 11px; font-weight: 600; }
+
+  /* Reusable filter components (used by data-mgmt list pages + inbox) */
+  .ed-stat-tile     { cursor: pointer; transition: background 160ms ease; }
+  .ed-stat-tile:hover { background: var(--ed-bg-soft); }
+  .ed-stat-tile.active { background: color-mix(in srgb, var(--q-primary) 10%, transparent); }
+  .ed-stat-tile.active .ed-strip-num { color: var(--q-primary); }
+  .ed-stat-tile-sub { font-family: inherit; font-size: 11px;
+                      opacity: 0.6; margin-top: 4px; }
+
+  .ed-segmented     { display: inline-flex !important; align-items: center;
+                      gap: 4px; padding: 4px;
+                      border: 1px solid var(--ed-line);
+                      border-radius: 99px;
+                      margin: 18px 0 14px 0;
+                      flex-wrap: wrap; }
+  .ed-segmented-item{ padding: 6px 14px; border-radius: 99px;
+                      font-family: inherit; font-size: 12px; font-weight: 500;
+                      cursor: pointer; transition: all 140ms ease;
+                      display: inline-flex !important; align-items: center; gap: 6px;
+                      border: none; background: transparent; color: inherit;
+                      line-height: 1.2; }
+  .ed-segmented-item .seg-count { font-family: var(--ed-mono);
+                                  font-variant-numeric: tabular-nums;
+                                  font-size: 11px; opacity: 0.55; }
+  .ed-segmented-item:hover  { background: var(--ed-bg-soft); }
+  .ed-segmented-item.active { background: var(--q-primary); color: white; }
+  .ed-segmented-item.active .seg-count { opacity: 0.85; color: white; }
+
+  .ed-filter-row    { display: flex !important; gap: 12px; align-items: center;
+                      flex-wrap: wrap; margin-bottom: 14px;
+                      padding: 12px 16px; border: 1px solid var(--ed-line);
+                      border-radius: 4px; background: var(--ed-bg-soft); }
+  .ed-filter-label  { font-family: inherit; text-transform: uppercase;
+                      letter-spacing: 0.12em; font-size: 10px;
+                      font-weight: 600; opacity: 0.6;
+                      margin-right: 8px; }
+
+  /* Reusable tabs + panels (used on detail page, integrations, etc.) */
+  .ed-tabs       { margin: 0 0 24px 0;
+                   border-bottom: 1px solid var(--ed-line); }
+  .ed-tabs .q-tab{ font-family: var(--ed-sans);
+                   text-transform: uppercase; letter-spacing: 0.16em;
+                   font-size: 11px; font-weight: 600;
+                   padding: 0 22px; min-height: 48px; }
+  .ed-tabs .q-tab__indicator { height: 2px; }
+  .ed-panels     { background: transparent !important;
+                   overflow: hidden !important;
+                   border-radius: 4px; }
+  .ed-panels .q-panel { overflow: hidden !important; }
+  .ed-panels .q-tab-panel { padding: 6px 2px 6px 0 !important;
+                            box-sizing: border-box; }
+
+  /* ─── Sidebar redesign ──────────────────────────────────────────── */
+
+  /* Logo zone — top of drawer */
+  .ed-side-logo  { padding: 16px 20px 14px 20px;
+                   border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+                   display: flex !important; align-items: center; gap: 12px; }
+  .ed-side-logo-img { flex: 0 0 auto;
+                      width: 36px !important; height: 36px !important;
+                      min-width: 36px !important; min-height: 36px !important; }
+  .ed-side-logo-img > img,
+  .ed-side-logo-img .q-img__image,
+  .ed-side-logo-img .q-img__container > div {
+                      object-fit: contain !important;
+                      object-position: center !important;
+                      background-size: contain !important;
+                      background-position: center !important; }
+  .ed-side-logo-text { font-family: inherit; font-weight: 700;
+                       font-size: 16px; letter-spacing: -0.005em;
+                       margin: 0; }
+
+  /* User card */
+  .ed-side-user  { display: flex !important; align-items: center; gap: 12px;
+                   padding: 14px 20px;
+                   border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent); }
+  .ed-side-avatar{ width: 36px; height: 36px; min-width: 36px;
+                   border-radius: 50%;
+                   background: color-mix(in srgb, var(--q-primary) 80%, transparent);
+                   color: white;
+                   display: flex !important; align-items: center; justify-content: center;
+                   font-family: var(--ed-mono); font-size: 13px; font-weight: 600;
+                   text-transform: uppercase; }
+  .ed-side-user-meta { flex: 1; min-width: 0; line-height: 1.2; }
+  .ed-side-user-name { font-size: 13px; font-weight: 600;
+                       white-space: nowrap; overflow: hidden;
+                       text-overflow: ellipsis; }
+  .ed-side-user-role { font-family: var(--ed-mono);
+                       font-size: 10px; opacity: 0.6;
+                       letter-spacing: 0.08em; margin-top: 2px; }
+  .ed-side-bell  { width: 32px; height: 32px; border-radius: 50%;
+                   display: flex !important; align-items: center; justify-content: center;
+                   cursor: pointer; position: relative;
+                   transition: background 140ms ease; }
+  .ed-side-bell:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+  .ed-side-bell-badge { position: absolute; top: -2px; right: -2px;
+                        min-width: 16px; height: 16px; padding: 0 4px;
+                        background: var(--q-negative); color: white;
+                        border-radius: 99px;
+                        font-family: var(--ed-mono); font-size: 9px;
+                        font-weight: 700;
+                        display: inline-flex; align-items: center;
+                        justify-content: center; line-height: 1; }
+
+  /* Drawer host: prevent the inner Quasar content from creating a second
+     scrollbar — the nav region owns scrolling and its scrollbar is flush
+     with the drawer's right edge. */
+  aside.q-drawer.q-drawer--left .q-drawer__content {
+                   padding: 0 !important;
+                   overflow: hidden !important;
+                   display: flex; flex-direction: column; }
+
+  /* Nav list — flush scrollbar */
+  .ed-side-nav   { padding: 14px 0 14px 0; flex: 1; min-height: 0;
+                   overflow-y: auto; overflow-x: hidden; }
+  .ed-side-nav::-webkit-scrollbar { width: 6px; }
+  .ed-side-nav::-webkit-scrollbar-track { background: transparent; }
+  .ed-side-nav::-webkit-scrollbar-thumb {
+                   background: color-mix(in srgb, currentColor 22%, transparent);
+                   border-radius: 99px; }
+  .ed-side-nav::-webkit-scrollbar-thumb:hover {
+                   background: color-mix(in srgb, currentColor 36%, transparent); }
+  /* Firefox */
+  .ed-side-nav   { scrollbar-width: thin;
+                   scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent; }
+
+  /* Collapsible section header */
+  .ed-side-section-head {
+                   display: flex !important; align-items: center;
+                   justify-content: space-between;
+                   padding: 14px 20px 6px 20px;
+                   font-family: var(--ed-sans); font-weight: 700;
+                   text-transform: uppercase; letter-spacing: 0.18em;
+                   font-size: 10px; opacity: 0.55;
+                   cursor: pointer; user-select: none;
+                   transition: opacity 120ms ease;
+                   border: none; background: transparent; color: inherit;
+                   width: 100%; text-align: left; }
+  .ed-side-section-head:hover { opacity: 0.9; }
+  .ed-side-section-chevron {
+                   font-size: 16px !important; opacity: 0.55;
+                   transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1); }
+  .ed-side-section-head.collapsed .ed-side-section-chevron {
+                   transform: rotate(-90deg); }
+
+  .ed-side-item  { display: grid !important;
+                   grid-template-columns: 4px 22px 1fr;
+                   align-items: center; gap: 10px;
+                   padding: 9px 18px 9px 0;
+                   cursor: pointer;
+                   font-family: inherit; font-size: 13px;
+                   color: inherit; opacity: 0.78;
+                   border: none; background: transparent;
+                   text-align: left; width: 100%;
+                   transition: background 120ms ease, opacity 120ms ease; }
+  .ed-side-item:hover { background: color-mix(in srgb, currentColor 6%, transparent);
+                        opacity: 1; }
+  .ed-side-item.active { opacity: 1; font-weight: 600;
+                         background: color-mix(in srgb, var(--q-primary) 10%, transparent); }
+  .ed-side-item-stripe { width: 4px; height: 20px; border-radius: 0 99px 99px 0;
+                         background: transparent; align-self: center; }
+  .ed-side-item.active .ed-side-item-stripe { background: var(--q-primary); }
+  .ed-side-item .q-icon { font-size: 18px !important; opacity: 0.75; }
+  .ed-side-item.active .q-icon { opacity: 1; color: var(--q-primary); }
+
+  /* Footer zone */
+  .ed-side-footer{ display: flex !important; align-items: center;
+                   justify-content: space-between; gap: 8px;
+                   padding: 12px 16px;
+                   border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+                   margin-top: auto; }
+  .ed-side-footer .q-btn { font-family: var(--ed-sans);
+                           text-transform: uppercase; letter-spacing: 0.10em;
+                           font-size: 11px; font-weight: 600; }
+
+  /* Refined tables wherever they appear inside an .ed-card */
+  .ed-card .q-table__container { box-shadow: none !important;
+                                 border: 1px solid var(--ed-line);
+                                 background: transparent !important; }
+  .ed-card .q-table thead th { font-family: var(--ed-sans);
+                               text-transform: uppercase; letter-spacing: 0.10em;
+                               font-size: 10px; font-weight: 700; opacity: 0.7; }
+  .ed-card .q-table tbody td { font-family: var(--ed-mono);
+                               font-variant-numeric: tabular-nums;
+                               font-size: 12.5px; }
+</style>
+""", shared=True)
+
+
+# ---------------------------------------------------------------------------
 # Friendly error pages
 # ---------------------------------------------------------------------------
 
@@ -469,28 +753,207 @@ async def login_page():
     if _login_logo_url and "/api/static/uploads/" in _login_logo_url:
         _login_logo_url = _login_logo_url.replace("/api/static/uploads/", "/uploads/")
 
-    with ui.card().classes("absolute-center w-96"):
-        if _login_logo_url:
-            with ui.row().classes("w-full justify-center q-mb-sm"):
-                ui.image(_login_logo_url).style(
-                    f"max-height: {_login_logo_height}px; max-width: 200px; "
-                    "object-fit: contain;"
-                ).props("fit=contain spinner-color=primary")
-        ui.label("PRESTO").classes("text-h5 text-center w-full")
-        ui.label("Project Request Estimation Tool").classes("text-subtitle2 text-center w-full text-grey")
+    # ── Inject login-page CSS ─────────────────────────────────────
+    # The app runs in dark mode by default (ui.run(dark=True)). Use dark
+    # surfaces so text on the login screen remains readable.
+    ui.add_head_html("""
+    <style>
+      .ed-login-bg {
+        position: fixed; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at 18% 18%,
+            color-mix(in srgb, var(--q-primary) 24%, transparent) 0%,
+            transparent 45%),
+          radial-gradient(circle at 88% 82%,
+            color-mix(in srgb, var(--q-info) 18%, transparent) 0%,
+            transparent 50%),
+          #0d1117;
+        color: #e6edf3;
+      }
+      .ed-login-shell {
+        display: grid !important;
+        grid-template-columns: 1fr;
+        gap: 0;
+        max-width: 880px; width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        overflow: hidden;
+        backdrop-filter: blur(20px);
+        background: rgba(22, 27, 34, 0.78);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      }
+      @media (min-width: 720px) {
+        .ed-login-shell { grid-template-columns: 1fr 1fr; }
+      }
 
-        if has_ldap:
-            toggle = ui.toggle(
-                {"local": "Internal", "ldap": "LDAP"},
-                value="local",
-                on_change=lambda e: auth_method.update({"value": e.value}),
-            ).classes("w-full q-mb-sm")
+      /* Brand panel (left) */
+      .ed-login-brand {
+        position: relative;
+        padding: 44px 40px;
+        display: flex !important; flex-direction: column;
+        justify-content: space-between;
+        gap: 24px;
+        min-height: 420px;
+        background:
+          linear-gradient(160deg,
+            color-mix(in srgb, var(--q-primary) 22%, transparent) 0%,
+            color-mix(in srgb, var(--q-primary) 6%, transparent) 100%);
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
+        color: #f0f6fc;
+      }
+      .ed-login-brand::before {
+        content: ""; position: absolute; top: 0; left: 0;
+        width: 4px; height: 100%;
+        background: var(--q-primary);
+      }
+      /* Login brand logo — scales to ~60% of the brand panel width while
+         preserving the logo's natural aspect ratio. */
+      .ed-login-brand-logo { width: 60% !important;
+                             min-width: 180px !important;
+                             max-width: 280px !important;
+                             min-height: 100px !important;
+                             margin-bottom: 8px;
+                             flex: 0 0 auto;
+                             filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35)); }
+      .ed-login-brand-logo > img,
+      .ed-login-brand-logo .q-img__image,
+      .ed-login-brand-logo .q-img__container > div {
+                             object-fit: contain !important;
+                             object-position: left center !important;
+                             background-size: contain !important;
+                             background-position: left center !important; }
+      .ed-login-brand-title { font-family: inherit; font-weight: 700;
+                              font-size: 32px; line-height: 1.1;
+                              letter-spacing: -0.015em;
+                              margin: 14px 0 10px 0;
+                              color: #ffffff; }
+      .ed-login-brand-tagline { font-family: inherit; font-size: 14px;
+                                opacity: 0.82; line-height: 1.55;
+                                max-width: 32ch;
+                                color: #c9d1d9; }
+      .ed-login-brand-meta { font-family: var(--ed-mono);
+                             font-size: 11px; opacity: 0.65;
+                             letter-spacing: 0.06em;
+                             color: #8b949e; }
 
-        username = ui.input("Username").classes("w-full")
-        username.on("keydown.enter", lambda: password.run_method("focus"))
-        password = ui.input("Password", password=True, password_toggle_button=True).classes("w-full")
-        password.on("keydown.enter", try_login)
-        ui.button("Login", on_click=try_login).classes("w-full mt-4")
+      /* Form panel (right) */
+      .ed-login-form {
+        padding: 44px 40px;
+        display: flex !important; flex-direction: column;
+        justify-content: center; gap: 14px; min-height: 420px;
+        color: #e6edf3;
+      }
+      .ed-login-cap { font-family: var(--ed-sans); text-transform: uppercase;
+                      letter-spacing: 0.18em; font-size: 11px; font-weight: 700;
+                      opacity: 0.6; margin-bottom: 6px;
+                      color: #8b949e; }
+      .ed-login-heading { font-family: inherit; font-size: 22px; font-weight: 600;
+                          line-height: 1.2; margin: 0 0 22px 0;
+                          color: #ffffff; }
+
+      /* Force input fields to render with readable contrast on the dark surface */
+      .ed-login-form .q-field__control { background: rgba(255, 255, 255, 0.04);
+                                         border-radius: 4px; }
+      .ed-login-form .q-field__native,
+      .ed-login-form .q-field__label { color: #e6edf3 !important; }
+      .ed-login-form .q-field__native::placeholder { color: rgba(230, 237, 243, 0.4); }
+      .ed-login-form .q-field--outlined .q-field__control:before { border-color: rgba(255,255,255,0.18); }
+      .ed-login-form .q-field--outlined.q-field--focused .q-field__control:after {
+                                                  border-color: var(--q-primary); }
+      .ed-login-form .q-field { margin-bottom: 4px; }
+
+      .ed-login-method  { display: inline-flex !important; align-items: center;
+                          gap: 4px; padding: 4px;
+                          border: 1px solid rgba(255, 255, 255, 0.12);
+                          border-radius: 99px;
+                          margin-bottom: 18px; align-self: flex-start; }
+      .ed-login-method-btn { padding: 6px 14px; border-radius: 99px;
+                             font-family: inherit; font-size: 12px; font-weight: 500;
+                             cursor: pointer; transition: all 140ms ease;
+                             border: none; background: transparent;
+                             color: #c9d1d9; line-height: 1.2; }
+      .ed-login-method-btn:hover  { background: rgba(255, 255, 255, 0.06);
+                                    color: #ffffff; }
+      .ed-login-method-btn.active { background: var(--q-primary); color: #ffffff; }
+
+      .ed-login-submit { margin-top: 12px !important; height: 44px;
+                         font-family: var(--ed-sans);
+                         text-transform: uppercase; letter-spacing: 0.14em;
+                         font-size: 12px; font-weight: 600; }
+      .ed-login-foot { margin-top: 18px; font-family: var(--ed-mono);
+                       font-size: 10px; opacity: 0.45; text-align: center;
+                       letter-spacing: 0.08em; text-transform: uppercase;
+                       color: #8b949e; }
+    </style>
+    """)
+
+    with ui.element("div").classes("ed-login-bg"):
+        with ui.element("div").classes("ed-login-shell"):
+
+            # ── Left: brand panel ──────────────────────────────
+            with ui.element("div").classes("ed-login-brand"):
+                with ui.element("div"):
+                    if _login_logo_url:
+                        # No `ratio` prop — q-img uses the loaded image's
+                        # natural aspect ratio so wide-aspect logos render
+                        # at their intended proportions (not a square box).
+                        # The CSS class enforces width: 40% of the brand
+                        # panel, capped at 200px, with a min-height so the
+                        # element reserves space before the image loads.
+                        ui.image(_login_logo_url) \
+                            .classes("ed-login-brand-logo") \
+                            .props("fit=contain no-spinner")
+                    ui.label("PRESTO").classes("ed-login-brand-title")
+                    ui.label(
+                        "Project Request Estimation Tool. "
+                        "Plan test effort, track requests, "
+                        "and ship predictable estimations."
+                    ).classes("ed-login-brand-tagline")
+                ui.label("v3.4.0 · INTERNAL TOOL").classes("ed-login-brand-meta")
+
+            # ── Right: form panel ──────────────────────────────
+            with ui.element("div").classes("ed-login-form"):
+                ui.label("Sign In").classes("ed-login-cap")
+                ui.label("Welcome back").classes("ed-login-heading")
+
+                if has_ldap:
+                    method_local = ui.element("button").classes(
+                        "ed-login-method-btn active")
+                    method_ldap = ui.element("button").classes(
+                        "ed-login-method-btn")
+                    with ui.element("div").classes("ed-login-method"):
+                        with method_local:
+                            ui.label("Internal")
+                        with method_ldap:
+                            ui.label("LDAP")
+
+                    def _set_method_local():
+                        auth_method["value"] = "local"
+                        method_local.classes(add="active")
+                        method_ldap.classes(remove="active")
+
+                    def _set_method_ldap():
+                        auth_method["value"] = "ldap"
+                        method_ldap.classes(add="active")
+                        method_local.classes(remove="active")
+
+                    method_local.on("click", lambda: _set_method_local())
+                    method_ldap.on("click", lambda: _set_method_ldap())
+
+                username = ui.input("Username").props("outlined dense").classes("w-full")
+                username.on("keydown.enter", lambda: password.run_method("focus"))
+                password = ui.input("Password", password=True,
+                                    password_toggle_button=True) \
+                    .props("outlined dense").classes("w-full")
+                password.on("keydown.enter", try_login)
+
+                ui.button("Sign In", on_click=try_login) \
+                    .props("color=primary unelevated") \
+                    .classes("w-full ed-login-submit")
+
+                ui.label("PRESTO · authenticated session").classes("ed-login-foot")
 
 
 # ---------------------------------------------------------------------------
@@ -510,13 +973,64 @@ async def auth_middleware(request, call_next):
 # Sidebar navigation
 # ---------------------------------------------------------------------------
 
-def _nav_item(label: str, icon_name: str, path: str) -> None:
-    """Render a sidebar navigation item with a Material icon."""
-    with ui.item(on_click=lambda p=path: ui.navigate.to(p)).classes("cursor-pointer"):
-        with ui.item_section().props("avatar"):
-            ui.icon(icon_name, color="white", size="24px")
-        with ui.item_section():
-            ui.item_label(label)
+def _nav_item(label: str, icon_name: str, path: str, current_path: str = "") -> None:
+    """Render a sidebar navigation item with active-route highlighting."""
+    is_active = current_path == path or (
+        path != "/" and current_path.startswith(path)
+    )
+    cls = "ed-side-item" + (" active" if is_active else "")
+    btn = ui.element("button").classes(cls)
+    btn.on("click", lambda p=path: ui.navigate.to(p))
+    with btn:
+        ui.element("span").classes("ed-side-item-stripe")
+        ui.icon(icon_name)
+        ui.label(label)
+
+
+def _initials(name: str) -> str:
+    """Return up to 2 initials from a display name (e.g. 'Jane Doe' → 'JD')."""
+    if not name:
+        return "?"
+    parts = [p for p in name.strip().split() if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[-1][0]).upper()
+    return parts[0][:2].upper() if parts else "?"
+
+
+def _section_header(section_id: str, label: str):
+    """Render a clickable section header that toggles the visibility of its
+    items container. Returns the items container so callers can add nav items
+    inside a `with` block. The open/collapsed state persists per user across
+    page navigations via app.storage.user.
+    """
+    storage = _safe_storage()
+    state_dict = storage.get("_sidebar_sections") or {}
+    is_open = state_dict.get(section_id, True)  # default: open
+
+    head_cls = "ed-side-section-head" + ("" if is_open else " collapsed")
+    head = ui.element("button").classes(head_cls)
+    with head:
+        ui.label(label)
+        chevron = ui.icon("expand_more").classes("ed-side-section-chevron")
+
+    items_container = ui.element("div").classes("ed-side-section-items")
+    if not is_open:
+        items_container.set_visibility(False)
+
+    def _toggle():
+        store = _safe_storage()
+        s = store.get("_sidebar_sections") or {}
+        new_state = not s.get(section_id, True)
+        s[section_id] = new_state
+        store["_sidebar_sections"] = s
+        items_container.set_visibility(new_state)
+        if new_state:
+            head.classes(remove="collapsed")
+        else:
+            head.classes(add="collapsed")
+
+    head.on("click", _toggle)
+    return items_container
 
 
 def sidebar():
@@ -548,29 +1062,43 @@ def sidebar():
     if _logo_url and "/api/static/uploads/" in _logo_url:
         _logo_url = _logo_url.replace("/api/static/uploads/", "/uploads/")
 
+    # Detect current route for active-nav highlighting
+    try:
+        current_path = ui.context.client.page.path
+    except Exception:
+        current_path = "/"
+
     # Drawer background is controlled by the injected theme CSS below
     # (sidebar_bg_light / sidebar_bg_dark). We avoid `bg-dark` because its
     # `!important` rule wins over our injected style.
-    with ui.left_drawer(value=True).classes("text-white") as drawer:
-        if _logo_url:
-            with ui.row().classes("q-pa-md items-center gap-2"):
-                ui.image(_logo_url).style(
-                    f"max-height: {_logo_height}px; max-width: 160px; "
-                    "object-fit: contain;"
-                ).props("fit=contain spinner-color=primary")
-                ui.label("PRESTO").classes("text-h6")
-        else:
-            ui.label("PRESTO").classes("text-h6 q-pa-md")
+    with ui.left_drawer(value=True) \
+            .style("display: flex; flex-direction: column; padding: 0;") as drawer:
 
+        # ── Logo zone ─────────────────────────────────────────
+        with ui.element("div").classes("ed-side-logo"):
+            if _logo_url:
+                # Q-img wrapper with a 1:1 ratio + class-driven sizing so
+                # the image renders reliably inside the flex row.
+                ui.image(_logo_url) \
+                    .classes("ed-side-logo-img") \
+                    .props("ratio=1 fit=contain no-spinner")
+            ui.label("PRESTO").classes("ed-side-logo-text")
+
+        # ── User card ─────────────────────────────────────────
         if user:
-            with ui.row().classes("q-px-md items-center w-full justify-between"):
-                with ui.column().classes("gap-0"):
-                    ui.label(f"{user.get('display_name', '')}").classes("text-caption")
-                    ui.label(f"Role: {role}").classes("text-caption text-grey")
+            with ui.element("div").classes("ed-side-user"):
+                ui.label(_initials(user.get("display_name") or user.get("username", ""))) \
+                    .classes("ed-side-avatar")
+                with ui.element("div").classes("ed-side-user-meta"):
+                    ui.label(user.get("display_name") or user.get("username", "")) \
+                        .classes("ed-side-user-name")
+                    ui.label(f"{role}").classes("ed-side-user-role")
                 # Notification bell
-                badge_label = ui.label("").classes("hidden")  # hidden state holder
-                with ui.button(icon="notifications", on_click=lambda: _open_notifications_dialog()).props("flat round dense color=white size=sm") as bell_btn:
-                    bell_badge = ui.badge("0", color="red").props("floating").classes("hidden")
+                bell_btn = ui.element("div").classes("ed-side-bell")
+                bell_btn.on("click", lambda: _open_notifications_dialog())
+                with bell_btn:
+                    ui.icon("notifications").style("font-size: 18px;")
+                    bell_badge = ui.label("0").classes("ed-side-bell-badge hidden")
 
                 async def _poll_unread() -> None:
                     try:
@@ -649,31 +1177,6 @@ def sidebar():
                 ui.timer(30.0, _poll_unread)
                 ui.timer(0.5, _poll_unread, once=True)
 
-            ui.separator()
-
-        # Notification banner (inside drawer, shown when unread > 0)
-        _banner_row = ui.row().classes("w-full bg-warning text-dark q-pa-sm items-center hidden")
-        with _banner_row:
-            ui.icon("notifications_active", size="sm")
-            _banner_label = ui.label("").classes("q-ml-sm text-caption")
-
-        async def _update_banner() -> None:
-            try:
-                data = await api_get("/notifications/unread-count")
-                count = data.get("unread_count", 0)
-                if count > 0:
-                    _banner_label.set_text(
-                        f"You have {count} unread notification{'s' if count > 1 else ''}"
-                    )
-                    _banner_row.classes(remove="hidden")
-                else:
-                    _banner_row.classes(add="hidden")
-            except Exception:
-                pass
-
-        ui.timer(30.0, _update_banner)
-        ui.timer(1.0, _update_banner, once=True)
-
         # Determine RBAC permissions for nav visibility
         _rbac_perms: set[str] = set()
         if role == "ADMIN":
@@ -696,51 +1199,43 @@ def sidebar():
         def _has_perm(perm: str) -> bool:
             return "__all__" in _rbac_perms or perm in _rbac_perms
 
-        with ui.list().props("dense"):
+        with ui.element("div").classes("ed-side-nav"):
 
             # -- Overview --
-            ui.item_label("OVERVIEW").props("header").classes("text-overline text-grey")
-            _nav_item("Dashboard",     "dashboard", "/")
-            if _has_perm("view_requests") or _has_perm("manage_requests"):
-                _nav_item("Request Inbox", "inbox",     "/requests")
-
-            ui.separator()
+            with _section_header("overview", "Overview"):
+                _nav_item("Dashboard",     "dashboard", "/", current_path)
+                if _has_perm("view_requests") or _has_perm("manage_requests"):
+                    _nav_item("Request Inbox", "inbox", "/requests", current_path)
 
             # -- Estimation --
-            ui.item_label("ESTIMATION").props("header").classes("text-overline text-grey")
-            _nav_item("Estimations",    "list_alt",   "/estimations")
-            _nav_item("New Estimation", "add_circle", "/estimation/new")
-
-            ui.separator()
+            with _section_header("estimation", "Estimation"):
+                _nav_item("Estimations",    "list_alt",   "/estimations",     current_path)
+                _nav_item("New Estimation", "add_circle", "/estimation/new",  current_path)
 
             # -- Data Management --
-            ui.item_label("DATA MANAGEMENT").props("header").classes("text-overline text-grey")
-            _nav_item("Feature Catalog",    "category",    "/features")
-            _nav_item("Task Templates",    "assignment",  "/tasks")
-            _nav_item("DUT Registry",       "devices",    "/duts")
-            _nav_item("DUT Assets",        "inventory",  "/assets")
-            _nav_item("Test Profiles",      "tune",       "/profiles")
-            _nav_item("Historical Projects", "history",   "/history")
-            _nav_item("Team Members",       "group",      "/team")
-            _nav_item("Risk Registry",      "warning",    "/risks")
-            _nav_item("PR Registry",       "bug_report", "/pr-registry")
-            _nav_item("Document Types",    "description","/document-types")
-            _nav_item("Public Holidays",   "event",      "/public-holidays")
-
-            ui.separator()
+            with _section_header("data_management", "Data Management"):
+                _nav_item("Feature Catalog",     "category",    "/features",         current_path)
+                _nav_item("Task Templates",      "assignment",  "/tasks",            current_path)
+                _nav_item("DUT Registry",        "devices",     "/duts",             current_path)
+                _nav_item("DUT Assets",          "inventory",   "/assets",           current_path)
+                _nav_item("Test Profiles",       "tune",        "/profiles",         current_path)
+                _nav_item("Historical Projects", "history",     "/history",          current_path)
+                _nav_item("Team Members",        "group",       "/team",             current_path)
+                _nav_item("Risk Registry",       "warning",     "/risks",            current_path)
+                _nav_item("PR Registry",         "bug_report",  "/pr-registry",      current_path)
+                _nav_item("Document Types",      "description", "/document-types",   current_path)
+                _nav_item("Public Holidays",     "event",       "/public-holidays",  current_path)
 
             # -- Administration --
-            ui.item_label("ADMINISTRATION").props("header").classes("text-overline text-grey")
-            _nav_item("Settings",     "settings",            "/settings")
-            _nav_item("Integrations", "sync",                "/integrations")
+            with _section_header("administration", "Administration"):
+                _nav_item("Settings",     "settings", "/settings",     current_path)
+                _nav_item("Integrations", "sync",     "/integrations", current_path)
 
-            if role == "ADMIN":
-                _nav_item("Users",     "manage_accounts",      "/users")
-                _nav_item("RBAC",      "admin_panel_settings", "/rbac")
-                _nav_item("Audit Log", "receipt_long",         "/audit")
-                _nav_item("Backup & Restore", "backup",        "/admin/backup")
-
-        ui.space()
+                if role == "ADMIN":
+                    _nav_item("Users",            "manage_accounts",      "/users",        current_path)
+                    _nav_item("RBAC",             "admin_panel_settings", "/rbac",         current_path)
+                    _nav_item("Audit Log",        "receipt_long",         "/audit",        current_path)
+                    _nav_item("Backup & Restore", "backup",               "/admin/backup", current_path)
 
         # Restore persisted dark/light preference (default: dark)
         is_dark = _safe_storage().get("dark_mode", True)
@@ -812,8 +1307,6 @@ def sidebar():
             _safe_storage()["dark_mode"] = dark.value
             _apply_theme_css(dark.value)
 
-        ui.button(icon="brightness_6", on_click=toggle_theme).props("flat round").classes("q-ma-md")
-
         async def logout():
             try:
                 await api_post("/auth/logout")
@@ -822,7 +1315,12 @@ def sidebar():
             app.storage.user.clear()
             ui.navigate.to("/login")
 
-        ui.button("Logout", icon="logout", on_click=logout).props("flat").classes("q-ma-md text-white")
+        # ── Footer (theme toggle + logout) ────────────────────
+        with ui.element("div").classes("ed-side-footer"):
+            ui.button(icon="brightness_6", on_click=toggle_theme) \
+                .props("flat round dense").tooltip("Toggle theme")
+            ui.button("Logout", icon="logout", on_click=logout) \
+                .props("flat dense")
 
     return drawer
 
@@ -840,215 +1338,413 @@ async def dashboard_page():
 
     sidebar()
 
-    # Resolve chart text color based on dark/light mode
+    # ─────────────────────────────────────────────────────────────
+    # Inject dashboard-specific component CSS (base CSS is in the
+    # global head added in this file at module load time).
+    # ─────────────────────────────────────────────────────────────
+    ui.add_head_html("""
+    <style>
+      /* KPI hero grid */
+      .ed-kpi-hero-grid { display: grid !important; gap: 1px;
+                          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                          border: 1px solid var(--ed-line); border-radius: 4px;
+                          overflow: hidden; margin-bottom: 28px;
+                          background: var(--ed-line); }
+      .ed-kpi-hero-cell { padding: 22px 24px; background: var(--q-page, transparent);
+                          display: flex; flex-direction: column; gap: 10px;
+                          min-height: 120px; }
+      .ed-kpi-hero-num  { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
+                          font-size: 38px; font-weight: 500; line-height: 1;
+                          letter-spacing: -0.02em; }
+      .ed-kpi-hero-unit { font-family: inherit; font-size: 12px; opacity: 0.65;
+                          display: flex; align-items: center; gap: 6px; }
+
+      /* Pipeline flow */
+      .ed-pipeline      { display: flex !important; align-items: stretch;
+                          gap: 0; margin-top: 14px; flex-wrap: wrap; }
+      .ed-pipeline-stage{ flex: 1 1 0; min-width: 110px;
+                          padding: 18px 14px;
+                          border: 1px solid var(--ed-line); border-radius: 4px;
+                          background: transparent; cursor: pointer;
+                          transition: border-color 160ms ease, background 160ms ease;
+                          display: flex; flex-direction: column; gap: 8px; }
+      .ed-pipeline-stage:hover { border-color: var(--q-primary);
+                                 background: color-mix(in srgb, var(--q-primary) 6%, transparent); }
+      .ed-pipeline-stage.empty { opacity: 0.45; }
+      .ed-pipeline-stage-num { font-family: var(--ed-mono);
+                               font-variant-numeric: tabular-nums;
+                               font-size: 30px; font-weight: 500; line-height: 1; }
+      .ed-pipeline-arrow { display: flex !important; align-items: center;
+                           justify-content: center;
+                           padding: 0 6px; opacity: 0.4;
+                           font-family: var(--ed-mono); font-size: 18px; }
+
+      /* Activity feed */
+      .ed-feed        { display: flex !important; flex-direction: column;
+                        border: 1px solid var(--ed-line); border-radius: 4px;
+                        overflow: hidden; margin-bottom: 22px; }
+      .ed-feed-item   { display: grid !important;
+                        grid-template-columns: 4px auto 1fr auto auto;
+                        gap: 14px; align-items: center;
+                        padding: 14px 18px; cursor: pointer;
+                        border-bottom: 1px dashed var(--ed-line-soft);
+                        transition: background 140ms ease; }
+      .ed-feed-item:last-child { border-bottom: none; }
+      .ed-feed-item:hover { background: var(--ed-bg-soft); }
+      .ed-feed-stripe { width: 4px; height: 32px; border-radius: 99px;
+                        background: var(--q-info); }
+      .ed-feed-stripe.positive { background: var(--q-positive); }
+      .ed-feed-stripe.warning  { background: var(--q-warning); }
+      .ed-feed-stripe.negative { background: var(--q-negative); }
+      .ed-feed-id     { font-family: var(--ed-mono); font-size: 12px; opacity: 0.7; }
+      .ed-feed-title  { font-size: 14px; font-weight: 500; line-height: 1.3;
+                        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ed-feed-num    { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
+                        font-size: 13px; }
+      .ed-feed-meta   { font-family: var(--ed-mono); font-size: 11px;
+                        opacity: 0.6; text-align: right; min-width: 80px; }
+
+      .ed-section-link { font-family: inherit; font-size: 12px;
+                         color: var(--q-primary); text-decoration: none;
+                         opacity: 0.85; cursor: pointer; }
+      .ed-section-link:hover { opacity: 1; text-decoration: underline; }
+
+      /* Compressed chart cards */
+      .ed-chart-grid    { display: grid !important;
+                          grid-template-columns: repeat(2, 1fr); gap: 14px;
+                          margin-bottom: 12px; }
+      @media (max-width: 720px) { .ed-chart-grid { grid-template-columns: 1fr; } }
+      .ed-chart-card    { padding: 18px 20px !important; margin-bottom: 0 !important; }
+      .ed-chart-card .echarts { height: 280px !important; }
+    </style>
+    """)
+
+    # Resolve chart text color from dark/light mode
     _is_dark = _safe_storage().get("dark_mode", True)
     _chart_text = "#FFFFFF" if _is_dark else "#333333"
 
-    _legend = {"orient": "horizontal", "bottom": 0, "textStyle": {"color": _chart_text}}
-    _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 11, "color": _chart_text}
-    _emphasis = {"label": {"show": True, "fontSize": 14, "fontWeight": "bold"}}
-    _chart_h = "height: 400px"
+    # Use scrollable horizontal legend so it never wraps + clips into the donut.
+    # Pads from the bottom edge to leave room for the scroll arrows.
+    _legend = {
+        "type": "scroll",
+        "orient": "horizontal",
+        "bottom": 4,
+        "left": "center",
+        "padding": [4, 24],
+        "textStyle": {"color": _chart_text, "fontSize": 10},
+        "pageIconColor": _chart_text,
+        "pageIconInactiveColor": "rgba(150,150,150,0.3)",
+        "pageTextStyle": {"color": _chart_text, "fontSize": 9},
+        "itemGap": 12,
+        "itemWidth": 12,
+        "itemHeight": 8,
+    }
+    _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 10, "color": _chart_text}
+    _emphasis = {"label": {"show": True, "fontSize": 13, "fontWeight": "bold"}}
 
-    # Color palettes
     _palette = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350", "#AB47BC",
                 "#26C6DA", "#EC407A", "#8D6E63", "#78909C", "#FFEE58"]
 
+    # ─── Helpers ─────────────────────────────────────────────────
+    def _kpi_hero(label: str, value: str, sub: str = "", icon: str = "") -> None:
+        with ui.element("div").classes("ed-kpi-hero-cell"):
+            ui.label(label).classes("ed-eyebrow")
+            ui.label(value).classes("ed-kpi-hero-num")
+            if sub or icon:
+                with ui.element("div").classes("ed-kpi-hero-unit"):
+                    if icon:
+                        ui.icon(icon).style("font-size: 14px; opacity: 0.7;")
+                    if sub:
+                        ui.label(sub)
+
+    def _pipeline_stage(label: str, count: int, nav: str | None = None) -> None:
+        cls = "ed-pipeline-stage" + (" empty" if count == 0 else "")
+        el = ui.element("div").classes(cls)
+        if nav:
+            el.on("click", lambda _, n=nav: ui.navigate.to(n))
+        with el:
+            ui.label(str(count)).classes("ed-pipeline-stage-num")
+            ui.label(label).classes("ed-eyebrow")
+
+    def _feed_item(stripe: str, id_text: str, title: str, num: str, meta: str, nav: str) -> None:
+        item = ui.element("div").classes("ed-feed-item")
+        item.on("click", lambda _, n=nav: ui.navigate.to(n))
+        with item:
+            ui.element("div").classes(f"ed-feed-stripe {stripe}")
+            ui.label(id_text or "—").classes("ed-feed-id")
+            ui.label(title or "(untitled)").classes("ed-feed-title")
+            ui.label(num).classes("ed-feed-num")
+            ui.label(meta).classes("ed-feed-meta")
+
+    def _format_age(iso: str | None) -> str:
+        if not iso:
+            return ""
+        try:
+            from datetime import datetime, timezone
+            d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
+            now = datetime.now(timezone.utc) if d.tzinfo else datetime.now()
+            delta = now - d
+            days = delta.days
+            if days < 1:
+                return "today"
+            if days < 7:
+                return f"{days}d"
+            if days < 30:
+                return f"{days // 7}w"
+            return f"{days // 30}mo"
+        except Exception:
+            return iso[:10]
+
     def _donut(title: str, series_name: str, data: list[dict]) -> None:
-        """Render a donut chart card."""
-        with ui.card().classes("q-pa-md flex-1"):
-            ui.label(title).classes("text-subtitle1 q-mb-sm")
+        with ui.element("div").classes("ed-card ed-chart-card"):
+            with ui.element("div").classes("ed-card-head"):
+                ui.label(title).classes("ed-cap")
+                _t = sum(d.get("value", 0) for d in data)
+                ui.label(f"{_t} TOTAL").classes("ed-card-head-meta")
             ui.echart({
                 "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
                 "legend": _legend,
                 "series": [{
                     "name": series_name,
                     "type": "pie",
-                    "radius": ["40%", "70%"],
-                    "center": ["50%", "42%"],
-                    "avoidLabelOverlap": False,
+                    "radius": ["38%", "62%"],
+                    "center": ["50%", "44%"],
+                    "avoidLabelOverlap": True,
                     "label": _label,
                     "emphasis": _emphasis,
                     "data": data,
                 }],
-            }).classes("w-full").style(_chart_h)
+            }).classes("w-full")
 
     def _bar(title: str, categories: list[str], values: list[int], color: str = "#42A5F5") -> None:
-        """Render a horizontal bar chart card."""
-        with ui.card().classes("q-pa-md flex-1"):
-            ui.label(title).classes("text-subtitle1 q-mb-sm")
+        with ui.element("div").classes("ed-card ed-chart-card"):
+            with ui.element("div").classes("ed-card-head"):
+                ui.label(title).classes("ed-cap")
+                ui.label(f"{sum(values)} TOTAL").classes("ed-card-head-meta")
             ui.echart({
                 "tooltip": {"trigger": "axis"},
                 "grid": {"left": "3%", "right": "6%", "bottom": "3%", "top": "8%", "containLabel": True},
-                "xAxis": {"type": "value", "axisLabel": {"color": _chart_text}},
-                "yAxis": {"type": "category", "data": categories, "axisLabel": {"color": _chart_text, "fontSize": 11}},
+                "xAxis": {"type": "value", "axisLabel": {"color": _chart_text, "fontSize": 10}},
+                "yAxis": {"type": "category", "data": categories,
+                          "axisLabel": {"color": _chart_text, "fontSize": 10}},
                 "series": [{
                     "type": "bar",
                     "data": values,
                     "itemStyle": {"color": color},
-                    "label": {"show": True, "position": "right", "color": _chart_text},
+                    "label": {"show": True, "position": "right",
+                              "color": _chart_text, "fontSize": 10},
                 }],
-            }).classes("w-full").style(_chart_h)
+            }).classes("w-full")
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Dashboard").classes("text-h4")
+    # ─── Page body ───────────────────────────────────────────────
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
         try:
             stats = await api_get("/dashboard/stats")
+        except Exception as e:
+            show_error_page(e)
+            return
 
-            # ── Row 1: Estimation & Request status ────────────
-            with ui.row().classes("w-full q-gutter-md q-mb-md"):
+        with ui.element("div").classes("ed-shell"):
+
+            # Page header row
+            with ui.row().classes("items-baseline justify-between q-mb-md w-full"):
+                ui.label("Dashboard").classes("text-h4")
+                ui.label("Operational summary · live").classes("ed-eyebrow")
+
+            # ── KPI hero strip ─────────────────────────────────
+            active = stats.get("estimations_draft", 0) + stats.get("estimations_final", 0)
+            open_req = max(stats.get("total_requests", 0) - stats.get("requests_completed", 0), 0)
+            avg_h = stats.get("avg_grand_total_hours", 0)
+            util = stats.get("avg_utilization_pct", 0)
+
+            with ui.element("div").classes("ed-kpi-hero-grid"):
+                _kpi_hero(
+                    "Open Requests",
+                    str(open_req),
+                    f"{stats.get('requests_new', 0)} new in inbox",
+                    "inbox",
+                )
+                _kpi_hero(
+                    "Active Estimations",
+                    str(active),
+                    f"{stats.get('estimations_final', 0)} awaiting approval",
+                    "edit_note",
+                )
+                _kpi_hero(
+                    "Avg Estimation",
+                    f"{avg_h:,.0f}h",
+                    "across final + approved",
+                    "schedule",
+                )
+                _kpi_hero(
+                    "Team Utilization",
+                    f"{util:.0f}%",
+                    "of allocated capacity",
+                    "speed",
+                )
+
+            # ── Pipeline flow card ──────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                with ui.element("div").classes("ed-card-head"):
+                    ui.label("Pipeline State").classes("ed-cap")
+                    ui.label("requests → estimations → approval").classes("ed-eyebrow")
+                with ui.element("div").classes("ed-pipeline"):
+                    _pipeline_stage("Inbox · New",
+                                    stats.get("requests_new", 0),
+                                    "/requests")
+                    ui.label("→").classes("ed-pipeline-arrow")
+                    _pipeline_stage("Estimating",
+                                    stats.get("requests_in_progress", 0),
+                                    "/requests")
+                    ui.label("→").classes("ed-pipeline-arrow")
+                    _pipeline_stage("Draft",
+                                    stats.get("estimations_draft", 0),
+                                    "/estimations")
+                    ui.label("→").classes("ed-pipeline-arrow")
+                    _pipeline_stage("Final",
+                                    stats.get("estimations_final", 0),
+                                    "/estimations")
+                    ui.label("→").classes("ed-pipeline-arrow")
+                    _pipeline_stage("Approved",
+                                    stats.get("estimations_approved", 0),
+                                    "/estimations")
+
+            # ── Distribution charts (compact, 2x2) ──────────────
+            with ui.element("div").classes("ed-section-head"):
+                ui.label("Distribution").classes("ed-cap")
+
+            with ui.element("div").classes("ed-chart-grid"):
+                # Estimations donut
                 total_est = stats.get("total_estimations", 0)
-                _donut(f"Estimations \u2014 {total_est} total", "Estimations", [
-                    {"value": stats.get("estimations_draft", 0), "name": "Draft", "itemStyle": {"color": "#78909C"}},
-                    {"value": stats.get("estimations_final", 0), "name": "Final", "itemStyle": {"color": "#1976D2"}},
-                    {"value": stats.get("estimations_approved", 0), "name": "Approved", "itemStyle": {"color": "#4CAF50"}},
-                ])
+                _donut(
+                    f"Estimations · {total_est}",
+                    "Estimations",
+                    [
+                        {"value": stats.get("estimations_draft", 0), "name": "Draft",
+                         "itemStyle": {"color": "#78909C"}},
+                        {"value": stats.get("estimations_final", 0), "name": "Final",
+                         "itemStyle": {"color": "#1976D2"}},
+                        {"value": stats.get("estimations_approved", 0), "name": "Approved",
+                         "itemStyle": {"color": "#4CAF50"}},
+                    ],
+                )
 
+                # Requests donut
                 total_req = stats.get("total_requests", 0)
                 req_data = [
-                    {"value": stats.get("requests_new", 0), "name": "New", "itemStyle": {"color": "#26A69A"}},
-                    {"value": stats.get("requests_in_progress", 0), "name": "In Progress", "itemStyle": {"color": "#FFA726"}},
-                    {"value": stats.get("requests_completed", 0), "name": "Completed", "itemStyle": {"color": "#66BB6A"}},
+                    {"value": stats.get("requests_new", 0), "name": "New",
+                     "itemStyle": {"color": "#26A69A"}},
+                    {"value": stats.get("requests_in_progress", 0), "name": "In Progress",
+                     "itemStyle": {"color": "#FFA726"}},
+                    {"value": stats.get("requests_completed", 0), "name": "Completed",
+                     "itemStyle": {"color": "#66BB6A"}},
                 ]
                 rejected = total_req - sum(d["value"] for d in req_data)
                 if rejected > 0:
-                    req_data.append({"value": rejected, "name": "Other", "itemStyle": {"color": "#BDBDBD"}})
-                _donut(f"Requests \u2014 {total_req} total", "Requests", req_data)
+                    req_data.append({"value": rejected, "name": "Other",
+                                     "itemStyle": {"color": "#BDBDBD"}})
+                _donut(f"Requests · {total_req}", "Requests", req_data)
 
-            # ── Row 2: Features & Task Templates ──────────────
-            with ui.row().classes("w-full q-gutter-md q-mb-md"):
+            with ui.element("div").classes("ed-chart-grid"):
+                # Features by category
                 feat_cat = stats.get("features_by_category", {})
                 if feat_cat:
                     feat_data = [
-                        {"value": cnt, "name": cat, "itemStyle": {"color": _palette[i % len(_palette)]}}
+                        {"value": cnt, "name": cat,
+                         "itemStyle": {"color": _palette[i % len(_palette)]}}
                         for i, (cat, cnt) in enumerate(feat_cat.items())
                     ]
-                    total_feat = sum(d["value"] for d in feat_data)
-                    _donut(f"Feature Catalog \u2014 {total_feat} total", "Features", feat_data)
+                    _donut(f"Features · {sum(d['value'] for d in feat_data)}",
+                           "Features", feat_data)
                 else:
-                    with ui.card().classes("q-pa-md flex-1"):
-                        ui.label("Feature Catalog").classes("text-subtitle1")
-                        ui.label("No features configured.").classes("text-grey q-mt-md")
+                    with ui.element("div").classes("ed-card ed-chart-card"):
+                        ui.label("Features").classes("ed-cap")
+                        ui.label("No features configured").classes("ed-empty q-mt-md")
 
-                tasks_type = stats.get("tasks_by_type", {})
-                if tasks_type:
-                    sorted_tasks = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
-                    cats = [t[0] for t in sorted_tasks]
-                    vals = [t[1] for t in sorted_tasks]
-                    total_tasks = sum(vals)
-                    _bar(f"Task Templates \u2014 {total_tasks} total", cats, vals, "#42A5F5")
-                else:
-                    with ui.card().classes("q-pa-md flex-1"):
-                        ui.label("Task Templates").classes("text-subtitle1")
-                        ui.label("No task templates configured.").classes("text-grey q-mt-md")
-
-            # ── Row 3: Risk Registry (by category & likelihood) ─
-            with ui.row().classes("w-full q-gutter-md q-mb-lg"):
-                risk_cat = stats.get("risks_by_category", {})
-                if risk_cat:
-                    risk_cat_data = [
-                        {"value": cnt, "name": cat, "itemStyle": {"color": _palette[i % len(_palette)]}}
-                        for i, (cat, cnt) in enumerate(risk_cat.items())
-                    ]
-                    total_risks = sum(d["value"] for d in risk_cat_data)
-                    _donut(f"Risk Registry \u2014 {total_risks} total", "Risks", risk_cat_data)
-                else:
-                    with ui.card().classes("q-pa-md flex-1"):
-                        ui.label("Risk Registry").classes("text-subtitle1")
-                        ui.label("No risks configured.").classes("text-grey q-mt-md")
-
+                # Risks by likelihood
                 risk_lh = stats.get("risks_by_likelihood", {})
-                _lh_colors = {"LOW": "#66BB6A", "MEDIUM": "#FFA726", "HIGH": "#EF5350", "CRITICAL": "#B71C1C"}
+                _lh_colors = {"LOW": "#66BB6A", "MEDIUM": "#FFA726",
+                              "HIGH": "#EF5350", "CRITICAL": "#B71C1C"}
                 if risk_lh:
                     risk_lh_data = [
-                        {"value": cnt, "name": lh, "itemStyle": {"color": _lh_colors.get(lh, "#78909C")}}
+                        {"value": cnt, "name": lh,
+                         "itemStyle": {"color": _lh_colors.get(lh, "#78909C")}}
                         for lh, cnt in risk_lh.items()
                     ]
-                    _donut("Risk Likelihood", "Likelihood", risk_lh_data)
+                    _donut(f"Risks · {sum(d['value'] for d in risk_lh_data)}",
+                           "Likelihood", risk_lh_data)
                 else:
-                    with ui.card().classes("q-pa-md flex-1"):
-                        ui.label("Risk Likelihood").classes("text-subtitle1")
-                        ui.label("No risks configured.").classes("text-grey q-mt-md")
+                    with ui.element("div").classes("ed-card ed-chart-card"):
+                        ui.label("Risk Likelihood").classes("ed-cap")
+                        ui.label("No risks configured").classes("ed-empty q-mt-md")
 
-            # ── Recent estimations ────────────────────────────
-            ui.label("Recent Estimations").classes("text-h6 q-mt-md")
+            # Tasks bar (full width since it's horizontal)
+            tasks_type = stats.get("tasks_by_type", {})
+            if tasks_type:
+                sorted_tasks = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
+                cats = [t[0] for t in sorted_tasks]
+                vals = [t[1] for t in sorted_tasks]
+                _bar(f"Task Templates · {sum(vals)}", cats, vals, "#42A5F5")
+
+            # ── Recent estimations feed ─────────────────────────
+            with ui.element("div").classes("ed-section-head"):
+                ui.label("Recent Estimations").classes("ed-cap")
+                _link = ui.element("span").classes("ed-section-link")
+                _link.on("click", lambda: ui.navigate.to("/estimations"))
+                with _link:
+                    ui.label("see all →")
+
             recent = stats.get("recent_estimations", [])
             if recent:
-                columns = [
-                    {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
-                    {"name": "estimation_number", "label": "Number", "field": "estimation_number", "sortable": True, "align": "left"},
-                    {"name": "project_name", "label": "Project", "field": "project_name", "sortable": True, "align": "left"},
-                    {"name": "grand_total_hours", "label": "Total Hours", "field": "grand_total_hours", "sortable": True, "align": "right"},
-                    {"name": "status", "label": "Status", "field": "status", "sortable": True, "align": "left"},
-                    {"name": "feasibility_status", "label": "Feasibility", "field": "feasibility_status", "sortable": True, "align": "left"},
-                    {"name": "created_at", "label": "Created", "field": "created_at", "sortable": True, "align": "left"},
-                ]
-                est_tbl = ui.table(
-                    columns=columns,
-                    rows=recent,
-                    row_key="id",
-                    pagination={"rowsPerPage": 10, "sortBy": "id", "descending": True},
-                ).classes("w-full")
-                est_tbl.add_slot("body-cell-status", r"""
-                    <q-td :props="props">
-                        <q-badge outline :color="
-                            props.value === 'DRAFT' ? 'blue-grey' :
-                            props.value === 'FINAL' ? 'blue' :
-                            props.value === 'APPROVED' ? 'green' : 'grey'
-                        ">{{ props.value }}</q-badge>
-                    </q-td>
-                """)
-                est_tbl.add_slot("body-cell-feasibility_status", r"""
-                    <q-td :props="props">
-                        <q-badge outline :color="
-                            props.value === 'FEASIBLE' ? 'positive' :
-                            props.value === 'AT_RISK' ? 'warning' : 'negative'
-                        ">{{ props.value }}</q-badge>
-                    </q-td>
-                """)
+                with ui.element("div").classes("ed-feed"):
+                    for est in recent[:6]:
+                        _stripe_map = {
+                            "FEASIBLE": "positive",
+                            "AT_RISK": "warning",
+                            "NOT_FEASIBLE": "negative",
+                        }
+                        stripe = _stripe_map.get(est.get("feasibility_status", ""), "")
+                        _feed_item(
+                            stripe=stripe,
+                            id_text=est.get("estimation_number") or f"#{est.get('id', '?')}",
+                            title=est.get("project_name", ""),
+                            num=f"{est.get('grand_total_hours', 0):,.0f}h",
+                            meta=_format_age(est.get("created_at")),
+                            nav=f"/estimation/{est.get('id')}",
+                        )
             else:
-                ui.label("No estimations yet.").classes("text-grey")
+                ui.label("No estimations yet").classes("ed-empty")
 
-            # ── Recent requests ───────────────────────────────
-            ui.label("Recent Requests").classes("text-h6 q-mt-lg")
+            # ── Recent requests feed ────────────────────────────
+            with ui.element("div").classes("ed-section-head"):
+                ui.label("Recent Requests").classes("ed-cap")
+                _link2 = ui.element("span").classes("ed-section-link")
+                _link2.on("click", lambda: ui.navigate.to("/requests"))
+                with _link2:
+                    ui.label("see all →")
+
             recent_req = stats.get("recent_requests", [])
             if recent_req:
-                columns = [
-                    {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
-                    {"name": "request_number", "label": "Number", "field": "request_number", "sortable": True, "align": "left"},
-                    {"name": "title", "label": "Title", "field": "title", "sortable": True, "align": "left"},
-                    {"name": "priority", "label": "Priority", "field": "priority", "sortable": True, "align": "left"},
-                    {"name": "status", "label": "Status", "field": "status", "sortable": True, "align": "left"},
-                    {"name": "created_at", "label": "Created", "field": "created_at", "sortable": True, "align": "left"},
-                ]
-                req_tbl = ui.table(
-                    columns=columns,
-                    rows=recent_req,
-                    row_key="id",
-                    pagination={"rowsPerPage": 10, "sortBy": "id", "descending": True},
-                ).classes("w-full")
-                req_tbl.add_slot("body-cell-priority", r"""
-                    <q-td :props="props">
-                        <q-badge outline :color="
-                            props.value === 'HIGH' || props.value === 'CRITICAL' ? 'negative' :
-                            props.value === 'MEDIUM' ? 'warning' : 'positive'
-                        ">{{ props.value }}</q-badge>
-                    </q-td>
-                """)
-                req_tbl.add_slot("body-cell-status", r"""
-                    <q-td :props="props">
-                        <q-badge outline :color="
-                            props.value === 'NEW' ? 'info' :
-                            props.value === 'IN_ESTIMATION' ? 'warning' :
-                            props.value === 'COMPLETED' ? 'positive' : 'grey'
-                        ">{{ props.value }}</q-badge>
-                    </q-td>
-                """)
+                with ui.element("div").classes("ed-feed"):
+                    for req in recent_req[:6]:
+                        _pri = req.get("priority", "")
+                        _pri_stripe = {
+                            "CRITICAL": "negative",
+                            "HIGH": "negative",
+                            "MEDIUM": "warning",
+                            "LOW": "positive",
+                        }.get(_pri, "")
+                        _feed_item(
+                            stripe=_pri_stripe,
+                            id_text=req.get("request_number") or f"#{req.get('id', '?')}",
+                            title=req.get("title", ""),
+                            num=_pri,
+                            meta=_format_age(req.get("created_at")),
+                            nav=f"/requests/{req.get('id')}",
+                        )
             else:
-                ui.label("No requests yet.").classes("text-grey")
-
-        except Exception as e:
-            show_error_page(e)
+                ui.label("No requests yet").classes("ed-empty")
 
 
 # ---------------------------------------------------------------------------

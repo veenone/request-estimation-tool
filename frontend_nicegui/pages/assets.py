@@ -35,57 +35,69 @@ async def assets_page() -> None:
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("items-center q-mb-md gap-4"):
-            ui.label("DUT Assets").classes("text-h4")
-            ui.button(
-                "Open DUT Registry",
-                icon="devices",
-                on_click=lambda: ui.navigate.to("/duts"),
-            ).props("flat color=secondary")
+    # ── State ────────────────────────────────────────────────────
+    state: dict = {
+        "all_rows": [],
+        "configured": True,
+        "categories_str": "",
+        "categories_list": [],
+        "filter_category": "All",
+    }
 
-        # ------------------------------------------------------------------ #
-        # State                                                                #
-        # ------------------------------------------------------------------ #
-        state: dict = {
-            "all_rows": [],
-            "configured": True,
-            "categories_str": "",
-            "categories_list": [],
-            "filter_category": "All",
-        }
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ------------------------------------------------------------------ #
-        # Info banner (shown when integration is not configured)               #
-        # ------------------------------------------------------------------ #
-        info_banner = ui.card().classes("w-full q-mb-md hidden bg-blue-1")
-        with info_banner:
-            with ui.row().classes("items-center q-pa-sm"):
-                ui.icon("info", color="info", size="sm").classes("q-mr-sm")
-                ui.label(
-                    "The Snipe-IT integration is not configured or not enabled. "
-                    "Please configure it under Settings > Integrations before using this page."
-                )
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Refresh", icon="refresh",
+                      on_click=lambda: refresh()) \
+                .props("flat dense color=secondary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Import as DUT", icon="download",
+                      on_click=lambda: import_selected()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Open DUT Registry", icon="devices",
+                      on_click=lambda: ui.navigate.to("/duts")) \
+                .props("flat dense")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-        # ------------------------------------------------------------------ #
-        # Search input                                                         #
-        # ------------------------------------------------------------------ #
-        search_input = ui.input(
-            placeholder="Search by name, serial, model, category, status...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
+        with ui.element("div").classes("ed-shell"):
 
-        # ------------------------------------------------------------------ #
-        # Table with checkbox selection                                        #
-        # ------------------------------------------------------------------ #
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            selection="multiple",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+            ui.label("DUT Assets").classes("text-h4 q-mb-md")
+
+            # Info banner — shown when integration is not configured
+            info_banner = ui.element("div").classes("ed-card hidden") \
+                .style("border-color: var(--q-info); margin-bottom: 16px;")
+            with info_banner:
+                with ui.row().classes("items-center"):
+                    ui.icon("info", color="info", size="sm").classes("q-mr-sm")
+                    ui.label(
+                        "The Snipe-IT integration is not configured or not enabled. "
+                        "Please configure it under Settings > Integrations before "
+                        "using this page."
+                    )
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, serial, model, status…",
+                ).props('dense outlined clearable').style("min-width: 320px;")
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    selection="multiple",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         # ------------------------------------------------------------------ #
         # Load saved categories from Snipe-IT integration config               #
@@ -107,8 +119,66 @@ async def assets_page() -> None:
                 state["categories_list"] = []
 
         # ------------------------------------------------------------------ #
-        # Apply local category filter to table                                 #
+        # KPI / segments / filter                                              #
         # ------------------------------------------------------------------ #
+        def _count_by_cat(rows: list[dict], cat: str) -> int:
+            return sum(1 for r in rows if (r.get("category") or "") == cat)
+
+        def _set_category(c: str) -> None:
+            state["filter_category"] = c
+            _render_kpis()
+            _render_segments()
+            _apply_filter()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = state["all_rows"]
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+
+                def _tile(label: str, count: int, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_category"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_category(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(str(count)).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                from collections import Counter
+                status_counts = Counter((r.get("status") or "Unknown") for r in rows)
+                top_status = status_counts.most_common(3)
+                _tile("Total Assets", len(rows),
+                      f"{len(state['categories_list'])} categories tracked",
+                      key="All")
+                for stat, n in top_status:
+                    _tile(stat, n, "by status", key=None)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = state["all_rows"]
+                cats = state["categories_list"] or sorted({r.get("category") or "" for r in rows} - {""})
+
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_category"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_category(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+
+                _seg("All", "All", len(rows))
+                for c in cats:
+                    n = _count_by_cat(rows, c)
+                    if n or c == state["filter_category"]:
+                        _seg(c, c, n)
+
         def _apply_filter() -> None:
             """Filter table rows by the selected category and search query."""
             filt = state["filter_category"]
@@ -144,6 +214,8 @@ async def assets_page() -> None:
                 state["all_rows"] = rows
                 state["configured"] = True
                 info_banner.classes(add="hidden")
+                _render_kpis()
+                _render_segments()
                 _apply_filter()
             except Exception as exc:
                 err_msg = str(exc)
@@ -215,42 +287,7 @@ async def assets_page() -> None:
             table.update()
 
         # ------------------------------------------------------------------ #
-        # Toolbar: Category filter + Refresh + Import                          #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-gutter-sm q-mb-md"):
-            def _on_cat_filter_change(e) -> None:
-                state["filter_category"] = e.value if e.value else "All"
-                _apply_filter()
-
-            cat_filter = ui.select(
-                options=["All"],
-                value="All",
-                label="Filter by Category",
-                on_change=_on_cat_filter_change,
-            ).classes("w-48")
-
-            ui.button(
-                "Refresh",
-                icon="refresh",
-                on_click=refresh,
-            ).props("color=secondary")
-
-            ui.space()
-
-            ui.button(
-                "Import as DUT",
-                icon="download",
-                on_click=import_selected,
-            ).props("color=primary")
-
-        # ------------------------------------------------------------------ #
         # Initial data load                                                    #
         # ------------------------------------------------------------------ #
         await _load_config()
-
-        # Populate the category filter dropdown with configured categories
-        if state["categories_list"]:
-            cat_filter.options = ["All"] + state["categories_list"]
-            cat_filter.update()
-
         await refresh()

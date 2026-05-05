@@ -82,99 +82,304 @@ async def requests_list_page() -> None:
 
     sidebar()
 
-    # Fetch product types from config
+    # (filter component CSS — .ed-stat-tile, .ed-segmented, .ed-filter-row —
+    # is now in app.py global head)
+
+    # ─────────────────────────────────────────────────────────────
+    # Fetch reference data
+    # ─────────────────────────────────────────────────────────────
     try:
         product_types: list[str] = await api_get("/configuration/product_types")
     except Exception:
         product_types = ["Payment", "Telco"]
 
-    # ── State ────────────────────────────────────────────────────────────────
+    # ── State ────────────────────────────────────────────────────
     requests_data: list[dict] = []
     table_ref: ui.table | None = None
-    status_filter_ref: ui.select | None = None
+    state: dict = {
+        "status": "All",
+        "source": "All",
+        "priority": "All",
+        "search": "",
+    }
+    kpi_container: ui.element | None = None
+    seg_container: ui.element | None = None
 
-    # ── Page skeleton ────────────────────────────────────────────────────────
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("items-center justify-between w-full"):
-            ui.label("Request Inbox").classes("text-h4")
-            ui.button("+ Add Request", on_click=lambda: add_dialog.open()).props("color=primary")
+    def _format_age(iso: str | None) -> str:
+        if not iso:
+            return ""
+        try:
+            from datetime import datetime, timezone
+            d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
+            now = datetime.now(timezone.utc) if d.tzinfo else datetime.now()
+            delta = now - d
+            days = delta.days
+            if days < 1:
+                return "today"
+            if days < 7:
+                return f"{days}d"
+            if days < 30:
+                return f"{days // 7}w"
+            return f"{days // 30}mo"
+        except Exception:
+            return iso[:10]
 
-        ui.separator()
+    def _count_by_status(rows: list[dict], st: str) -> int:
+        return sum(1 for r in rows if (r.get("status") or "") == st)
 
-        # Filter row
-        with ui.row().classes("items-center q-mb-md q-gutter-sm"):
-            ui.label("Filter by status:").classes("text-subtitle2")
-            status_filter_ref = ui.select(
-                options=_STATUS_FILTER_OPTIONS,
-                value="All",
-            ).classes("w-48")
+    def _today_count(rows: list[dict], st: str) -> int:
+        today = date.today().isoformat()
+        return sum(1 for r in rows
+                   if (r.get("status") or "") == st
+                   and (r.get("created_at") or "").startswith(today))
 
-        # Table ── columns are defined here; rows are injected after the API call
-        columns = [
-            {"name": "id",              "label": "ID",           "field": "id",             "sortable": True,  "align": "left"},
-            {"name": "request_number",  "label": "Request #",    "field": "request_number", "sortable": True,  "align": "left"},
-            {"name": "title",           "label": "Title",        "field": "title",          "sortable": True,  "align": "left"},
-            {"name": "request_source",  "label": "Source",       "field": "request_source", "sortable": True,  "align": "left"},
-            {"name": "priority",        "label": "Priority",     "field": "priority",       "sortable": True,  "align": "left"},
-            {"name": "status",          "label": "Status",       "field": "status",         "sortable": True,  "align": "left"},
-            {"name": "requester_name",  "label": "Requester",    "field": "requester_name", "sortable": True,  "align": "left"},
-            {"name": "assigned_to_name","label": "Assigned To",  "field": "assigned_to_name","sortable": True,  "align": "left"},
-            {"name": "created_at",      "label": "Created",      "field": "created_at",     "sortable": True,  "align": "left"},
-            {"name": "actions",         "label": "Actions",      "field": "actions",        "sortable": False, "align": "center"},
-        ]
+    def _high_pri_count(rows: list[dict], st: str) -> int:
+        return sum(1 for r in rows
+                   if (r.get("status") or "") == st
+                   and (r.get("priority") or "") in ("HIGH", "CRITICAL"))
 
-        table_ref = ui.table(
-            columns=columns,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full")
+    def _filter_rows() -> list[dict]:
+        out = list(requests_data)
+        if state["status"] != "All":
+            out = [r for r in out if (r.get("status") or "") == state["status"]]
+        if state["source"] != "All":
+            out = [r for r in out if (r.get("request_source") or "") == state["source"]]
+        if state["priority"] != "All":
+            out = [r for r in out if (r.get("priority") or "") == state["priority"]]
+        q = (state["search"] or "").strip().lower()
+        if q:
+            out = [r for r in out
+                   if q in (r.get("request_number") or "").lower()
+                   or q in (r.get("title") or "").lower()
+                   or q in (r.get("requester_name") or "").lower()
+                   or q in (r.get("external_id") or "").lower()]
+        return out
 
-        # Custom cell rendering via slots
-        table_ref.add_slot("body-cell-priority", """
-            <q-td :props="props">
-                <q-badge outline :color="
-                    props.value === 'HIGH' || props.value === 'CRITICAL' ? 'negative' :
-                    props.value === 'MEDIUM' ? 'warning' : 'positive'
-                ">{{ props.value }}</q-badge>
-            </q-td>
-        """)
+    def _refresh_table():
+        rows = _filter_rows()
+        for r in rows:
+            r["age"] = _format_age(r.get("created_at"))
+        if table_ref:
+            table_ref.rows = rows
+            table_ref.update()
 
-        table_ref.add_slot("body-cell-status", """
-            <q-td :props="props">
-                <q-badge outline :color="
-                    props.value === 'NEW' ? 'info' :
-                    props.value === 'IN_ESTIMATION' ? 'warning' :
-                    props.value === 'ESTIMATED' || props.value === 'COMPLETED' ? 'positive' :
-                    'negative'
-                " :class="props.value === 'DELETED_UPSTREAM' ? 'text-strike' : ''">
-                    {{ props.value === 'DELETED_UPSTREAM' ? 'Deleted Upstream' : props.value }}
-                </q-badge>
-            </q-td>
-        """)
+    def _set_status(st: str):
+        state["status"] = st
+        _render_kpis()
+        _render_segments()
+        _refresh_table()
 
-        table_ref.add_slot("body-cell-assigned_to_name", """
-            <q-td :props="props">
-                <span :class="props.value ? '' : 'text-grey'">{{ props.value || 'Unassigned' }}</span>
-            </q-td>
-        """)
+    # ─────────────────────────────────────────────────────────────
+    # Page body
+    # ─────────────────────────────────────────────────────────────
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        table_ref.add_slot("body-cell-created_at", """
-            <q-td :props="props">{{ props.value ? props.value.slice(0, 10) : '' }}</q-td>
-        """)
+        # ── Sticky toolbar ─────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Request", icon="add",
+                      on_click=lambda: add_dialog.open()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            search_input = ui.input(placeholder="Search number, title, requester…") \
+                .props("dense outlined clearable") \
+                .style("min-width: 280px;")
 
-        table_ref.add_slot("body-cell-actions", """
-            <q-td :props="props" class="text-center">
-                <q-btn flat dense icon="visibility" color="primary"
-                    @click="$parent.$emit('view-request', props.row)" />
-            </q-td>
-        """)
+            def _on_search(e):
+                state["search"] = e.args or ""
+                _refresh_table()
+            search_input.on("update:model-value", _on_search)
 
-        table_ref.on("view-request", lambda e: ui.navigate.to(f"/requests/{e.args['id']}"))
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-        loading_label = ui.label("Loading requests…").classes("text-grey")
+        with ui.element("div").classes("ed-shell"):
 
-    # ── Add Request Dialog ───────────────────────────────────────────────────
+            # Page title
+            ui.label("Request Inbox").classes("text-h4 q-mb-md")
+
+            # ── KPI tiles (clickable) ──────────────────────────
+            kpi_container = ui.element("div").classes("ed-strip")
+
+            def _stat_tile(label: str, count: int, sub: str, status_key: str) -> None:
+                cls = "ed-strip-cell ed-stat-tile"
+                if state["status"] == status_key:
+                    cls += " active"
+                el = ui.element("div").classes(cls)
+                el.on("click", lambda _, k=status_key: _set_status(k))
+                with el:
+                    ui.label(label).classes("ed-eyebrow")
+                    ui.label(str(count)).classes("ed-strip-num")
+                    if sub:
+                        ui.label(sub).classes("ed-stat-tile-sub")
+
+            def _render_kpis():
+                kpi_container.clear()
+                with kpi_container:
+                    n_new = _count_by_status(requests_data, "NEW")
+                    n_in  = _count_by_status(requests_data, "IN_ESTIMATION")
+                    n_est = _count_by_status(requests_data, "ESTIMATED")
+                    n_co  = _count_by_status(requests_data, "COMPLETED")
+                    _stat_tile("New",            n_new,
+                               f"{_today_count(requests_data, 'NEW')} today" if n_new else "—",
+                               "NEW")
+                    _stat_tile("In Estimation",  n_in,
+                               f"{_high_pri_count(requests_data, 'IN_ESTIMATION')} high priority" if n_in else "—",
+                               "IN_ESTIMATION")
+                    _stat_tile("Estimated",      n_est,
+                               "ready for approval" if n_est else "—",
+                               "ESTIMATED")
+                    _stat_tile("Completed",      n_co,
+                               "archived" if n_co else "—",
+                               "COMPLETED")
+
+            # ── Segmented status pills (full set) ──────────────
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            def _seg_item(label: str, key: str, count: int) -> None:
+                cls = "ed-segmented-item" + (" active" if state["status"] == key else "")
+                btn = ui.element("button").classes(cls)
+                btn.on("click", lambda _, k=key: _set_status(k))
+                with btn:
+                    ui.label(label)
+                    ui.label(f"· {count}").classes("seg-count")
+
+            def _render_segments():
+                seg_container.clear()
+                with seg_container:
+                    counts = {
+                        "All":              len(requests_data),
+                        "NEW":              _count_by_status(requests_data, "NEW"),
+                        "IN_ESTIMATION":    _count_by_status(requests_data, "IN_ESTIMATION"),
+                        "ESTIMATED":        _count_by_status(requests_data, "ESTIMATED"),
+                        "COMPLETED":        _count_by_status(requests_data, "COMPLETED"),
+                        "REJECTED":         _count_by_status(requests_data, "REJECTED"),
+                        "DELETED_UPSTREAM": _count_by_status(requests_data, "DELETED_UPSTREAM"),
+                    }
+                    _seg_item("All",            "All",              counts["All"])
+                    _seg_item("New",            "NEW",              counts["NEW"])
+                    _seg_item("In Estimation",  "IN_ESTIMATION",    counts["IN_ESTIMATION"])
+                    _seg_item("Estimated",      "ESTIMATED",        counts["ESTIMATED"])
+                    _seg_item("Completed",      "COMPLETED",        counts["COMPLETED"])
+                    if counts["REJECTED"]:
+                        _seg_item("Rejected",   "REJECTED",         counts["REJECTED"])
+                    if counts["DELETED_UPSTREAM"]:
+                        _seg_item("Deleted",    "DELETED_UPSTREAM", counts["DELETED_UPSTREAM"])
+
+            # ── Source / Priority / Assignee filters ───────────
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+
+                def _source_change(e):
+                    state["source"] = e.args or "All"
+                    _refresh_table()
+                src_sel = ui.select(label="Source",
+                                    options=["All", "JIRA", "REDMINE", "EMAIL", "MANUAL"],
+                                    value="All").props("dense outlined").classes("w-40")
+                src_sel.on("update:model-value", _source_change)
+
+                def _pri_change(e):
+                    state["priority"] = e.args or "All"
+                    _refresh_table()
+                pri_sel = ui.select(label="Priority",
+                                    options=["All", "CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                                    value="All").props("dense outlined").classes("w-40")
+                pri_sel.on("update:model-value", _pri_change)
+
+            # ── Table ──────────────────────────────────────────
+            columns = [
+                {"name": "request_number", "label": "Number",   "field": "request_number", "sortable": True, "align": "left"},
+                {"name": "source_icon",    "label": "",         "field": "request_source", "align": "center"},
+                {"name": "title",          "label": "Title",    "field": "title",          "sortable": True, "align": "left"},
+                {"name": "priority",       "label": "Priority", "field": "priority",       "sortable": True, "align": "left"},
+                {"name": "status",         "label": "Status",   "field": "status",         "sortable": True, "align": "left"},
+                {"name": "requester_name", "label": "Requester","field": "requester_name", "sortable": True, "align": "left"},
+                {"name": "assigned",       "label": "Assigned", "field": "assigned_to_name","align": "left"},
+                {"name": "age",            "label": "Age",      "field": "age",            "sortable": True, "align": "right"},
+                {"name": "actions",        "label": "",         "field": "actions",        "align": "center"},
+            ]
+
+            with ui.element("div").classes("ed-card ed-inbox-table"):
+                table_ref = ui.table(
+                    columns=columns,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
+
+                # Priority stripe rendered as a colored left border on the
+                # first visible cell (the request number column).
+                table_ref.add_slot("body-cell-request_number", r"""
+                    <q-td :props="props" :style="{
+                        'box-shadow':
+                          (props.row.priority === 'CRITICAL' || props.row.priority === 'HIGH')
+                            ? 'inset 3px 0 0 var(--q-negative)' :
+                          props.row.priority === 'MEDIUM'
+                            ? 'inset 3px 0 0 var(--q-warning)' :
+                          props.row.priority === 'LOW'
+                            ? 'inset 3px 0 0 var(--q-positive)' : 'none'
+                    }">
+                        <span class="ed-mono">{{ props.value }}</span>
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-source_icon", r"""
+                    <q-td :props="props" class="text-center">
+                        <q-icon :name="{
+                            'JIRA':'integration_instructions','REDMINE':'rss_feed',
+                            'EMAIL':'mail','MANUAL':'edit'
+                        }[props.value] || 'help_outline'" size="18px" class="text-grey-6" />
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-priority", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'HIGH' || props.value === 'CRITICAL' ? 'negative' :
+                            props.value === 'MEDIUM' ? 'warning' : 'positive'
+                        ">{{ props.value }}</q-badge>
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-status", r"""
+                    <q-td :props="props">
+                        <q-badge outline :color="
+                            props.value === 'NEW' ? 'info' :
+                            props.value === 'IN_ESTIMATION' ? 'warning' :
+                            props.value === 'ESTIMATED' || props.value === 'COMPLETED' ? 'positive' :
+                            'negative'
+                        ">{{ props.value === 'DELETED_UPSTREAM' ? 'Deleted' : props.value }}</q-badge>
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-assigned", r"""
+                    <q-td :props="props">
+                        <span :class="props.value ? '' : 'text-grey'">
+                            {{ props.value || 'Unassigned' }}
+                        </span>
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-age", r"""
+                    <q-td :props="props">
+                        <span class="ed-mono" style="font-size:11px; opacity:0.7;">{{ props.value }}</span>
+                    </q-td>
+                """)
+
+                table_ref.add_slot("body-cell-actions", r"""
+                    <q-td :props="props" class="text-center">
+                        <q-btn flat dense icon="visibility" color="primary"
+                            @click="$parent.$emit('view-request', props.row)" />
+                    </q-td>
+                """)
+
+                table_ref.on("view-request",
+                             lambda e: ui.navigate.to(f"/requests/{e.args['id']}"))
+
+    # ─────────────────────────────────────────────────────────────
+    # Add Request Dialog (preserved verbatim)
+    # ─────────────────────────────────────────────────────────────
     with ui.dialog() as add_dialog, ui.card().classes("w-full max-w-2xl"):
         ui.label("New Request").classes("text-h6")
         ui.separator()
@@ -212,15 +417,11 @@ async def requests_list_page() -> None:
         ).classes("w-full")
 
         with ui.grid(columns=2).classes("w-full q-gutter-sm"):
-            f_requested_delivery_date = ui.date(
-                value=None,
-            ).classes("w-full")
+            f_requested_delivery_date = ui.date(value=None).classes("w-full")
             with ui.column().classes("w-full"):
                 ui.label("Requested Delivery Date").classes("text-caption text-grey")
 
-            f_received_date = ui.date(
-                value=date.today().isoformat(),
-            ).classes("w-full")
+            f_received_date = ui.date(value=date.today().isoformat()).classes("w-full")
             with ui.column().classes("w-full"):
                 ui.label("Received Date").classes("text-caption text-grey")
 
@@ -230,7 +431,6 @@ async def requests_list_page() -> None:
 
         async def submit_add_request() -> None:
             form_error.set_text("")
-            # Validation
             missing = []
             if not f_request_number.value:
                 missing.append("Request Number")
@@ -274,29 +474,21 @@ async def requests_list_page() -> None:
             ui.button("Cancel", on_click=add_dialog.close).props("flat")
             ui.button("Create", on_click=submit_add_request).props("color=primary")
 
-    # ── Data loader ──────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
+    # Data loader
+    # ─────────────────────────────────────────────────────────────
     async def load_requests() -> None:
         nonlocal requests_data
-        loading_label.set_text("Loading requests…")
-        loading_label.set_visibility(True)
         try:
-            selected_status = status_filter_ref.value if status_filter_ref else "All"
-            params: dict | None = None
-            if selected_status and selected_status != "All":
-                params = {"status": selected_status}
-            requests_data = await api_get("/requests", params=params)
-            table_ref.rows = requests_data
-            table_ref.update()
-            loading_label.set_visibility(False)
+            requests_data = await api_get("/requests")
+            _total_label.set_text(f"TOTAL · {len(requests_data)}")
+            _render_kpis()
+            _render_segments()
+            _refresh_table()
         except Exception as exc:
-            loading_label.set_text(f"Error loading requests: {exc}")
-            loading_label.classes(replace="text-negative")
+            ui.notify(f"Failed to load requests: {exc}", type="negative")
 
-    status_filter_ref.on("update:model-value", lambda _: ui.timer(0.05, load_requests, once=True))
-
-    # Initial load
     await load_requests()
-
 
 # ---------------------------------------------------------------------------
 # Route 2: /requests/{id} — Request Detail

@@ -2741,6 +2741,7 @@ async def upload_logo(
 ):
     """Upload a logo image and update the logo_url configuration."""
     import os
+    import time
 
     allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
     ext = os.path.splitext(file.filename or "logo.png")[1].lower()
@@ -2751,14 +2752,29 @@ async def upload_logo(
     upload_dir = "/app/data/uploads" if os.path.isdir("/app/data") else os.path.join("data", "uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
+    # Clean up any prior `logo.*` files (potentially with a different
+    # extension) so the directory only ever has the current logo.
+    try:
+        for _existing in os.listdir(upload_dir):
+            if _existing.startswith("logo.") and _existing != f"logo{ext}":
+                try:
+                    os.remove(os.path.join(upload_dir, _existing))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
     filename = f"logo{ext}"
     filepath = os.path.join(upload_dir, filename)
     content = await file.read()
     with open(filepath, "wb") as f:
         f.write(content)
 
-    # Update config key with relative URL served by the static mount
-    logo_url = f"/api/static/uploads/{filename}"
+    # Append a cache-busting version stamp so the browser fetches the new
+    # bytes after upload, even when the filename is unchanged.
+    cache_bust = int(time.time())
+    logo_url = f"/api/static/uploads/{filename}?v={cache_bust}"
+
     cfg = db.get(Configuration, "logo_url")
     if cfg:
         cfg.value = logo_url
@@ -4049,7 +4065,7 @@ def admin_backup(
         tables_count[table_name] = len(serialized)
 
     backup = {
-        "version": "3.3.0",
+        "version": "3.4.0",
         "timestamp": datetime.utcnow().isoformat(),
         "tables": tables_data,
     }

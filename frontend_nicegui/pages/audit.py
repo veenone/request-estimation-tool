@@ -35,42 +35,54 @@ async def audit_page() -> None:
     user = current_user()
     role = user.get("role", "VIEWER") if user else "VIEWER"
 
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Audit Log").classes("text-h4")
+    # ── State ────────────────────────────────────────────────────
+    logs: list[dict] = []
+    state: dict = {"filter_action": "All"}
 
-        if role not in _ALLOWED_ROLES:
-            ui.separator()
-            with ui.row().classes("items-center gap-2 q-mt-md"):
-                ui.icon("lock", size="lg").classes("text-warning")
-                ui.label(
-                    "Access restricted. APPROVER or ADMIN role required to view the audit log."
-                ).classes("text-subtitle1 text-warning")
-            return
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ---------------------------------------------------------------------------
-        # Filter bar
-        # ---------------------------------------------------------------------------
-        ui.label("Filters").classes("text-subtitle1 q-mt-sm")
-        with ui.row().classes("w-full items-end gap-4 q-mb-md"):
-            f_action = ui.input(
-                "Action filter", placeholder="e.g. CREATE, DELETE"
-            ).classes("flex-1")
-            f_resource = ui.input(
-                "Resource type filter", placeholder="e.g. user, estimation"
-            ).classes("flex-1")
-            f_limit = ui.number(
-                "Limit", value=50, min=1, max=500, step=10, format="%.0f"
-            ).classes("w-32")
-            refresh_btn = ui.button("Refresh", icon="refresh").props("color=primary")
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Refresh", icon="refresh",
+                      on_click=lambda: do_refresh()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("LOADED · 0").classes("ed-mono")
 
-        ui.separator()
+        with ui.element("div").classes("ed-shell"):
 
-        # ---------------------------------------------------------------------------
-        # Page-level state
-        # ---------------------------------------------------------------------------
-        logs: list[dict] = []
-        table_container = ui.column().classes("w-full")
+            ui.label("Audit Log").classes("text-h4 q-mb-md")
+
+            if role not in _ALLOWED_ROLES:
+                with ui.element("div").classes("ed-card") \
+                        .style("border-color: var(--q-warning);"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("lock", size="lg").classes("text-warning")
+                        ui.label(
+                            "Access restricted. APPROVER or ADMIN role required to view the audit log."
+                        ).classes("text-subtitle1 text-warning")
+                return
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            # ── Filter row (input filters sent to API) ─────────
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                f_action = ui.input(
+                    placeholder="Action (e.g. CREATE, DELETE)…",
+                ).props("dense outlined clearable").classes("flex-1")
+                f_resource = ui.input(
+                    placeholder="Resource type (e.g. user, estimation)…",
+                ).props("dense outlined clearable").classes("flex-1")
+                f_limit = ui.number(
+                    label="Limit", value=50, min=1, max=500, step=10, format="%.0f",
+                ).props("dense outlined").classes("w-28")
+
+            # ── Table ──────────────────────────────────────────
+            table_container = ui.element("div").classes("ed-card")
 
         # ---------------------------------------------------------------------------
         # Data helpers
@@ -91,17 +103,117 @@ async def audit_page() -> None:
                 ui.notify(f"Failed to load audit log: {exc}", type="negative")
                 logs = []
 
+        # ── KPI / segment helpers ──────────────────────────────
+        from collections import Counter
+
+        def _set_action(a: str) -> None:
+            state["filter_action"] = a
+            _render_kpis()
+            _render_segments()
+            render_table()
+
+        def _filtered_logs() -> list[dict]:
+            a = state["filter_action"]
+            if a == "All":
+                return logs
+            if a == "CHANGE":
+                return [
+                    l for l in logs
+                    if (l.get("action") or "") not in ("CREATE", "UPDATE", "DELETE",
+                                                       "LOGIN", "LOGOUT", "LOGIN_FAILED")
+                ]
+            return [l for l in logs if (l.get("action") or "") == a]
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                _total_label.set_text(f"LOADED · {len(logs)}")
+                action_counts = Counter(l.get("action", "") for l in logs)
+                fail_n = action_counts.get("LOGIN_FAILED", 0)
+                login_n = action_counts.get("LOGIN", 0)
+                user_n = len({l.get("username") for l in logs if l.get("username")})
+
+                def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_action"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_action(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(value).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                _tile("Total Entries", str(len(logs)),
+                      f"{user_n} unique user{'s' if user_n != 1 else ''}",
+                      key="All")
+                if login_n:
+                    _tile("Logins", str(login_n),
+                          "successful sign-ins", key="LOGIN")
+                if fail_n:
+                    _tile("Failed Logins", str(fail_n),
+                          "auth attempts denied", key="LOGIN_FAILED")
+                # Most active action besides login
+                top = [(a, n) for a, n in action_counts.most_common(8)
+                       if a not in ("LOGIN", "LOGOUT", "LOGIN_FAILED")][:1]
+                for action_name, n in top:
+                    _tile(action_name.title(), str(n),
+                          "filter to action", key=action_name)
+
+        _ACTION_PILLS = [
+            ("All", "All"),
+            ("Create", "CREATE"),
+            ("Update", "UPDATE"),
+            ("Delete", "DELETE"),
+            ("Login", "LOGIN"),
+            ("Failed Login", "LOGIN_FAILED"),
+            ("Backup/Restore", "CHANGE"),
+        ]
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            action_counts = Counter(l.get("action", "") for l in logs)
+            with seg_container:
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_action"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_action(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+                # Always show All
+                _seg("All", "All", len(logs))
+                for label, key in _ACTION_PILLS[1:]:
+                    if key == "CHANGE":
+                        n = sum(1 for l in logs
+                                if (l.get("action") or "") not in
+                                ("CREATE", "UPDATE", "DELETE",
+                                 "LOGIN", "LOGOUT", "LOGIN_FAILED"))
+                    else:
+                        n = action_counts.get(key, 0)
+                    if n or key == state["filter_action"]:
+                        _seg(label, key, n)
+
         def render_table() -> None:
             table_container.clear()
             with table_container:
-                if not logs:
-                    ui.label("No audit entries match the current filters.").classes(
-                        "text-grey q-mt-md"
-                    )
+                rows = _filtered_logs()
+                with ui.element("div").classes("ed-card-head"):
+                    ui.label("Entries").classes("ed-cap")
+                    ui.label(
+                        f"{len(rows)} of {len(logs)} loaded · "
+                        f"showing latest first"
+                    ).classes("ed-card-head-meta")
+
+                if not rows:
+                    ui.label("No audit entries match the current filters") \
+                        .classes("ed-empty")
                     return
 
                 columns = [
-                    {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
                     {"name": "username", "label": "User", "field": "username", "sortable": True, "align": "left"},
                     {"name": "action", "label": "Action", "field": "action", "sortable": True, "align": "left"},
                     {"name": "resource_type", "label": "Resource Type", "field": "resource_type", "sortable": True, "align": "left"},
@@ -112,10 +224,10 @@ async def audit_page() -> None:
 
                 t = ui.table(
                     columns=columns,
-                    rows=logs,
+                    rows=rows,
                     row_key="id",
-                    pagination={"rowsPerPage": 15},
-                ).classes("w-full")
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
                 # Color-code action column
                 t.add_slot(
@@ -172,10 +284,17 @@ async def audit_page() -> None:
 
         async def do_refresh() -> None:
             await load_logs()
+            _render_kpis()
+            _render_segments()
             render_table()
 
-        refresh_btn.on("click", lambda: do_refresh())
+        # Wire up filter inputs to auto-refresh on change
+        f_action.on("update:model-value", lambda _: do_refresh())
+        f_resource.on("update:model-value", lambda _: do_refresh())
+        f_limit.on("update:model-value", lambda _: do_refresh())
 
         # Initial load
         await load_logs()
+        _render_kpis()
+        _render_segments()
         render_table()

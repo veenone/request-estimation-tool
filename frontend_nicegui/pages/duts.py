@@ -52,14 +52,20 @@ async def duts_page() -> None:
     except Exception:
         product_types = ["Payment", "Telco"]
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("DUT Registry").classes("text-h4 q-mb-md")
+    # ── State for filters ─────────────────────────────────────────
+    state: dict = {"filter_category": "All"}
+    all_rows_ref: dict = {"data": []}
 
-        # ------------------------------------------------------------------ #
-        # Toolbar                                                              #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("items-center q-mb-md w-full"):
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
+
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add DUT", icon="add",
+                      on_click=lambda: show_add_dialog()) \
+                .props("flat dense color=primary")
             if has_permission("reinit_registries"):
+                ui.element("div").classes("ed-toolbar-spacer")
+
                 async def _reinit_duts() -> None:
                     with ui.dialog() as confirm_dlg, ui.card().classes("w-80"):
                         ui.label("Reinitialize DUT Registry").classes("text-h6")
@@ -82,51 +88,48 @@ async def duts_page() -> None:
                             ui.button("Delete All", on_click=_confirm).props("color=negative")
                     confirm_dlg.open()
 
-                ui.button(
-                    "Reinit Registry",
-                    icon="restart_alt",
-                    on_click=_reinit_duts,
-                ).props("flat color=negative")
+                ui.button("Reinit Registry", icon="restart_alt",
+                          on_click=_reinit_duts) \
+                    .props("flat dense color=negative")
 
-            bulk_edit_btn = ui.button(
-                "Bulk Edit", icon="edit_note", on_click=lambda: show_bulk_edit_dialog()
-            ).props("outline color=secondary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            bulk_edit_btn = ui.button("Bulk Edit", icon="edit_note",
+                                      on_click=lambda: show_bulk_edit_dialog()) \
+                .props("flat dense color=secondary")
             bulk_edit_btn.set_visibility(False)
 
-            bulk_delete_btn = ui.button(
-                "Bulk Delete", icon="delete_sweep", on_click=lambda: show_bulk_delete_dialog()
-            ).props("outline color=negative")
+            bulk_delete_btn = ui.button("Bulk Delete", icon="delete_sweep",
+                                        on_click=lambda: show_bulk_delete_dialog()) \
+                .props("flat dense color=negative")
             bulk_delete_btn.set_visibility(False)
 
-            ui.space()
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-            ui.button(
-                "Add DUT Type",
-                icon="add",
-                on_click=lambda: show_add_dialog(),
-            ).props("color=primary")
+        with ui.element("div").classes("ed-shell"):
 
-        # ------------------------------------------------------------------ #
-        # Search input                                                         #
-        # ------------------------------------------------------------------ #
-        all_rows_ref: dict = {"data": []}
+            ui.label("DUT Registry").classes("text-h4 q-mb-md")
 
-        search_input = ui.input(
-            placeholder="Search by name, category, product type...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
 
-        # ------------------------------------------------------------------ #
-        # Table with multi-select                                              #
-        # ------------------------------------------------------------------ #
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-            selection="multiple",
-        ).classes("w-full shadow-1")
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, category, product type…",
+                ).props('dense outlined clearable').style("min-width: 320px;")
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                    selection="multiple",
+                ).classes("w-full").props("flat")
 
         # Show/hide bulk buttons based on selection
         def _on_selection_change() -> None:
@@ -155,21 +158,79 @@ async def duts_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
-        # Filter helper                                                        #
+        # KPI / segments / filter                                              #
         # ------------------------------------------------------------------ #
+        def _count_by_cat(rows: list[dict], cat: str) -> int:
+            return sum(1 for r in rows if (r.get("category") or "") == cat)
+
+        def _set_category(c: str) -> None:
+            state["filter_category"] = c
+            _render_kpis()
+            _render_segments()
+            _apply_search()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = all_rows_ref["data"]
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+                top = sorted(categories, key=lambda c: -_count_by_cat(rows, c))[:3]
+
+                def _tile(label: str, count: int, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_category"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_category(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(str(count)).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                with_pt = sum(1 for r in rows if r.get("product_type"))
+                _tile("Total DUTs", len(rows),
+                      f"{with_pt} have product type set", key="All")
+                for c in top:
+                    n = _count_by_cat(rows, c)
+                    if n:
+                        _tile(c, n, "filter to category", key=c)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = all_rows_ref["data"]
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_category"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_category(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+                _seg("All", "All", len(rows))
+                for c in categories:
+                    n = _count_by_cat(rows, c)
+                    if n or c == state["filter_category"]:
+                        _seg(c, c, n)
+
         def _apply_search() -> None:
             query = (search_input.value or "").strip().lower()
-            if not query:
-                table.rows = list(all_rows_ref["data"])
-            else:
-                table.rows = [
-                    r for r in all_rows_ref["data"]
+            cat = state["filter_category"]
+            rows = list(all_rows_ref["data"])
+            if cat != "All":
+                rows = [r for r in rows if (r.get("category") or "") == cat]
+            if query:
+                rows = [
+                    r for r in rows
                     if query in (r.get("name") or "").lower()
                     or query in (r.get("category") or "").lower()
                     or query in (r.get("product_type") or "").lower()
                     or query in str(r.get("complexity_multiplier", ""))
                     or query in str(r.get("id", ""))
                 ]
+            table.rows = rows
             table.update()
 
         search_input.on("update:model-value", lambda _: _apply_search())
@@ -181,6 +242,8 @@ async def duts_page() -> None:
             try:
                 rows: list = await api_get("/dut-types")
                 all_rows_ref["data"] = rows
+                _render_kpis()
+                _render_segments()
                 _apply_search()
                 table.selected.clear()
                 _on_selection_change()

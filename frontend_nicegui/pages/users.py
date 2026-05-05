@@ -71,22 +71,15 @@ async def users_page() -> None:
 
     async def refresh_table() -> None:
         await load_users()
-        if table_ref is not None:
-            si = search_ref.get("input")
-            query = (si.value if si else "").strip().lower()
-            if query:
-                table_ref.rows = [
-                    u for u in users_list
-                    if query in (u.get("username") or "").lower()
-                    or query in (u.get("display_name") or "").lower()
-                    or query in (u.get("email") or "").lower()
-                    or query in (u.get("role") or "").lower()
-                    or query in (u.get("auth_provider") or "").lower()
-                    or query in str(u.get("id", ""))
-                ]
-            else:
+        try:
+            _total_label.set_text(f"TOTAL · {len(users_list)}")
+            _render_kpis()
+            _render_segments()
+            _apply_filter()
+        except NameError:
+            if table_ref is not None:
                 table_ref.rows = users_list
-            table_ref.update()
+                table_ref.update()
 
     # ---------------------------------------------------------------------------
     # Add dialog
@@ -282,70 +275,155 @@ async def users_page() -> None:
         dialog.open()
 
     # ---------------------------------------------------------------------------
+    # State + initial load
+    # ---------------------------------------------------------------------------
+    state: dict = {"filter_role": "All"}
+    await load_users()
+
+    # ---------------------------------------------------------------------------
     # Page layout
     # ---------------------------------------------------------------------------
-    with ui.column().classes("q-pa-lg w-full"):
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("User Management").classes("text-h4")
-            with ui.row().classes("gap-2"):
-                bulk_btn = ui.button(
-                    "Bulk Set Role", icon="group", on_click=open_bulk_role_dialog
-                ).props("outline color=secondary")
-                bulk_btn.set_visibility(False)
-                ui.button(
-                    "Refresh", icon="refresh", on_click=refresh_table
-                ).props("outline")
-                ui.button(
-                    "Add User", icon="person_add", on_click=open_add_dialog
-                ).props("color=primary")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        await load_users()
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add User", icon="person_add",
+                      on_click=lambda: open_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-spacer")
+            bulk_btn = ui.button("Bulk Set Role", icon="group",
+                                 on_click=lambda: open_bulk_role_dialog()) \
+                .props("flat dense color=secondary")
+            bulk_btn.set_visibility(False)
+            ui.element("div").classes("ed-toolbar-spacer")
+            ui.button("Refresh", icon="refresh",
+                      on_click=lambda: refresh_table()) \
+                .props("flat dense")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label(f"TOTAL · {len(users_list)}").classes("ed-mono")
 
-        columns = [
-            {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left"},
-            {"name": "username", "label": "Username", "field": "username", "sortable": True, "align": "left"},
-            {"name": "display_name", "label": "Display Name", "field": "display_name", "sortable": True, "align": "left"},
-            {"name": "email", "label": "Email", "field": "email", "sortable": True, "align": "left"},
-            {"name": "role", "label": "Role", "field": "role", "sortable": True, "align": "left"},
-            {"name": "is_active", "label": "Active", "field": "is_active", "align": "center"},
-            {"name": "auth_provider", "label": "Provider", "field": "auth_provider", "sortable": True, "align": "left"},
-            {"name": "team_member_id", "label": "Team Member", "field": "team_member_id", "sortable": True, "align": "left"},
-            {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
-        ]
+        with ui.element("div").classes("ed-shell"):
 
-        # Search input
-        search_input = ui.input(
-            placeholder="Search by username, display name, email, or role...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
-        search_ref["input"] = search_input
+            ui.label("User Management").classes("text-h4 q-mb-md")
 
-        def _apply_filter() -> None:
-            query = (search_input.value or "").strip().lower()
-            if not query:
-                table_ref.rows = users_list
-            else:
-                table_ref.rows = [
-                    u for u in users_list
-                    if query in (u.get("username") or "").lower()
-                    or query in (u.get("display_name") or "").lower()
-                    or query in (u.get("email") or "").lower()
-                    or query in (u.get("role") or "").lower()
-                    or query in (u.get("auth_provider") or "").lower()
-                    or query in str(u.get("id", ""))
-                ]
-            table_ref.update()
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
 
-        search_input.on("update:model-value", lambda _: _apply_filter())
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by username, display name, email, role…",
+                ).props("dense outlined clearable").style("min-width: 320px;")
+            search_ref["input"] = search_input
 
-        table_ref = ui.table(
-            columns=columns,
-            rows=users_list,
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-            selection="multiple",
-        ).classes("w-full")
+            # ── KPI / segments / filter ────────────────────────
+            def _count_by_role(rows: list[dict], r: str) -> int:
+                return sum(1 for u in rows if (u.get("role") or "") == r)
+
+            def _set_role(r: str) -> None:
+                state["filter_role"] = r
+                _render_kpis()
+                _render_segments()
+                _apply_filter()
+
+            def _render_kpis() -> None:
+                kpi_container.clear()
+                with kpi_container:
+                    rows = users_list
+                    active_n = sum(1 for u in rows if u.get("is_active"))
+                    inactive_n = len(rows) - active_n
+                    ldap_n = sum(1 for u in rows if (u.get("auth_provider") or "") == "ldap")
+                    oidc_n = sum(1 for u in rows if (u.get("auth_provider") or "") == "oidc")
+                    local_n = sum(1 for u in rows if (u.get("auth_provider") or "local") == "local")
+
+                    def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                        cls = "ed-strip-cell ed-stat-tile"
+                        if key and state["filter_role"] == key:
+                            cls += " active"
+                        el = ui.element("div").classes(cls)
+                        if key is not None:
+                            el.on("click", lambda _, k=key: _set_role(k))
+                        with el:
+                            ui.label(label).classes("ed-eyebrow")
+                            ui.label(value).classes("ed-strip-num")
+                            if sub:
+                                ui.label(sub).classes("ed-stat-tile-sub")
+
+                    _tile("Total Users", str(len(rows)),
+                          f"{active_n} active · {inactive_n} inactive",
+                          key="All")
+                    _tile("Admins", str(_count_by_role(rows, "ADMIN")),
+                          "filter to admins", key="ADMIN")
+                    _tile("Approvers", str(_count_by_role(rows, "APPROVER")),
+                          "filter to approvers", key="APPROVER")
+                    if ldap_n or oidc_n:
+                        _tile("Federated", str(ldap_n + oidc_n),
+                              f"{ldap_n} LDAP · {oidc_n} OIDC · {local_n} local",
+                              key=None)
+
+            def _render_segments() -> None:
+                seg_container.clear()
+                with seg_container:
+                    rows = users_list
+
+                    def _seg(label: str, key: str, count: int) -> None:
+                        cls = "ed-segmented-item" + (
+                            " active" if state["filter_role"] == key else "")
+                        btn = ui.element("button").classes(cls)
+                        btn.on("click", lambda _, k=key: _set_role(k))
+                        with btn:
+                            ui.label(label)
+                            ui.label(f"· {count}").classes("seg-count")
+
+                    _seg("All", "All", len(rows))
+                    for r in _ROLES:
+                        n = _count_by_role(rows, r)
+                        if n or r == state["filter_role"]:
+                            _seg(r.title(), r, n)
+
+            def _apply_filter() -> None:
+                query = (search_input.value or "").strip().lower()
+                role_filter = state["filter_role"]
+                rows = list(users_list)
+                if role_filter != "All":
+                    rows = [u for u in rows if (u.get("role") or "") == role_filter]
+                if query:
+                    rows = [
+                        u for u in rows
+                        if query in (u.get("username") or "").lower()
+                        or query in (u.get("display_name") or "").lower()
+                        or query in (u.get("email") or "").lower()
+                        or query in (u.get("role") or "").lower()
+                        or query in (u.get("auth_provider") or "").lower()
+                        or query in str(u.get("id", ""))
+                    ]
+                if table_ref is not None:
+                    table_ref.rows = rows
+                    table_ref.update()
+
+            search_input.on("update:model-value", lambda _: _apply_filter())
+
+            columns = [
+                {"name": "username", "label": "Username", "field": "username", "sortable": True, "align": "left"},
+                {"name": "display_name", "label": "Display Name", "field": "display_name", "sortable": True, "align": "left"},
+                {"name": "email", "label": "Email", "field": "email", "sortable": True, "align": "left"},
+                {"name": "role", "label": "Role", "field": "role", "sortable": True, "align": "left"},
+                {"name": "is_active", "label": "Active", "field": "is_active", "align": "center"},
+                {"name": "auth_provider", "label": "Provider", "field": "auth_provider", "sortable": True, "align": "left"},
+                {"name": "team_member_id", "label": "Team Member", "field": "team_member_id", "sortable": True, "align": "left"},
+                {"name": "actions", "label": "Actions", "field": "actions", "align": "center"},
+            ]
+
+            with ui.element("div").classes("ed-card"):
+                table_ref = ui.table(
+                    columns=columns,
+                    rows=users_list,
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                    selection="multiple",
+                ).classes("w-full").props("flat")
 
         def _on_selection_change() -> None:
             has_sel = bool(table_ref.selected) if table_ref else False
@@ -414,5 +492,7 @@ async def users_page() -> None:
         table_ref.on("edit", lambda e: open_edit_dialog(e.args))
         table_ref.on("delete", lambda e: open_delete_dialog(e.args))
 
-        if not users_list:
-            ui.label("No users found.").classes("text-grey q-mt-md")
+        # Initial KPI / segments / filter render
+        _render_kpis()
+        _render_segments()
+        _apply_filter()

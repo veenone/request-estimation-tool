@@ -30,17 +30,27 @@ async def backup_page():
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Backup & Restore").classes("text-h4 q-mb-md")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        # ---- Backup section ------------------------------------------------
-        with ui.card().classes("w-full q-pa-md q-mb-lg"):
-            ui.label("Download Backup").classes("text-h6 q-mb-sm")
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Download Backup", icon="download",
+                      on_click=lambda: ui.run_javascript(_download_backup_js())) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                ui.label("ADMIN ONLY").classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Backup & Restore").classes("text-h4 q-mb-md")
             ui.label(
-                "Export all configuration data (features, task templates, DUT types, "
-                "test profiles, team members, risk items, document types, public holidays) "
-                "as a JSON file."
-            ).classes("text-body2 text-grey q-mb-md")
+                "Export all configuration data as a JSON file, or restore "
+                "from a previous backup. Affects features, task templates, "
+                "DUTs, profiles, team members, risks, document types, "
+                "and public holidays."
+            ).classes("ed-eyebrow").style("margin-bottom: 22px;")
 
             token = _safe_storage().get("token", "")
 
@@ -61,24 +71,45 @@ async def backup_page():
                     f'.catch(err => {{ console.error("Download failed:", err); alert("Download failed: " + err.message); }});'
                 )
 
-            ui.button(
-                "Download Backup",
-                icon="download",
-                on_click=lambda: ui.run_javascript(_download_backup_js()),
-            ).props("color=primary")
+            # ── Backup section ─────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                with ui.element("div").classes("ed-card-head"):
+                    ui.label("Download Backup").classes("ed-cap")
+                    ui.label("read-only operation").classes("ed-card-head-meta")
+                ui.label(
+                    "Export all configuration data (features, task templates, DUT types, "
+                    "test profiles, team members, risk items, document types, public holidays) "
+                    "as a JSON file you can store off-platform or hand to another instance."
+                ).style("font-size: 13px; opacity: 0.78; margin-bottom: 18px;")
+                ui.button("Download Backup", icon="download",
+                          on_click=lambda: ui.run_javascript(_download_backup_js())) \
+                    .props("color=primary")
 
-        # ---- Restore section -----------------------------------------------
-        with ui.card().classes("w-full q-pa-md"):
-            ui.label("Restore from Backup").classes("text-h6 q-mb-sm")
-            ui.label(
-                "Upload a previously downloaded backup JSON file. "
-                "This will replace all current configuration data with the backup contents."
-            ).classes("text-body2 text-grey q-mb-md")
-            ui.label(
-                "Warning: This operation cannot be undone. Consider downloading a backup first."
-            ).classes("text-body2 text-negative q-mb-md")
+            # ── Restore section ────────────────────────────────
+            with ui.element("div").classes("ed-card") \
+                    .style("border-color: var(--q-warning);"):
+                with ui.element("div").classes("ed-card-head"):
+                    ui.label("Restore from Backup").classes("ed-cap") \
+                        .style("color: var(--q-warning);")
+                    ui.label("destructive · cannot be undone").classes("ed-card-head-meta") \
+                        .style("color: var(--q-warning);")
+                ui.label(
+                    "Upload a previously downloaded backup JSON file. "
+                    "This will replace all current configuration data with "
+                    "the backup contents."
+                ).style("font-size: 13px; opacity: 0.78; margin-bottom: 8px;")
+                ui.label(
+                    "Consider downloading a backup first as a safety net."
+                ).style("font-size: 12px; color: var(--q-warning); "
+                        "font-weight: 500; margin-bottom: 18px;")
 
-            result_container = ui.column().classes("w-full")
+                result_container = ui.column().classes("w-full")
+
+                ui.upload(
+                    label="Upload Backup File",
+                    on_upload=lambda e: _handle_restore(e),
+                    auto_upload=True,
+                ).props('accept=".json" color=secondary').classes("q-mb-md w-full")
 
             async def _handle_restore(e: events.UploadEventArguments):
                 upload_file = getattr(e, "file", None) or e
@@ -142,9 +173,3 @@ async def backup_page():
                         ui.button("Restore", on_click=_do_restore).props("color=negative")
 
                 confirm_dlg.open()
-
-            ui.upload(
-                label="Upload Backup File",
-                on_upload=_handle_restore,
-                auto_upload=True,
-            ).props('accept=".json" color=secondary').classes("q-mb-md")

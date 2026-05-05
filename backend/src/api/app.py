@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Test Effort Estimation Tool",
-    version="3.3.0",
+    version="3.4.0",
     description="API for managing test effort estimations",
     lifespan=lifespan,
 )
@@ -96,14 +96,14 @@ def _stcore_stub(path: str = ""):
 @app.get("/api/healthcheck")
 def healthcheck():
     """Simple liveness probe — returns 200 if the service is running."""
-    return {"status": "ok", "version": "3.3.0"}
+    return {"status": "ok", "version": "3.4.0"}
 
 
 @app.get("/api/host-config")
 def host_config():
     """Return runtime configuration useful for frontends."""
     return {
-        "api_version": "3.3.0",
+        "api_version": "3.4.0",
         "auth_providers": ["local", "ldap", "oidc"],
         "title": "Test Effort Estimation Tool",
     }

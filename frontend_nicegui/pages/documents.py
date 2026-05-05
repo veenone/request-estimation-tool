@@ -31,19 +31,62 @@ async def document_types_page() -> None:
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Document Types").classes("text-h4 q-mb-md")
-        ui.label(
-            "Manage document types used in reporting and documentation tasks. "
-            "Each type has a base effort (hours) for creating and submitting a document."
-        ).classes("text-body2 text-grey q-mb-md")
+    # ── State ────────────────────────────────────────────────────
+    all_rows: list[dict] = []
+    state: dict = {"filter_category": "All"}
 
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
+
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Document Type", icon="add",
+                      on_click=lambda: _open_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
+
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Document Types").classes("text-h4 q-mb-md")
+            ui.label(
+                "Manage document types used in reporting and documentation tasks. "
+                "Each type has a base effort (hours) for creating and submitting a document."
+            ).classes("ed-eyebrow").style("margin-bottom: 18px;")
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, category, linked task…"
+                ).props('dense outlined clearable').style("min-width: 320px;")
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
+
+                table.add_slot("body-cell-is_active", r"""
+                    <q-td :props="props">
+                        <q-icon :name="props.value === 'Yes' ? 'check_circle' : 'cancel'"
+                                :color="props.value === 'Yes' ? 'positive' : 'negative'"
+                                size="sm" />
+                    </q-td>
+                """)
+                table.add_slot("body-cell-task_template_name", r"""
+                    <q-td :props="props">
+                        <span :class="props.value && props.value !== '—' ? '' : 'text-grey'">
+                            {{ props.value || '—' }}
+                        </span>
+                    </q-td>
+                """)
 
         # Cache task templates for selectors
         task_template_options: dict[int, str] = {}
@@ -56,13 +99,99 @@ async def document_types_page() -> None:
             except Exception:
                 task_template_options = {}
 
+        # ── KPI / segments / filter ──────────────────────────────
+        def _count_by_cat(rows: list[dict], cat: str) -> int:
+            return sum(1 for r in rows if (r.get("category") or "") == cat)
+
+        def _set_cat(c: str) -> None:
+            state["filter_category"] = c
+            _render_kpis()
+            _render_segments()
+            _apply_filter()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = all_rows
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+                active_n = sum(1 for r in rows if r.get("is_active") == "Yes")
+                linked_n = sum(1 for r in rows
+                               if r.get("task_template_name")
+                               and r["task_template_name"] != "—")
+                avg_h = (sum(float(r.get("base_effort_hours", 0)) for r in rows) / len(rows)
+                         if rows else 0.0)
+
+                def _tile(label: str, value: str, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_category"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_cat(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(value).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                _tile("Total Types", str(len(rows)),
+                      f"{active_n} active · {linked_n} linked to a task",
+                      key="All")
+                _tile("Avg Hours", f"{avg_h:.1f}h",
+                      "average base effort", key=None)
+                top = sorted(_CATEGORIES, key=lambda c: -_count_by_cat(rows, c))[:2]
+                for c in top:
+                    n = _count_by_cat(rows, c)
+                    if n:
+                        _tile(c, str(n), "filter to category", key=c)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = all_rows
+
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_category"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_cat(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+
+                _seg("All", "All", len(rows))
+                for c in _CATEGORIES:
+                    n = _count_by_cat(rows, c)
+                    if n or c == state["filter_category"]:
+                        _seg(c, c, n)
+
+        def _apply_filter() -> None:
+            query = (search_input.value or "").strip().lower()
+            cat = state["filter_category"]
+            rows = list(all_rows)
+            if cat != "All":
+                rows = [r for r in rows if (r.get("category") or "") == cat]
+            if query:
+                rows = [
+                    r for r in rows
+                    if query in (r.get("name", "") or "").lower()
+                    or query in (r.get("category", "") or "").lower()
+                    or query in (r.get("task_template_name", "") or "").lower()
+                    or query in (r.get("description", "") or "").lower()
+                ]
+            table.rows = rows
+            table.update()
+
+        search_input.on("update:model-value", lambda _: _apply_filter())
+
         async def refresh() -> None:
+            nonlocal all_rows
             await _load_task_templates()
             try:
                 items = await api_get("/document-types/all")
-                rows = []
+                all_rows = []
                 for item in items:
-                    rows.append({
+                    all_rows.append({
                         "id": item["id"],
                         "name": item.get("name", ""),
                         "category": item.get("category", ""),
@@ -72,8 +201,9 @@ async def document_types_page() -> None:
                         "description": item.get("description") or "",
                         "is_active": "Yes" if item.get("is_active") else "No",
                     })
-                table.rows = rows
-                table.update()
+                _render_kpis()
+                _render_segments()
+                _apply_filter()
             except Exception as exc:
                 ui.notify(f"Failed to load: {exc}", type="negative")
 
@@ -155,7 +285,5 @@ async def document_types_page() -> None:
             dlg.open()
 
         table.on("rowClick", _open_edit_dialog)
-
-        ui.button("Add Document Type", icon="add", on_click=_open_add_dialog).props("color=primary")
 
         await refresh()

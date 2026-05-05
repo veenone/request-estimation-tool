@@ -46,8 +46,24 @@ async def public_holidays_page():
 
     sidebar()
 
-    with ui.column().classes("q-pa-lg w-full"):
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
+
+        # ── Sticky toolbar (Add lives in the calendar header below;
+        # we keep the toolbar minimal — total count + Today shortcut)
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Holiday", icon="add",
+                      on_click=lambda: _show_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
+
+        ui.element("div").classes("ed-shell").style("display: contents;")
         ui.label("Public Holidays").classes("text-h4 q-mb-md")
+
+        # ── KPI strip (populated after _load_holidays) ──────────
+        kpi_container = ui.element("div").classes("ed-strip").style("margin-bottom: 18px;")
 
         # ---- load config for calendar colors ------------------------------------
         is_dark = _safe_storage().get("dark_mode", True)
@@ -86,6 +102,56 @@ async def public_holidays_page():
             except Exception as exc:
                 ui.notify(f"Failed to load holidays: {exc}", type="negative")
                 state["holidays"] = []
+            _render_kpis()
+
+        def _render_kpis() -> None:
+            """Refresh the KPI strip and total-count pill from current holiday data."""
+            try:
+                kpi_container.clear()
+            except Exception:
+                return
+            holidays = state["holidays"]
+            _total_label.set_text(f"TOTAL · {len(holidays)}")
+            try:
+                _list_count_label.set_text(
+                    f"{len(holidays)} entr{'ies' if len(holidays) != 1 else 'y'}"
+                )
+            except Exception:
+                pass
+            this_year = date.today().year
+            this_year_n = sum(
+                1 for h in holidays
+                if (h.get("date") or "").startswith(str(this_year))
+            )
+            recurring_n = sum(1 for h in holidays if h.get("is_recurring"))
+            countries = {h.get("country") or "" for h in holidays} - {""}
+
+            with kpi_container:
+                with ui.element("div").classes("ed-strip-cell"):
+                    ui.label("Total Holidays").classes("ed-eyebrow")
+                    ui.label(str(len(holidays))).classes("ed-strip-num")
+                    ui.label(
+                        f"{len(countries)} countr{'ies' if len(countries) != 1 else 'y'}"
+                    ).classes("ed-stat-tile-sub")
+                with ui.element("div").classes("ed-strip-cell"):
+                    ui.label(f"This Year ({this_year})").classes("ed-eyebrow")
+                    ui.label(str(this_year_n)).classes("ed-strip-num")
+                    ui.label("specific dates").classes("ed-stat-tile-sub")
+                with ui.element("div").classes("ed-strip-cell"):
+                    ui.label("Recurring").classes("ed-eyebrow")
+                    ui.label(str(recurring_n)).classes("ed-strip-num")
+                    ui.label("annual repeat").classes("ed-stat-tile-sub")
+                if countries:
+                    with ui.element("div").classes("ed-strip-cell"):
+                        ui.label("Countries").classes("ed-eyebrow")
+                        ui.label(str(len(countries))).classes("ed-strip-num")
+                        top_country = max(
+                            countries,
+                            key=lambda c: sum(
+                                1 for h in holidays if h.get("country") == c
+                            ),
+                        )
+                        ui.label(f"top: {top_country}").classes("ed-stat-tile-sub")
 
         await _load_holidays()
 
@@ -104,25 +170,19 @@ async def public_holidays_page():
             return result
 
         # ---- calendar renderer ---------------------------------------------------
-        calendar_container = ui.column().classes("w-full")
+        calendar_container = ui.element("div").classes("ed-card")
 
         def _render_calendar():
             calendar_container.clear()
             y, m = state["year"], state["month"]
 
             with calendar_container:
-                # Navigation header — month nav on the left, Add Holiday on the right
+                # Navigation header — month nav on the left
                 with ui.row().classes("items-center q-mb-sm gap-2 w-full"):
                     ui.button(icon="chevron_left", on_click=_prev_month).props("flat dense round")
                     ui.label(f"{_month_name(m)} {y}").classes("text-h6").style("min-width: 200px; text-align: center;")
                     ui.button(icon="chevron_right", on_click=_next_month).props("flat dense round")
                     ui.button("Today", on_click=_goto_today).props("flat dense")
-                    ui.space()
-                    ui.button(
-                        "Add Holiday",
-                        icon="add",
-                        on_click=lambda: _show_add_dialog(),
-                    ).props("color=primary")
 
                 # Weekday headers
                 with ui.row().classes("w-full gap-0"):
@@ -382,11 +442,12 @@ async def public_holidays_page():
         # ---- Calendar view -------------------------------------------------------
         _render_calendar()
 
-        # ---- Table view (below calendar) -----------------------------------------
-        ui.separator().classes("q-my-md")
-        ui.label("All Holidays").classes("text-h6 q-mb-sm")
-
-        table_container = ui.column().classes("w-full")
+        # ---- Table view (below calendar, in its own ed-card) ---------------------
+        with ui.element("div").classes("ed-card"):
+            with ui.element("div").classes("ed-card-head"):
+                ui.label("All Holidays").classes("ed-cap")
+                _list_count_label = ui.label("").classes("ed-card-head-meta")
+            table_container = ui.element("div").classes("w-full")
 
         _TABLE_COLUMNS = [
             {"name": "date", "label": "Date", "field": "date", "align": "left", "sortable": True},

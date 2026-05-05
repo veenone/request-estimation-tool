@@ -43,29 +43,43 @@ async def profiles_page() -> None:
     except Exception:
         product_types = ["Payment", "Telco"]
 
-    with ui.column().classes("q-pa-lg w-full"):
-        ui.label("Test Profiles").classes("text-h4 q-mb-md")
+    # ── State ────────────────────────────────────────────────────
+    all_rows_ref: dict = {"data": []}
+    state: dict = {"filter_status": "All"}
 
-        # ------------------------------------------------------------------ #
-        # Search input                                                         #
-        # ------------------------------------------------------------------ #
-        all_rows_ref: dict = {"data": []}
+    with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
-        search_input = ui.input(
-            placeholder="Search by name, description, product type...",
-        ).classes("w-full q-mb-sm").props('outlined dense clearable')
-        with search_input:
-            ui.icon("search").classes("text-grey").props('slot="prepend"')
+        # ── Sticky toolbar ──────────────────────────────────────
+        with ui.element("div").classes("ed-toolbar"):
+            ui.button("Add Profile", icon="add",
+                      on_click=lambda: show_add_dialog()) \
+                .props("flat dense color=primary")
+            ui.element("div").classes("ed-toolbar-grow")
+            with ui.element("div").classes("ed-status-now"):
+                ui.element("span").classes("ed-status-dot")
+                _total_label = ui.label("TOTAL · 0").classes("ed-mono")
 
-        # ------------------------------------------------------------------ #
-        # Table                                                                #
-        # ------------------------------------------------------------------ #
-        table = ui.table(
-            columns=_COLUMNS,
-            rows=[],
-            row_key="id",
-            pagination={"rowsPerPage": 15},
-        ).classes("w-full shadow-1")
+        with ui.element("div").classes("ed-shell"):
+
+            ui.label("Test Profiles").classes("text-h4 q-mb-md")
+
+            kpi_container = ui.element("div").classes("ed-strip")
+            seg_container = ui.element("div").classes("ed-segmented")
+
+            with ui.element("div").classes("ed-filter-row"):
+                ui.label("Filter").classes("ed-filter-label")
+                search_input = ui.input(
+                    placeholder="Search by name, description, product type…",
+                ).props('dense outlined clearable').style("min-width: 320px;")
+
+            # ── Table ──────────────────────────────────────────
+            with ui.element("div").classes("ed-card"):
+                table = ui.table(
+                    columns=_COLUMNS,
+                    rows=[],
+                    row_key="id",
+                    pagination={"rowsPerPage": 25},
+                ).classes("w-full").props("flat")
 
         # Truncate long descriptions in the table cell
         table.add_slot(
@@ -109,21 +123,85 @@ async def profiles_page() -> None:
         )
 
         # ------------------------------------------------------------------ #
-        # Filter helper                                                        #
+        # KPI / segments / filter                                              #
         # ------------------------------------------------------------------ #
+        def _set_status(s: str) -> None:
+            state["filter_status"] = s
+            _render_kpis()
+            _render_segments()
+            _apply_search()
+
+        def _render_kpis() -> None:
+            kpi_container.clear()
+            with kpi_container:
+                rows = all_rows_ref["data"]
+                _total_label.set_text(f"TOTAL · {len(rows)}")
+                n_active = sum(1 for r in rows if r.get("is_active") is not False)
+                n_inactive = len(rows) - n_active
+                with_pt = sum(1 for r in rows if r.get("product_type"))
+                avg_mult = (sum(float(r.get("effort_multiplier", 1.0)) for r in rows) / len(rows)) if rows else 0.0
+
+                def _tile(label: str, count: str, sub: str, key: str | None = None) -> None:
+                    cls = "ed-strip-cell ed-stat-tile"
+                    if key and state["filter_status"] == key:
+                        cls += " active"
+                    el = ui.element("div").classes(cls)
+                    if key is not None:
+                        el.on("click", lambda _, k=key: _set_status(k))
+                    with el:
+                        ui.label(label).classes("ed-eyebrow")
+                        ui.label(count).classes("ed-strip-num")
+                        if sub:
+                            ui.label(sub).classes("ed-stat-tile-sub")
+
+                _tile("Total Profiles", str(len(rows)),
+                      f"{with_pt} have product type set", key="All")
+                _tile("Active", str(n_active),
+                      f"{n_inactive} inactive", key="active")
+                if n_inactive:
+                    _tile("Inactive", str(n_inactive),
+                          "filter to inactive", key="inactive")
+                _tile("Avg Multiplier", f"{avg_mult:.2f}×",
+                      "across all profiles", key=None)
+
+        def _render_segments() -> None:
+            seg_container.clear()
+            with seg_container:
+                rows = all_rows_ref["data"]
+                n_active = sum(1 for r in rows if r.get("is_active") is not False)
+                n_inactive = len(rows) - n_active
+
+                def _seg(label: str, key: str, count: int) -> None:
+                    cls = "ed-segmented-item" + (
+                        " active" if state["filter_status"] == key else "")
+                    btn = ui.element("button").classes(cls)
+                    btn.on("click", lambda _, k=key: _set_status(k))
+                    with btn:
+                        ui.label(label)
+                        ui.label(f"· {count}").classes("seg-count")
+                _seg("All", "All", len(rows))
+                _seg("Active", "active", n_active)
+                if n_inactive or state["filter_status"] == "inactive":
+                    _seg("Inactive", "inactive", n_inactive)
+
         def _apply_search() -> None:
             query = (search_input.value or "").strip().lower()
-            if not query:
-                table.rows = list(all_rows_ref["data"])
-            else:
-                table.rows = [
-                    r for r in all_rows_ref["data"]
+            stat = state["filter_status"]
+            rows = list(all_rows_ref["data"])
+            if stat == "active":
+                rows = [r for r in rows if r.get("is_active") is not False]
+            elif stat == "inactive":
+                rows = [r for r in rows if r.get("is_active") is False]
+            if query:
+                rows = [
+                    r for r in rows
                     if query in (r.get("name") or "").lower()
                     or query in (r.get("description") or "").lower()
                     or query in (r.get("product_type") or "").lower()
                     or query in str(r.get("effort_multiplier", ""))
                     or query in str(r.get("id", ""))
                 ]
+            table.rows = rows
             table.update()
 
         search_input.on("update:model-value", lambda _: _apply_search())
@@ -135,6 +213,8 @@ async def profiles_page() -> None:
             try:
                 rows: list = await api_get("/profiles")
                 all_rows_ref["data"] = rows
+                _render_kpis()
+                _render_segments()
                 _apply_search()
             except Exception as exc:
                 ui.notify(f"Failed to load profiles: {exc}", type="negative")
@@ -283,16 +363,6 @@ async def profiles_page() -> None:
         # ------------------------------------------------------------------ #
         table.on("edit-row",   lambda e: show_edit_dialog(e.args))
         table.on("delete-row", lambda e: show_delete_dialog(e.args))
-
-        # ------------------------------------------------------------------ #
-        # Toolbar: Add button                                                   #
-        # ------------------------------------------------------------------ #
-        with ui.row().classes("justify-end q-mb-md"):
-            ui.button(
-                "Add Profile",
-                icon="add",
-                on_click=show_add_dialog,
-            ).props("color=primary")
 
         # ------------------------------------------------------------------ #
         # Initial data load                                                     #
