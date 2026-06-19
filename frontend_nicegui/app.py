@@ -186,8 +186,12 @@ ui.add_head_html("""
 
   /* ─── Sidebar redesign ──────────────────────────────────────────── */
 
-  /* Logo zone — top of drawer */
-  .ed-side-logo  { padding: 16px 20px 14px 20px;
+  /* Floating menu toggle (sits above the drawer; left padding on the logo row
+     keeps the logo clear of it when the drawer is open). */
+  .ed-drawer-toggle { position: fixed !important; top: 8px; left: 8px;
+                      z-index: 2100; }
+  /* Logo zone — top of drawer (extra left padding leaves room for the toggle) */
+  .ed-side-logo  { padding: 14px 20px 14px 52px;
                    border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
                    display: flex !important; align-items: center; gap: 12px; }
   .ed-side-logo-img { flex: 0 0 auto;
@@ -242,7 +246,12 @@ ui.add_head_html("""
   aside.q-drawer.q-drawer--left .q-drawer__content {
                    padding: 0 !important;
                    overflow: hidden !important;
-                   display: flex; flex-direction: column; }
+                   display: flex; flex-direction: column;
+                   align-items: stretch !important; }
+  /* Inner sections fill the full drawer width (the flex column would otherwise
+     shrink them to content width, leaving the nav narrower than the drawer). */
+  .ed-side-logo, .ed-side-user, .ed-side-nav, .ed-side-footer {
+                   width: 100%; box-sizing: border-box; }
 
   /* Nav list — flush scrollbar */
   .ed-side-nav   { padding: 14px 0 14px 0; flex: 1; min-height: 0;
@@ -1071,7 +1080,11 @@ def sidebar():
     # Drawer background is controlled by the injected theme CSS below
     # (sidebar_bg_light / sidebar_bg_dark). We avoid `bg-dark` because its
     # `!important` rule wins over our injected style.
+    # behavior=desktop keeps the drawer in push mode at every width, so Quasar
+    # never auto-switches to the mobile overlay that was hiding it on its own.
+    # A floating toggle (added after this block) lets the user collapse/expand it.
     with ui.left_drawer(value=True) \
+            .props("behavior=desktop") \
             .style("display: flex; flex-direction: column; padding: 0;") as drawer:
 
         # ── Logo zone ─────────────────────────────────────────
@@ -1321,6 +1334,13 @@ def sidebar():
                 .props("flat round dense").tooltip("Toggle theme")
             ui.button("Logout", icon="logout", on_click=logout) \
                 .props("flat dense")
+
+    # Floating menu toggle — lives OUTSIDE the drawer so it stays clickable even
+    # when the drawer is collapsed off-canvas. Lets the user show/hide the menu.
+    ui.button(icon="menu", on_click=drawer.toggle) \
+        .props("flat round dense") \
+        .classes("ed-drawer-toggle") \
+        .tooltip("Show / hide menu")
 
     return drawer
 

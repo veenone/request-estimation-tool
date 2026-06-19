@@ -22,6 +22,7 @@ from frontend_nicegui.app import (
     api_put,
     auth_headers,
     current_user,
+    has_permission,
     is_authenticated,
     show_error_page,
     sidebar,
@@ -263,6 +264,10 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "document_counts": {},
         # Step 7 (calculation result)
         "calc_result": None,
+        # Autosave: id of the draft this wizard is backed by (created lazily),
+        # and a signature of the last successfully autosaved payload.
+        "autosave_id": None,
+        "autosave_sig": None,
     }
 
     # Pre-load catalog data in parallel so later steps can render immediately.
@@ -273,6 +278,125 @@ async def new_estimation_page(request_id: str | None = None) -> None:
     # here (in the original request context) and closing over them in _safe_get we
     # guarantee every API call is authenticated.
     _catalog_headers = auth_headers()
+    # Captured once in the request context so the background autosave timer
+    # (which runs outside per-client storage context) can still authenticate
+    # and stamp the author — mirrors the _catalog_headers pattern above.
+    _persist_username = (current_user() or {}).get("username")
+
+    def _build_persist_payload() -> dict[str, Any]:
+        """Collect the current wizard state into a create/draft payload.
+
+        Shared by manual Save and the background autosave so both persist
+        exactly the same inputs.
+        """
+        return {
+            "project_name": state["project_name"],
+            "project_type": state["project_type"],
+            "feature_ids": state["feature_ids"],
+            "new_feature_ids": state["new_feature_ids"],
+            "reference_project_ids": state["reference_project_ids"],
+            "dut_ids": state["dut_ids"],
+            "profile_ids": state["profile_ids"],
+            "dut_profile_matrix": state["dut_profile_matrix"],
+            "pr_fixes": {
+                "simple": state["pr_simple"],
+                "medium": state["pr_medium"],
+                "complex": state["pr_complex"],
+            },
+            "pr_details": state.get("pr_details", []),
+            "team_size": state["team_size"],
+            "has_leader": state["has_leader"],
+            "working_days": state["working_days"],
+            "start_date": state.get("start_date") or None,
+            "testing_start_date": state.get("testing_start_date") or None,
+            "expected_delivery": state.get("delivery_date") or None,
+            "request_id": linked_request_id,
+            "created_by": _persist_username,
+            "team_allocations": state.get("team_allocations", []),
+            "expected_releases": state.get("expected_releases", 1),
+            "project_goals": state.get("project_goals") or None,
+            "target_customer": state.get("target_customer") or None,
+            "project_reference": state.get("project_reference") or None,
+            "team_id": state.get("team_id"),
+            "risk_item_ids": state.get("risk_item_ids", []),
+            "document_type_ids": state.get("document_type_ids", []),
+            "document_counts": state.get("document_counts", {}),
+            "task_assigned_testers": state.get("task_assigned_testers", {}),
+            "product_type_filter": state.get("product_type_filter", "All"),
+        }
+
+    async def autosave() -> None:
+        """Persist in-progress wizard input to a DRAFT so a browser/session
+        timeout never loses work. Creates the draft once enough is filled in,
+        then updates it in place. Runs on a page-level timer (active from the
+        first step) and uses pre-captured auth headers + a direct httpx call,
+        because the timer fires outside per-client storage context."""
+        if not _catalog_headers.get("Authorization"):
+            return
+        # Require a name plus at least one real selection before we materialize
+        # a draft — avoids littering the list with empty estimations.
+        if not (state["project_name"] or "").strip():
+            return
+        has_content = any([
+            state["feature_ids"], state["new_feature_ids"], state["dut_ids"],
+            state["pr_simple"], state["pr_medium"], state["pr_complex"],
+        ])
+        if state["autosave_id"] is None and not has_content:
+            return
+        payload = _build_persist_payload()
+        sig = repr(payload)
+        if sig == state["autosave_sig"]:
+            return  # nothing changed since last autosave
+        try:
+            async with httpx.AsyncClient() as _client:
+                if state["autosave_id"] is None:
+                    _r = await _client.post(
+                        f"{API_URL}/estimations", json=payload, headers=_catalog_headers,
+                    )
+                    _r.raise_for_status()
+                    state["autosave_id"] = _r.json()["id"]
+                else:
+                    _r = await _client.put(
+                        f"{API_URL}/estimations/{state['autosave_id']}/draft",
+                        json=payload, headers=_catalog_headers,
+                    )
+                    _r.raise_for_status()
+            state["autosave_sig"] = sig
+            if _autosave_label is not None:
+                _autosave_label.set_text("✓ Draft autosaved")
+        except Exception:
+            # Never let autosave interrupt the user; retry on the next tick.
+            if _autosave_label is not None:
+                _autosave_label.set_text("Autosave pending…")
+
+    # Autosave status label — created inside the rendered content container
+    # below (a timer/label attached at bare page scope never fires; it must
+    # live inside an active element slot, like the sidebar's poll timer).
+    _autosave_label = None
+
+    async def save_draft_now() -> None:
+        """Explicitly save the wizard's current progress as a DRAFT, from any step.
+
+        Unlike the final "Save Estimation", this does not require a calculation —
+        it persists whatever has been entered so the user can stop and resume
+        later. Creates the draft on first save, then updates it in place."""
+        if not (state["project_name"] or "").strip():
+            ui.notify("Enter a project name before saving a draft.", type="warning")
+            return
+        payload = _build_persist_payload()
+        try:
+            if state["autosave_id"] is None:
+                saved = await api_post("/estimations", json=payload)
+                state["autosave_id"] = saved["id"]
+            else:
+                await api_put(f"/estimations/{state['autosave_id']}/draft", json=payload)
+            state["autosave_sig"] = repr(payload)
+            if _autosave_label is not None:
+                _autosave_label.set_text("✓ Draft saved")
+            ui.notify(f"Draft saved (ID {state['autosave_id']}). Resume it any time from Estimations.",
+                      type="positive")
+        except Exception as exc:
+            ui.notify(f"Could not save draft: {exc}", type="negative")
 
     async def _safe_get(path: str) -> list[dict]:
         try:
@@ -319,6 +443,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
     # Page title                                                           #
     # ------------------------------------------------------------------ #
     with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
+
+        # Background autosave timers. These must live inside a rendered slot to
+        # fire (a timer attached at bare page scope never runs). The visible
+        # "Save draft" button + status label are placed in the toolbar below.
+        ui.timer(30.0, autosave)
+        # Fire once shortly after the client connects (mirrors the sidebar's
+        # notification poller) so a draft is created promptly once input exists.
+        ui.timer(5.0, autosave, once=True)
 
         # ── Inject wizard component CSS ─────────────────────────
         ui.add_head_html("""
@@ -425,6 +557,11 @@ async def new_estimation_page(request_id: str | None = None) -> None:
             if linked_request_id is not None:
                 ui.label(f"REQ · {linked_request_id}").classes("ed-mono") \
                     .style("opacity: 0.7;")
+            _autosave_label = ui.label("").classes("ed-autosave-note ed-mono") \
+                .style("opacity: 0.7; font-size: 12px;")
+            ui.button("Save draft", icon="save", on_click=save_draft_now) \
+                .props("flat dense color=primary") \
+                .tooltip("Save current progress as a draft — resume later from Estimations")
 
         with ui.element("div").classes("ed-shell"):
             ui.label("New Estimation").classes("text-h4 q-mb-md")
@@ -560,6 +697,106 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             "Select the features under test. Toggle 'New' for features that require study time."
                         ).classes("text-body2 text-grey q-mb-md")
 
+                        async def _add_custom_feature() -> None:
+                            """Add a project-specific feature for this estimation.
+
+                            Project features must be owned by a saved estimation, so we
+                            persist the draft first (creating it if needed) and scope the
+                            new feature to it — it then counts toward THIS estimation only."""
+                            if state["autosave_id"] is None:
+                                await save_draft_now()
+                                if state["autosave_id"] is None:
+                                    return  # save_draft_now already warned (e.g. no project name)
+                            with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                                ui.label("Add custom feature for this project").classes("text-h6")
+                                ui.label(
+                                    "Used in this estimation only. You can request adding it to the "
+                                    "global catalog at the Review step."
+                                ).classes("text-caption text-grey q-mb-sm")
+                                _name = ui.input("Feature name *").classes("w-full")
+                                _cat = ui.input("Category", value="Project-Specific").classes("w-full")
+                                _weight = ui.number("Complexity weight", value=1.0, min=0.1, step=0.1).classes("w-full")
+                                _base = ui.number("Base effort (hours)", value=8.0, min=0, step=0.5).classes("w-full")
+                                _has_tests = ui.checkbox("Has existing tests", value=False)
+                                _desc = ui.textarea("Description (optional)").classes("w-full")
+
+                                async def _create() -> None:
+                                    if not (_name.value or "").strip():
+                                        ui.notify("Feature name is required.", type="warning")
+                                        return
+                                    try:
+                                        created = await api_post(
+                                            f"/estimations/{state['autosave_id']}/features",
+                                            json={
+                                                "name": _name.value.strip(),
+                                                "category": (_cat.value or "").strip() or None,
+                                                "complexity_weight": float(_weight.value or 1.0),
+                                                "base_effort_hours": float(_base.value or 0),
+                                                "has_existing_tests": bool(_has_tests.value),
+                                                "description": (_desc.value or "").strip() or None,
+                                            },
+                                        )
+                                    except Exception as exc:
+                                        ui.notify(f"Could not add feature: {exc}", type="negative")
+                                        return
+                                    all_features.append(created)
+                                    if created["id"] not in state["feature_ids"]:
+                                        state["feature_ids"].append(created["id"])
+                                    _rebuild_feature_list()
+                                    ui.notify(f"Added project feature '{created['name']}'.", type="positive")
+                                    _dlg.close()
+
+                                with ui.row().classes("w-full justify-end q-mt-sm"):
+                                    ui.button("Cancel", on_click=_dlg.close).props("flat")
+                                    ui.button("Add", icon="add", on_click=_create).props("color=primary")
+                            _dlg.open()
+
+                        async def _edit_custom_feature(feat: dict) -> None:
+                            """Edit a project feature already added (fix a typo or detail)."""
+                            with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                                ui.label("Edit project feature").classes("text-h6")
+                                _name = ui.input("Feature name *", value=feat.get("name", "")).classes("w-full")
+                                _cat = ui.input("Category", value=feat.get("category") or "").classes("w-full")
+                                _weight = ui.number("Complexity weight", value=feat.get("complexity_weight", 1.0), min=0.1, step=0.1).classes("w-full")
+                                _base = ui.number("Base effort (hours)", value=feat.get("base_effort_hours", 0.0) or 0.0, min=0, step=0.5).classes("w-full")
+                                _has_tests = ui.checkbox("Has existing tests", value=bool(feat.get("has_existing_tests")))
+                                _desc = ui.textarea("Description (optional)", value=feat.get("description") or "").classes("w-full")
+
+                                async def _save() -> None:
+                                    if not (_name.value or "").strip():
+                                        ui.notify("Feature name is required.", type="warning")
+                                        return
+                                    try:
+                                        updated = await api_put(
+                                            f"/features/{feat['id']}",
+                                            json={
+                                                "name": _name.value.strip(),
+                                                "category": (_cat.value or "").strip() or None,
+                                                "complexity_weight": float(_weight.value or 1.0),
+                                                "base_effort_hours": float(_base.value or 0),
+                                                "has_existing_tests": bool(_has_tests.value),
+                                                "description": (_desc.value or "").strip() or None,
+                                            },
+                                        )
+                                    except Exception as exc:
+                                        ui.notify(f"Could not update feature: {exc}", type="negative")
+                                        return
+                                    feat.update(updated)
+                                    _rebuild_feature_list()
+                                    ui.notify(f"Updated '{updated['name']}'.", type="positive")
+                                    _dlg.close()
+
+                                with ui.row().classes("w-full justify-end q-mt-sm"):
+                                    ui.button("Cancel", on_click=_dlg.close).props("flat")
+                                    ui.button("Save", icon="save", on_click=_save).props("color=primary")
+                            _dlg.open()
+
+                        with ui.row().classes("items-center q-mb-sm"):
+                            ui.button("Add custom feature", icon="add", on_click=_add_custom_feature) \
+                                .props("outline dense color=primary")
+                            ui.label("No suitable template entry? Add a project-specific one.") \
+                                .classes("text-caption text-grey")
+
                         pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
 
                         # We need checkbox refs to read values on navigation
@@ -591,7 +828,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                             selected_pt = state.get("product_type_filter") or "All"
                             if selected_pt and selected_pt != "All":
-                                visible_features = [f for f in all_features if f.get("product_type") == selected_pt]
+                                visible_features = [f for f in all_features if f.get("product_type") == selected_pt or not f.get("is_global", True)]
                                 pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
                             else:
                                 visible_features = list(all_features)
@@ -639,15 +876,17 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 for cat_name, cat_features in vis_by_cat.items():
                                     ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                                    with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                                    with ui.grid(columns="1fr 90px 80px 90px").classes("w-full q-pl-md items-center"):
                                         ui.label("Feature").classes("text-caption text-grey")
                                         ui.label("Complexity").classes("text-caption text-grey text-center")
                                         ui.label("New?").classes("text-caption text-grey text-center")
+                                        ui.label("Scope").classes("text-caption text-grey text-center")
 
                                         for feat in cat_features:
                                             fid = feat["id"]
                                             fname = feat.get("name", f"Feature {fid}")
                                             fweight = feat.get("complexity_weight", 1.0)
+                                            _is_project = not feat.get("is_global", True)
 
                                             cb = ui.checkbox(
                                                 fname,
@@ -662,6 +901,16 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                                 value=(fid in state["new_feature_ids"]),
                                             ).props("dense color=orange").classes("text-caption")
                                             new_feat_checkbox_refs[fid] = new_cb
+
+                                            if _is_project:
+                                                with ui.row().classes("items-center gap-1 justify-center"):
+                                                    ui.badge("project", color="orange").props("dense")
+                                                    ui.button(icon="edit",
+                                                              on_click=lambda _e=None, f=feat: _edit_custom_feature(f)) \
+                                                        .props("flat dense round size=sm color=primary") \
+                                                        .tooltip("Edit this project feature")
+                                            else:
+                                                ui.label("").classes("text-center")
 
                                             def _make_sync(f_id: int, n_cb: ui.checkbox):
                                                 def _sync(e) -> None:
@@ -1547,7 +1796,67 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                         # Summary cards — rebuilt when this step becomes visible
                         summary_container = ui.column().classes("w-full q-mb-md")
+                        custom_feat_container = ui.column().classes("w-full q-mb-md")
                         result_container = ui.column().classes("w-full")
+
+                        _can_promote_new = has_permission("APPROVER")
+
+                        async def _request_global(feat: dict) -> None:
+                            try:
+                                updated = await api_post(f"/features/{feat['id']}/request-promotion")
+                            except Exception as exc:
+                                ui.notify(f"Request failed: {exc}", type="negative")
+                                return
+                            feat["promotion_requested"] = updated.get("promotion_requested", True)
+                            _render_custom_features()
+                            ui.notify(f"Requested adding '{feat.get('name')}' to the global catalog.", type="positive")
+
+                        async def _promote_global(feat: dict) -> None:
+                            try:
+                                updated = await api_put(f"/features/{feat['id']}/promote")
+                            except Exception as exc:
+                                ui.notify(f"Promote failed: {exc}", type="negative")
+                                return
+                            feat["is_global"] = updated.get("is_global", True)
+                            feat["owner_estimation_id"] = updated.get("owner_estimation_id")
+                            feat["promotion_requested"] = False
+                            _render_custom_features()
+                            ui.notify(f"'{feat.get('name')}' is now a global feature.", type="positive")
+
+                        def _render_custom_features() -> None:
+                            """Show this estimation's custom (project) features with a
+                            request-to-global action (or promote, for approvers)."""
+                            custom_feat_container.clear()
+                            project_feats = [
+                                f for f in all_features
+                                if not f.get("is_global", True)
+                                and f.get("owner_estimation_id") == state.get("autosave_id")
+                            ]
+                            if not project_feats:
+                                return
+                            with custom_feat_container:
+                                ui.label("Custom features for this project").classes("text-subtitle1 q-mb-xs")
+                                ui.label(
+                                    "These exist only in this estimation. Request adding any of them to the "
+                                    "global catalog for future reuse."
+                                ).classes("text-caption text-grey q-mb-xs")
+                                for f in project_feats:
+                                    with ui.row().classes("items-center gap-2 w-full"):
+                                        ui.label(f.get("name", "")).classes("text-body2")
+                                        cat = f.get("category")
+                                        if cat:
+                                            ui.label(f"· {cat}").classes("text-caption text-grey")
+                                        ui.element("div").classes("ed-toolbar-grow")
+                                        if _can_promote_new:
+                                            ui.button("Promote to global", icon="public",
+                                                      on_click=lambda _e=None, ff=f: _promote_global(ff)) \
+                                                .props("flat dense color=primary")
+                                        elif f.get("promotion_requested"):
+                                            ui.badge("requested", color="positive").props("dense")
+                                        else:
+                                            ui.button("Request to add to global", icon="upgrade",
+                                                      on_click=lambda _e=None, ff=f: _request_global(ff)) \
+                                                .props("outline dense color=primary")
 
                         def _render_summary() -> None:
                             summary_container.clear()
@@ -1603,6 +1912,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                         with ui.card().classes("q-pa-sm"):
                                             ui.label("Target Customer").classes("text-caption text-grey")
                                             ui.label(state["target_customer"]).classes("text-body2")
+                            _render_custom_features()
 
                         def _render_result(res: dict) -> None:
                             """Render calculation results returned from the API."""
@@ -1762,50 +2072,23 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 ui.notify(f"Calculation failed: {exc}", type="negative")
 
                         async def save_estimation() -> None:
-                            """Call POST /estimations to persist, then navigate to detail page."""
+                            """Persist the estimation and navigate to its detail page.
+
+                            Reuses the autosaved draft when one exists so we never create a
+                            duplicate of the in-progress work."""
                             if state["calc_result"] is None:
                                 ui.notify("Run Calculate first.", type="warning")
                                 return
 
-                            user = current_user() or {}
-                            payload: dict[str, Any] = {
-                                "project_name": state["project_name"],
-                                "project_type": state["project_type"],
-                                "feature_ids": state["feature_ids"],
-                                "new_feature_ids": state["new_feature_ids"],
-                                "reference_project_ids": state["reference_project_ids"],
-                                "dut_ids": state["dut_ids"],
-                                "profile_ids": state["profile_ids"],
-                                "dut_profile_matrix": state["dut_profile_matrix"],
-                                "pr_fixes": {
-                                    "simple": state["pr_simple"],
-                                    "medium": state["pr_medium"],
-                                    "complex": state["pr_complex"],
-                                },
-                                "pr_details": state.get("pr_details", []),
-                                "team_size": state["team_size"],
-                                "has_leader": state["has_leader"],
-                                "working_days": state["working_days"],
-                                "start_date": state.get("start_date") or None,
-                                "testing_start_date": state.get("testing_start_date") or None,
-                                "expected_delivery": state.get("delivery_date") or None,
-                                "request_id": linked_request_id,
-                                "created_by": user.get("username"),
-                                "team_allocations": state.get("team_allocations", []),
-                                "expected_releases": state.get("expected_releases", 1),
-                                "project_goals": state.get("project_goals") or None,
-                                "target_customer": state.get("target_customer") or None,
-                                "project_reference": state.get("project_reference") or None,
-                                "team_id": state.get("team_id"),
-                                "risk_item_ids": state.get("risk_item_ids", []),
-                                "document_type_ids": state.get("document_type_ids", []),
-                                "document_counts": state.get("document_counts", {}),
-                                "task_assigned_testers": state.get("task_assigned_testers", {}),
-                                "product_type_filter": state.get("product_type_filter", "All"),
-                            }
+                            payload = _build_persist_payload()
                             try:
-                                saved = await api_post("/estimations", json=payload)
-                                est_id = saved["id"]
+                                if state["autosave_id"] is not None:
+                                    await api_put(f"/estimations/{state['autosave_id']}/draft", json=payload)
+                                    est_id = state["autosave_id"]
+                                else:
+                                    saved = await api_post("/estimations", json=payload)
+                                    est_id = saved["id"]
+                                    state["autosave_id"] = est_id
                                 ui.notify(f"Estimation saved (ID {est_id}).", type="positive")
                                 ui.navigate.to(f"/estimation/{est_id}")
                             except Exception as exc:
@@ -2380,8 +2663,9 @@ async def estimation_detail_page(estimation_id: int) -> None:
 
             ui.element("div").classes("ed-toolbar-spacer")
 
-            if est.get("status") == "REVISED":
-                ui.button("Edit", icon="edit",
+            if est.get("status") in ("DRAFT", "REVISED"):
+                _edit_label = "Resume editing" if est.get("status") == "DRAFT" else "Edit"
+                ui.button(_edit_label, icon="edit",
                           on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}/edit")) \
                     .props("flat dense color=orange")
 
@@ -2939,12 +3223,14 @@ async def edit_estimation_page(estimation_id: int) -> None:
             show_error_page(exc)
             return
 
-        if est.get("status") != "REVISED":
-            ui.label("This estimation is not in REVISED status and cannot be edited.").classes(
+        if est.get("status") not in ("DRAFT", "REVISED"):
+            ui.label("Only DRAFT or REVISED estimations can be edited.").classes(
                 "text-warning text-h6"
             )
             ui.button("Back to Detail", on_click=lambda: ui.navigate.to(f"/estimation/{estimation_id}"))
             return
+
+        _is_draft_edit = est.get("status") == "DRAFT"
 
         # Parse wizard inputs
         wizard_raw = est.get("wizard_inputs_json", "{}")
@@ -2978,7 +3264,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 return []
 
         all_features, all_duts, all_profiles, all_hist, all_team_members, all_teams, all_risk_items, _all_configs, _all_estimations = await asyncio.gather(
-            _safe_get("/features"),
+            _safe_get(f"/features?estimation_id={estimation_id}"),
             _safe_get("/dut-types"),
             _safe_get("/profiles"),
             _safe_get("/historical-projects"),
@@ -3134,6 +3420,112 @@ async def edit_estimation_page(estimation_id: int) -> None:
             with ui.step("Features"):
                 ui.label("Select features under test.").classes("text-body2 text-grey q-mb-md")
 
+                async def _add_custom_feature() -> None:
+                    """Create a project-specific feature owned by this estimation."""
+                    with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                        ui.label("Add project-specific feature").classes("text-h6")
+                        ui.label(
+                            "Exists only in this estimation until promoted to the global catalog."
+                        ).classes("text-caption text-grey q-mb-sm")
+                        _name = ui.input("Feature name *").classes("w-full")
+                        _cat = ui.input("Category", value="Project-Specific").classes("w-full")
+                        _weight = ui.number("Complexity weight", value=1.0, min=0.1, step=0.1).classes("w-full")
+                        _base = ui.number("Base effort (hours)", value=8.0, min=0, step=0.5).classes("w-full")
+                        _has_tests = ui.checkbox("Has existing tests", value=False)
+                        _desc = ui.textarea("Description (optional)").classes("w-full")
+
+                        async def _create() -> None:
+                            if not (_name.value or "").strip():
+                                ui.notify("Feature name is required.", type="warning")
+                                return
+                            try:
+                                created = await api_post(
+                                    f"/estimations/{estimation_id}/features",
+                                    json={
+                                        "name": _name.value.strip(),
+                                        "category": (_cat.value or "").strip() or None,
+                                        "complexity_weight": float(_weight.value or 1.0),
+                                        "base_effort_hours": float(_base.value or 0),
+                                        "has_existing_tests": bool(_has_tests.value),
+                                        "description": (_desc.value or "").strip() or None,
+                                    },
+                                )
+                            except Exception as exc:
+                                ui.notify(f"Could not add feature: {exc}", type="negative")
+                                return
+                            all_features.append(created)
+                            # Pre-select the new feature so it's included right away.
+                            if created["id"] not in state["feature_ids"]:
+                                state["feature_ids"].append(created["id"])
+                            _rebuild_feature_list()
+                            ui.notify(f"Added project feature '{created['name']}'.", type="positive")
+                            _dlg.close()
+
+                        with ui.row().classes("w-full justify-end q-mt-sm"):
+                            ui.button("Cancel", on_click=_dlg.close).props("flat")
+                            ui.button("Add", icon="add", on_click=_create).props("color=primary")
+                    _dlg.open()
+
+                async def _promote_feature(feat: dict) -> None:
+                    """Promote a project-specific feature into the global catalog."""
+                    try:
+                        updated = await api_put(f"/features/{feat['id']}/promote")
+                    except Exception as exc:
+                        ui.notify(f"Promote failed: {exc}", type="negative")
+                        return
+                    feat["is_global"] = updated.get("is_global", True)
+                    feat["owner_estimation_id"] = updated.get("owner_estimation_id")
+                    _rebuild_feature_list()
+                    ui.notify(f"'{feat.get('name')}' is now a global feature.", type="positive")
+
+                async def _edit_custom_feature(feat: dict) -> None:
+                    """Edit a project feature already added (fix a typo or detail)."""
+                    with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                        ui.label("Edit project feature").classes("text-h6")
+                        _name = ui.input("Feature name *", value=feat.get("name", "")).classes("w-full")
+                        _cat = ui.input("Category", value=feat.get("category") or "").classes("w-full")
+                        _weight = ui.number("Complexity weight", value=feat.get("complexity_weight", 1.0), min=0.1, step=0.1).classes("w-full")
+                        _base = ui.number("Base effort (hours)", value=feat.get("base_effort_hours", 0.0) or 0.0, min=0, step=0.5).classes("w-full")
+                        _has_tests = ui.checkbox("Has existing tests", value=bool(feat.get("has_existing_tests")))
+                        _desc = ui.textarea("Description (optional)", value=feat.get("description") or "").classes("w-full")
+
+                        async def _save() -> None:
+                            if not (_name.value or "").strip():
+                                ui.notify("Feature name is required.", type="warning")
+                                return
+                            try:
+                                updated = await api_put(
+                                    f"/features/{feat['id']}",
+                                    json={
+                                        "name": _name.value.strip(),
+                                        "category": (_cat.value or "").strip() or None,
+                                        "complexity_weight": float(_weight.value or 1.0),
+                                        "base_effort_hours": float(_base.value or 0),
+                                        "has_existing_tests": bool(_has_tests.value),
+                                        "description": (_desc.value or "").strip() or None,
+                                    },
+                                )
+                            except Exception as exc:
+                                ui.notify(f"Could not update feature: {exc}", type="negative")
+                                return
+                            feat.update(updated)
+                            _rebuild_feature_list()
+                            ui.notify(f"Updated '{updated['name']}'.", type="positive")
+                            _dlg.close()
+
+                        with ui.row().classes("w-full justify-end q-mt-sm"):
+                            ui.button("Cancel", on_click=_dlg.close).props("flat")
+                            ui.button("Save", icon="save", on_click=_save).props("color=primary")
+                    _dlg.open()
+
+                _can_promote = has_permission("APPROVER")
+
+                with ui.row().classes("items-center q-mb-sm"):
+                    ui.button("Add custom feature", icon="add", on_click=_add_custom_feature) \
+                        .props("outline dense color=primary")
+                    ui.label("Project-specific — promote to global later if reusable.") \
+                        .classes("text-caption text-grey")
+
                 pt_info_label = ui.label("").classes("text-caption text-primary q-mb-sm")
 
                 feature_checkbox_refs: dict[int, ui.checkbox] = {}
@@ -3208,15 +3600,17 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         for cat_name, cat_features in vis_by_cat.items():
                             ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                            with ui.grid(columns="1fr 100px 110px").classes("w-full q-pl-md items-center"):
+                            with ui.grid(columns="1fr 90px 80px 140px").classes("w-full q-pl-md items-center"):
                                 ui.label("Feature").classes("text-caption text-grey")
                                 ui.label("Complexity").classes("text-caption text-grey text-center")
                                 ui.label("New?").classes("text-caption text-grey text-center")
+                                ui.label("Scope").classes("text-caption text-grey text-center")
 
                                 for feat in cat_features:
                                     fid = feat["id"]
                                     fname = feat.get("name", f"Feature {fid}")
                                     fweight = feat.get("complexity_weight", 1.0)
+                                    _is_project = not feat.get("is_global", True)
 
                                     cb = ui.checkbox(
                                         fname,
@@ -3231,6 +3625,25 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         value=(fid in state["new_feature_ids"]),
                                     ).props("dense color=orange").classes("text-caption")
                                     new_feat_checkbox_refs[fid] = new_cb
+
+                                    # Scope cell: project features show a badge + (for
+                                    # APPROVER+) a Promote-to-global action; globals blank.
+                                    if _is_project:
+                                        with ui.row().classes("items-center gap-1 justify-center"):
+                                            ui.badge("project", color="orange").props("dense")
+                                            ui.button(
+                                                icon="edit",
+                                                on_click=lambda _e=None, f=feat: _edit_custom_feature(f),
+                                            ).props("flat dense round size=sm color=primary") \
+                                                .tooltip("Edit this project feature")
+                                            if _can_promote:
+                                                ui.button(
+                                                    icon="public",
+                                                    on_click=lambda _e=None, f=feat: _promote_feature(f),
+                                                ).props("flat dense round size=sm color=primary") \
+                                                    .tooltip("Promote to global catalog")
+                                    else:
+                                        ui.label("").classes("text-center")
 
                                     def _make_sync(f_id: int, n_cb: ui.checkbox):
                                         def _sync(e):
@@ -4077,9 +4490,13 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "product_type_filter": state.get("product_type_filter", "All"),
                     }
                     try:
-                        saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
-                        new_ver = saved.get("version", "?")
-                        ui.notify(f"Revision saved (v{new_ver}).", type="positive")
+                        if _is_draft_edit:
+                            await api_put(f"/estimations/{estimation_id}/draft", json=payload)
+                            ui.notify("Draft updated.", type="positive")
+                        else:
+                            saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
+                            new_ver = saved.get("version", "?")
+                            ui.notify(f"Revision saved (v{new_ver}).", type="positive")
                         ui.navigate.to(f"/estimation/{estimation_id}")
                     except Exception as exc:
                         ui.notify(f"Save failed: {exc}", type="negative")
@@ -4089,4 +4506,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 with ui.stepper_navigation():
                     ui.button("Back", on_click=lambda: stepper.previous()).props("flat")
                     ui.button("Calculate", icon="calculate", on_click=run_calculate).props("color=secondary")
-                    ui.button("Save Revision", icon="save", on_click=save_revision).props("color=primary")
+                    ui.button(
+                        "Save Draft" if _is_draft_edit else "Save Revision",
+                        icon="save", on_click=save_revision,
+                    ).props("color=primary")
