@@ -124,6 +124,19 @@ def _get_config_value(db: Session, key: str, default: str) -> str:
     return cfg.value if cfg else default
 
 
+def _get_config_float(db: Session, key: str, default: float) -> float:
+    """Parse a numeric config value, tolerating blank/malformed entries.
+
+    A bad value (empty string, "10%", stray text) saved via Settings must never
+    crash calculation or report generation — fall back to the default instead.
+    """
+    raw = _get_config_value(db, key, str(default))
+    try:
+        return float(str(raw).strip())
+    except (ValueError, TypeError):
+        return default
+
+
 def _generate_number(db: Session, prefix_key: str, table_class: type, number_field: str) -> str:
     prefix = _get_config_value(db, prefix_key, "EST")
     year = datetime.now().year
@@ -136,11 +149,11 @@ def _get_pr_config(db: Session) -> dict:
     """Read PR configuration values from the database."""
     return {
         "complexity_hours": {
-            "simple": float(_get_config_value(db, "pr_hours_simple", "2.0")),
-            "medium": float(_get_config_value(db, "pr_hours_medium", "4.0")),
-            "complex": float(_get_config_value(db, "pr_hours_complex", "8.0")),
+            "simple": _get_config_float(db, "pr_hours_simple", 2.0),
+            "medium": _get_config_float(db, "pr_hours_medium", 4.0),
+            "complex": _get_config_float(db, "pr_hours_complex", 8.0),
         },
-        "no_test_hours": float(_get_config_value(db, "pr_no_test_hours", "8.0")),
+        "no_test_hours": _get_config_float(db, "pr_no_test_hours", 8.0),
         "no_test_task_template_id": _get_config_value(db, "pr_no_test_task_template_id", ""),
     }
 
@@ -532,27 +545,54 @@ def list_audit_log(
 # ── Features ─────────────────────────────────────────────
 
 @router.get("/features", response_model=list[FeatureOut])
-def list_features(product_type: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_features(
+    product_type: str | None = None,
+    estimation_id: int | None = None,
+    include_project: bool = True,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List features.
+
+    By default returns the global catalog only. When ``estimation_id`` is given,
+    the response also includes that estimation's project-specific features.
+    """
     q = db.query(Feature)
+    if estimation_id is not None and include_project:
+        q = q.filter(
+            (Feature.is_global.is_(True))
+            | (Feature.owner_estimation_id == estimation_id)
+        )
+    else:
+        q = q.filter(Feature.is_global.is_(True))
     if product_type:
         q = q.filter((Feature.product_type == product_type) | (Feature.product_type.is_(None)))
     return q.all()
 
 
-@router.post("/features", response_model=FeatureOut, status_code=201)
-def create_feature(data: FeatureCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
-    existing = db.query(Feature).filter(
-        Feature.name == data.name,
-        Feature.category == data.category,
-    ).first()
-    if existing:
-        cat_label = data.category or "(no category)"
+def _assert_no_global_feature_clash(db: Session, name: str, category: str | None, exclude_id: int | None = None) -> None:
+    """Raise 409 if a global feature already uses (name, category)."""
+    q = db.query(Feature).filter(
+        Feature.name == name,
+        Feature.category == category,
+        Feature.is_global.is_(True),
+    )
+    if exclude_id is not None:
+        q = q.filter(Feature.id != exclude_id)
+    if q.first():
+        cat_label = category or "(no category)"
         raise HTTPException(
             409,
-            f"Feature '{data.name}' already exists in category '{cat_label}'. "
+            f"A global feature '{name}' already exists in category '{cat_label}'. "
             "Choose a different name or category.",
         )
-    feature = Feature(**data.model_dump())
+
+
+@router.post("/features", response_model=FeatureOut, status_code=201)
+def create_feature(data: FeatureCreate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    """Create a global (shared-catalog) feature."""
+    _assert_no_global_feature_clash(db, data.name, data.category)
+    feature = Feature(**data.model_dump(), is_global=True, owner_estimation_id=None)
     db.add(feature)
     try:
         db.commit()
@@ -575,20 +615,35 @@ def get_feature(feature_id: int, user: User = Depends(get_current_user), db: Ses
 
 
 @router.put("/features/{feature_id}", response_model=FeatureOut)
-def update_feature(feature_id: int, data: FeatureUpdate, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+def update_feature(feature_id: int, data: FeatureUpdate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
+    # Global catalog edits need APPROVER+; a project feature may be edited by its
+    # owning estimation's author or an ADMIN (e.g. to fix a typo after adding it).
+    if feature.is_global:
+        if not AuthService.has_permission(user.role, "APPROVER"):
+            raise HTTPException(403, "Editing a global feature requires APPROVER role")
+    elif user.role != "ADMIN":
+        owner = db.get(Estimation, feature.owner_estimation_id) if feature.owner_estimation_id else None
+        if not owner or (owner.created_by_id is not None and owner.created_by_id != user.id):
+            raise HTTPException(403, "Only the project's author or an ADMIN can edit this project feature")
     updates = data.model_dump(exclude_unset=True)
     new_name = updates.get("name", feature.name)
     new_category = updates.get("category", feature.category)
     if (new_name, new_category) != (feature.name, feature.category):
-        clash = db.query(Feature).filter(
+        clash_q = db.query(Feature).filter(
             Feature.name == new_name,
             Feature.category == new_category,
             Feature.id != feature_id,
-        ).first()
-        if clash:
+        )
+        # Globals clash only with globals; project features clash only within
+        # their owning estimation.
+        if feature.is_global:
+            clash_q = clash_q.filter(Feature.is_global.is_(True))
+        else:
+            clash_q = clash_q.filter(Feature.owner_estimation_id == feature.owner_estimation_id)
+        if clash_q.first():
             cat_label = new_category or "(no category)"
             raise HTTPException(
                 409,
@@ -610,12 +665,108 @@ def update_feature(feature_id: int, data: FeatureUpdate, user: User = Depends(Re
 
 
 @router.delete("/features/{feature_id}", status_code=204)
-def delete_feature(feature_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+def delete_feature(feature_id: int, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(404, "Feature not found")
+    if feature.is_global:
+        # Deleting from the shared catalog requires APPROVER+.
+        if not AuthService.has_permission(user.role, "APPROVER"):
+            raise HTTPException(403, "Deleting a global feature requires APPROVER role")
+    else:
+        # A project feature may be removed by its owning estimation's author or an ADMIN.
+        if user.role != "ADMIN":
+            owner = db.get(Estimation, feature.owner_estimation_id) if feature.owner_estimation_id else None
+            if not owner or (owner.created_by_id is not None and owner.created_by_id != user.id):
+                raise HTTPException(403, "Only the project's author or an ADMIN can delete this project feature")
     db.delete(feature)
     db.commit()
+
+
+@router.post("/estimations/{estimation_id}/features", response_model=FeatureOut, status_code=201)
+def create_project_feature(estimation_id: int, data: FeatureCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    """Create a feature scoped to one estimation (a project-specific catalog entry).
+
+    Requires a saved DRAFT estimation; restricted to the estimation's author or
+    an ADMIN. Project features are not shared until promoted to global.
+    """
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if estimation.status != "DRAFT":
+        raise HTTPException(400, f"Project features can only be added to a DRAFT estimation (current: {estimation.status})")
+    if user.role != "ADMIN" and estimation.created_by_id is not None and estimation.created_by_id != user.id:
+        raise HTTPException(403, "Only the estimation's author or an ADMIN can add project features")
+
+    clash = db.query(Feature).filter(
+        Feature.name == data.name,
+        Feature.category == data.category,
+        Feature.owner_estimation_id == estimation_id,
+    ).first()
+    if clash:
+        cat_label = data.category or "(no category)"
+        raise HTTPException(
+            409,
+            f"This project already has a feature '{data.name}' in category '{cat_label}'.",
+        )
+
+    feature = Feature(**data.model_dump(), is_global=False, owner_estimation_id=estimation_id)
+    db.add(feature)
+    db.commit()
+    db.refresh(feature)
+    return feature
+
+
+@router.post("/features/{feature_id}/promote", response_model=FeatureOut)
+def promote_feature_to_global(feature_id: int, user: User = Depends(RequireRole("APPROVER")), db: Session = Depends(get_db)):
+    """Promote a project-specific feature into the shared global catalog."""
+    feature = db.get(Feature, feature_id)
+    if not feature:
+        raise HTTPException(404, "Feature not found")
+    if feature.is_global:
+        raise HTTPException(400, "Feature is already global")
+    # Reject if a global feature already occupies this (name, category).
+    _assert_no_global_feature_clash(db, feature.name, feature.category, exclude_id=feature.id)
+    feature.is_global = True
+    feature.owner_estimation_id = None
+    feature.promotion_requested = False
+    db.commit()
+    db.refresh(feature)
+    return feature
+
+
+@router.post("/features/{feature_id}/request-promotion", response_model=FeatureOut)
+def request_feature_promotion(feature_id: int, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    """Estimator requests that a project feature be added to the global catalog.
+
+    Promotion itself requires APPROVER; this flags the feature so an approver can
+    fulfil the request later. Allowed for the owning estimation's author or ADMIN.
+    """
+    feature = db.get(Feature, feature_id)
+    if not feature:
+        raise HTTPException(404, "Feature not found")
+    if feature.is_global:
+        raise HTTPException(400, "Feature is already global")
+    if user.role != "ADMIN":
+        owner = db.get(Estimation, feature.owner_estimation_id) if feature.owner_estimation_id else None
+        if not owner or (owner.created_by_id is not None and owner.created_by_id != user.id):
+            raise HTTPException(403, "Only the project's author or an ADMIN can request promotion")
+    feature.promotion_requested = True
+    db.commit()
+    db.refresh(feature)
+
+    # Best-effort: notify approvers/admins that a feature awaits promotion.
+    try:
+        from ..notifications.service import NotificationService
+        NotificationService(db).notify_feature_promotion_requested(
+            feature_name=feature.name,
+            category=feature.category,
+            requested_by=user.display_name,
+        )
+    except Exception:
+        pass
+
+    return feature
 
 
 # ── Task Templates ───────────────────────────────────────
@@ -1081,6 +1232,7 @@ def _expand_templates_to_tasks(
             for lnk in links:
                 override_map[(lnk.task_template_id, lnk.feature_id)] = lnk.base_hours_override
 
+    features_with_task: set[int] = set()
     for tmpl in templates:
         if skip_pr_fix and getattr(tmpl, "is_pr_fix", False):
             continue
@@ -1121,16 +1273,39 @@ def _expand_templates_to_tasks(
                         feature_id=fid,
                         feature_name=feat.name,
                     ))
+                    features_with_task.add(fid)
+
+    # Selected features that produced no template-driven task (e.g. custom
+    # project features) contribute their own baseline effort as a task, so they
+    # appear in the breakdown and count toward the total.
+    for fid in selected_feature_ids:
+        if fid in features_with_task:
+            continue
+        feat = feature_map.get(fid)
+        base_hrs = getattr(feat, "base_effort_hours", 0) or 0 if feat else 0
+        if feat and base_hrs > 0:
+            task_inputs.append(TaskInput(
+                name=feat.name,
+                task_type="EXECUTION",
+                base_effort_hours=base_hrs,
+                scales_with_dut=False,
+                scales_with_profile=False,
+                complexity_weight=feat.complexity_weight,
+                is_new_feature_study=False,
+                is_parallelizable=False,
+                feature_id=fid,
+                feature_name=feat.name,
+            ))
     return task_inputs
 
 
 @router.post("/estimations/calculate", response_model=CalculationResultOut)
 def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Run calculation from wizard inputs without persisting to DB."""
-    leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
-    study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
-    buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    leader_ratio = _get_config_float(db, "leader_effort_ratio", 0.5)
+    study_hours_cfg = _get_config_float(db, "new_feature_study_hours", 16.0)
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
+    buffer_pct = _get_config_float(db, "buffer_percentage", 10)
     pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     feature_ids = data.resolved_feature_ids
@@ -1164,7 +1339,7 @@ def calculate_estimation_preview(data: CalculateInput, user: User = Depends(get_
         hrs = feat.study_effort_hours if feat and feat.study_effort_hours is not None else study_hours_cfg
         feature_study_hours_list.append(hrs)
 
-    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_factor = _get_config_float(db, "release_effort_factor", 0.5)
     release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
     release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
@@ -1295,7 +1470,7 @@ def get_estimation(estimation_id: int, user: User = Depends(get_current_user), d
     # Append synthetic tasks for PRs without existing tests
     wizard = json.loads(est.wizard_inputs_json) if est.wizard_inputs_json else {}
     pr_details = wizard.get("pr_details", [])
-    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    pr_no_test_hrs_cfg = _get_config_float(db, "pr_no_test_hours", 8.0)
     for st in _build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg):
         result.tasks.append(EstimationTaskOut(
             id=0,
@@ -1317,10 +1492,10 @@ def get_estimation(estimation_id: int, user: User = Depends(get_current_user), d
 def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
     """Create a new estimation: resolve inputs, run calculation, save result."""
     # Resolve config
-    leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
-    study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
-    buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    leader_ratio = _get_config_float(db, "leader_effort_ratio", 0.5)
+    study_hours_cfg = _get_config_float(db, "new_feature_study_hours", 16.0)
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
+    buffer_pct = _get_config_float(db, "buffer_percentage", 10)
     pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     # Resolve features and their task templates (many-to-many)
@@ -1345,7 +1520,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         skip_pr_fix=(pr_total == 0),
     )
 
-    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_factor = _get_config_float(db, "release_effort_factor", 0.5)
     release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
     release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
@@ -1466,6 +1641,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         feasibility_status=result.feasibility_status,
         status="DRAFT",
         created_by=data.created_by,
+        created_by_id=user.id,
         version=1,
         wizard_inputs_json=json.dumps(wizard_inputs),
         expected_releases=data.expected_releases,
@@ -1529,10 +1705,10 @@ def recalculate_estimation(estimation_id: int, user: User = Depends(get_current_
     if not estimation:
         raise HTTPException(404, "Estimation not found")
 
-    leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
-    study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
-    buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    leader_ratio = _get_config_float(db, "leader_effort_ratio", 0.5)
+    study_hours_cfg = _get_config_float(db, "new_feature_study_hours", 16.0)
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
+    buffer_pct = _get_config_float(db, "buffer_percentage", 10)
 
     # Build task inputs from existing estimation tasks
     task_inputs = [
@@ -1722,7 +1898,10 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
     team_size = wizard.get("team_size", 1)
     has_leader = wizard.get("has_leader", False)
     working_days = wizard.get("working_days", 20)
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
+    if hours_per_day <= 0:
+        # Report generators divide person-hours by this; never let it be zero.
+        hours_per_day = 7.0
     capacity_hours = team_size * working_days * hours_per_day
     if has_leader:
         capacity_hours += working_days * hours_per_day
@@ -1742,7 +1921,7 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
 
     # Append synthetic tasks for PRs without existing tests
     pr_details = wizard.get("pr_details", [])
-    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    pr_no_test_hrs_cfg = _get_config_float(db, "pr_no_test_hours", 8.0)
     tasks.extend(_build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg))
 
     # Compute working weeks
@@ -1837,9 +2016,13 @@ def download_excel_report(estimation_id: int, user: User = Depends(get_current_u
     if not estimation:
         raise HTTPException(404, "Estimation not found")
 
-    from ..reports.excel_report import generate_excel_report
-    report_data = _build_report_data(estimation, db)
-    content = generate_excel_report(report_data)
+    try:
+        from ..reports.excel_report import generate_excel_report
+        report_data = _build_report_data(estimation, db)
+        content = generate_excel_report(report_data)
+    except Exception as exc:
+        logger.exception("Excel report generation failed for estimation %s", estimation_id)
+        raise HTTPException(500, f"Excel report generation failed: {exc}")
 
     filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.xlsx"
     return Response(
@@ -1855,9 +2038,13 @@ def download_word_report(estimation_id: int, user: User = Depends(get_current_us
     if not estimation:
         raise HTTPException(404, "Estimation not found")
 
-    from ..reports.word_report import generate_word_report
-    report_data = _build_report_data(estimation, db)
-    content = generate_word_report(report_data)
+    try:
+        from ..reports.word_report import generate_word_report
+        report_data = _build_report_data(estimation, db)
+        content = generate_word_report(report_data)
+    except Exception as exc:
+        logger.exception("Word report generation failed for estimation %s", estimation_id)
+        raise HTTPException(500, f"Word report generation failed: {exc}")
 
     filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.docx"
     return Response(
@@ -1873,9 +2060,13 @@ def download_pdf_report(estimation_id: int, user: User = Depends(get_current_use
     if not estimation:
         raise HTTPException(404, "Estimation not found")
 
-    from ..reports.pdf_report import generate_pdf_report
-    report_data = _build_report_data(estimation, db)
-    content = generate_pdf_report(report_data)
+    try:
+        from ..reports.pdf_report import generate_pdf_report
+        report_data = _build_report_data(estimation, db)
+        content = generate_pdf_report(report_data)
+    except Exception as exc:
+        logger.exception("PDF report generation failed for estimation %s", estimation_id)
+        raise HTTPException(500, f"PDF report generation failed: {exc}")
 
     filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.pdf"
     return Response(
@@ -2319,20 +2510,17 @@ def _try_outline_auto_export(estimation: "Estimation", new_status: str, db: Sess
         pass
 
 
-@router.put("/estimations/{estimation_id}/revise", response_model=EstimationOut)
-def revise_estimation(estimation_id: int, request: HTTPRequest, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
-    """Revise an estimation: re-run calculation with new inputs, bump version, reset to DRAFT."""
-    estimation = db.get(Estimation, estimation_id)
-    if not estimation:
-        raise HTTPException(404, "Estimation not found")
-    if estimation.status != "REVISED":
-        raise HTTPException(400, f"Estimation must be in REVISED status to revise (current: {estimation.status})")
+def _apply_estimation_inputs(estimation: "Estimation", data: "EstimationRevise", db: Session) -> None:
+    """Recalculate an estimation from wizard inputs and overwrite its computed
+    fields, wizard snapshot, and child rows (tasks, team allocations, risks).
 
-    # Resolve config
-    leader_ratio = float(_get_config_value(db, "leader_effort_ratio", "0.5"))
-    study_hours_cfg = float(_get_config_value(db, "new_feature_study_hours", "16.0"))
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
-    buffer_pct = float(_get_config_value(db, "buffer_percentage", "10"))
+    Shared by the revise and draft-resume endpoints. This does NOT touch
+    status / version / approval — those workflow semantics belong to the caller.
+    """
+    leader_ratio = _get_config_float(db, "leader_effort_ratio", 0.5)
+    study_hours_cfg = _get_config_float(db, "new_feature_study_hours", 16.0)
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
+    buffer_pct = _get_config_float(db, "buffer_percentage", 10)
     pr_scales_profile = _get_config_value(db, "pr_scales_with_profile", "false").lower() == "true"
 
     # Resolve features and their task templates (many-to-many)
@@ -2351,27 +2539,24 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     new_feature_count = len(data.new_feature_ids)
     pr_total = data.pr_fixes.simple + data.pr_fixes.medium + data.pr_fixes.complex_
 
-    # Build task inputs — one per feature for feature-linked templates
     task_inputs = _expand_templates_to_tasks(
         templates, features, data.feature_ids, data.new_feature_ids, db,
         skip_pr_fix=(pr_total == 0),
     )
 
-    release_factor = float(_get_config_value(db, "release_effort_factor", "0.5"))
+    release_factor = _get_config_float(db, "release_effort_factor", 0.5)
     release_task_types_raw = _get_config_value(db, "release_effort_task_types", "EXECUTION")
     release_task_types = [t.strip() for t in release_task_types_raw.split(",") if t.strip()]
     pr_cfg = _get_pr_config(db)
     pr_details_raw = [d.model_dump() for d in data.pr_details] if data.pr_details else []
     no_test_count = _count_no_test_prs(pr_details_raw)
 
-    # Build per-feature study hours list
     feature_study_hours_list: list[float] = []
     for fid in data.new_feature_ids:
         feat = next((f for f in features if f.id == fid), None)
         hrs = feat.study_effort_hours if feat and feat.study_effort_hours is not None else study_hours_cfg
         feature_study_hours_list.append(hrs)
 
-    # Run calculation
     calc_input = EstimationInput(
         project_type=data.project_type,
         tasks=task_inputs,
@@ -2402,7 +2587,6 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     )
     result = calculate_estimation(calc_input)
 
-    # Serialize wizard inputs
     wizard_inputs = {
         "feature_ids": data.feature_ids,
         "new_feature_ids": data.new_feature_ids,
@@ -2428,7 +2612,6 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
         "product_type_filter": data.product_type_filter,
     }
 
-    # Calculate documentation hours — deduct linked template hours once per group
     included_template_ids = {tmpl.id for tmpl in templates}
     documentation_hours, _ = _calc_doc_hours_and_deliverables(
         data.document_type_ids, data.document_counts, included_template_ids, db,
@@ -2437,8 +2620,81 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
     adjusted_grand_total = result.grand_total_hours + documentation_hours
     adjusted_grand_total_days = adjusted_grand_total / hours_per_day if hours_per_day else result.grand_total_days
 
-    # Save a snapshot of the current version before overwriting
-    snapshot_data = {
+    # Overwrite computed fields in-place
+    estimation.project_name = data.project_name
+    estimation.project_type = data.project_type
+    estimation.reference_project_ids = json.dumps(data.reference_project_ids)
+    estimation.dut_count = dut_count
+    estimation.profile_count = profile_count
+    estimation.dut_profile_combinations = combinations
+    estimation.pr_fix_count = pr_total
+    estimation.start_date = data.start_date
+    estimation.expected_delivery = data.expected_delivery
+    estimation.total_tester_hours = result.total_tester_hours
+    estimation.total_leader_hours = result.total_leader_hours
+    estimation.pr_fix_hours = result.pr_fix_hours
+    estimation.pr_no_test_hours = result.pr_no_test_total_hours
+    estimation.study_hours = result.study_hours
+    estimation.release_extra_hours = result.release_extra_hours
+    estimation.documentation_hours = documentation_hours
+    estimation.buffer_hours = result.buffer_hours
+    estimation.grand_total_hours = adjusted_grand_total
+    estimation.grand_total_days = adjusted_grand_total_days
+    estimation.elapsed_hours = result.elapsed_hours
+    estimation.elapsed_days = result.elapsed_days
+    estimation.elapsed_weeks = result.elapsed_weeks
+    if data.testing_start_date and result.elapsed_days > 0:
+        try:
+            _testing_start = date.fromisoformat(data.testing_start_date)
+            estimation.estimated_completion_date = _compute_completion_date(_testing_start, result.elapsed_days, db)
+        except (ValueError, TypeError):
+            estimation.estimated_completion_date = None
+    else:
+        estimation.estimated_completion_date = None
+    estimation.feasibility_status = result.feasibility_status
+    estimation.expected_releases = data.expected_releases
+    estimation.project_goals = data.project_goals
+    estimation.target_customer = data.target_customer
+    estimation.project_reference = data.project_reference
+    estimation.team_id = data.team_id
+    estimation.wizard_inputs_json = json.dumps(wizard_inputs)
+
+    # Rewrite child rows
+    db.query(EstimationTask).filter(EstimationTask.estimation_id == estimation.id).delete()
+    for task in result.tasks:
+        db.add(EstimationTask(
+            estimation_id=estimation.id,
+            task_template_id=task.template_id,
+            task_name=task.name,
+            task_type=task.task_type,
+            base_hours=task.base_hours,
+            calculated_hours=task.calculated_hours,
+            assigned_testers=data.task_assigned_testers.get(task.name, 1),
+            has_leader_support=data.has_leader,
+            leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
+            is_new_feature_study=task.is_new_feature_study,
+            formula=task.formula,
+            feature_id=task.feature_id,
+            feature_name=task.feature_name,
+        ))
+
+    db.query(EstimationTeamAllocation).filter(EstimationTeamAllocation.estimation_id == estimation.id).delete()
+    for alloc in data.team_allocations:
+        db.add(EstimationTeamAllocation(
+            estimation_id=estimation.id,
+            team_member_id=alloc.team_member_id,
+            role=alloc.role,
+            allocated_hours=alloc.allocated_hours,
+        ))
+
+    db.query(EstimationRisk).filter(EstimationRisk.estimation_id == estimation.id).delete()
+    for rid in data.risk_item_ids:
+        db.add(EstimationRisk(estimation_id=estimation.id, risk_item_id=rid))
+
+
+def _snapshot_estimation(estimation: "Estimation") -> dict:
+    """Capture the current persisted state of an estimation for version history."""
+    return {
         "project_name": estimation.project_name,
         "project_type": estimation.project_type,
         "dut_count": estimation.dut_count,
@@ -2474,110 +2730,83 @@ def revise_estimation(estimation_id: int, request: HTTPRequest, data: Estimation
             for r in estimation.risks
         ],
     }
-    snapshot = EstimationVersionSnapshot(
-        estimation_id=estimation.id,
-        version=estimation.version or 1,
-        snapshot_json=json.dumps(snapshot_data),
-    )
-    db.add(snapshot)
 
-    # Update estimation in-place
-    estimation.project_name = data.project_name
-    estimation.project_type = data.project_type
-    estimation.reference_project_ids = json.dumps(data.reference_project_ids)
-    estimation.dut_count = dut_count
-    estimation.profile_count = profile_count
-    estimation.dut_profile_combinations = combinations
-    estimation.pr_fix_count = pr_total
-    estimation.start_date = data.start_date
-    estimation.expected_delivery = data.expected_delivery
-    estimation.total_tester_hours = result.total_tester_hours
-    estimation.total_leader_hours = result.total_leader_hours
-    estimation.pr_fix_hours = result.pr_fix_hours
-    estimation.pr_no_test_hours = result.pr_no_test_total_hours
-    estimation.study_hours = result.study_hours
-    estimation.release_extra_hours = result.release_extra_hours
-    estimation.documentation_hours = documentation_hours
-    estimation.buffer_hours = result.buffer_hours
-    estimation.grand_total_hours = adjusted_grand_total
-    estimation.grand_total_days = adjusted_grand_total_days
-    estimation.elapsed_hours = result.elapsed_hours
-    estimation.elapsed_days = result.elapsed_days
-    estimation.elapsed_weeks = result.elapsed_weeks
-    # Compute estimated completion date from testing start + elapsed days
-    if data.testing_start_date and result.elapsed_days > 0:
-        try:
-            _testing_start_rev = date.fromisoformat(data.testing_start_date)
-            estimation.estimated_completion_date = _compute_completion_date(_testing_start_rev, result.elapsed_days, db)
-        except (ValueError, TypeError):
-            estimation.estimated_completion_date = None
-    else:
-        estimation.estimated_completion_date = None
-    estimation.feasibility_status = result.feasibility_status
-    estimation.expected_releases = data.expected_releases
-    estimation.project_goals = data.project_goals
-    estimation.target_customer = data.target_customer
-    estimation.project_reference = data.project_reference
-    estimation.team_id = data.team_id
-    estimation.status = "DRAFT"
-    estimation.version = (estimation.version or 1) + 1
-    estimation.wizard_inputs_json = json.dumps(wizard_inputs)
-    estimation.approved_by = None
-    estimation.approved_at = None
 
-    # Delete old tasks, create new ones
-    db.query(EstimationTask).filter(EstimationTask.estimation_id == estimation_id).delete()
-    for task in result.tasks:
-        et = EstimationTask(
-            estimation_id=estimation.id,
-            task_template_id=task.template_id,
-            task_name=task.name,
-            task_type=task.task_type,
-            base_hours=task.base_hours,
-            calculated_hours=task.calculated_hours,
-            assigned_testers=data.task_assigned_testers.get(task.name, 1),
-            has_leader_support=data.has_leader,
-            leader_hours=task.calculated_hours * leader_ratio if data.has_leader else 0,
-            is_new_feature_study=task.is_new_feature_study,
-            formula=task.formula,
-            feature_id=task.feature_id,
-            feature_name=task.feature_name,
-        )
-        db.add(et)
+@router.put("/estimations/{estimation_id}/draft", response_model=EstimationOut)
+def update_draft_estimation(estimation_id: int, request: HTTPRequest, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    """Resume editing a DRAFT estimation: recalculate in place with new inputs.
 
-    # Delete old team allocations, create new ones
-    db.query(EstimationTeamAllocation).filter(EstimationTeamAllocation.estimation_id == estimation_id).delete()
-    for alloc in data.team_allocations:
-        eta = EstimationTeamAllocation(
-            estimation_id=estimation.id,
-            team_member_id=alloc.team_member_id,
-            role=alloc.role,
-            allocated_hours=alloc.allocated_hours,
-        )
-        db.add(eta)
+    Unlike revise, this keeps the same version and creates no snapshot — it is
+    for continuing work on a draft that was never finalized. Restricted to the
+    estimation's creator or an ADMIN.
+    """
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if estimation.status != "DRAFT":
+        raise HTTPException(400, f"Only DRAFT estimations can be edited in place (current: {estimation.status}). Move to REVISED to revise a finalized estimation.")
+    if user.role != "ADMIN" and estimation.created_by_id is not None and estimation.created_by_id != user.id:
+        raise HTTPException(403, "Only the estimation's author or an ADMIN can edit this draft")
 
-    # Delete old risks, create new ones
-    db.query(EstimationRisk).filter(EstimationRisk.estimation_id == estimation_id).delete()
-    for rid in data.risk_item_ids:
-        db.add(EstimationRisk(estimation_id=estimation.id, risk_item_id=rid))
+    _apply_estimation_inputs(estimation, data, db)
 
-    # Audit log
     try:
-        audit = AuditLog(
+        db.add(AuditLog(
             user_id=user.id,
-            action="REVISE_ESTIMATION",
+            action="EDIT_DRAFT_ESTIMATION",
             resource_type="estimation",
             resource_id=estimation.id,
-            details_json=json.dumps({"new_version": estimation.version}),
+            details_json=json.dumps({"version": estimation.version}),
             ip_address=getattr(request.state, "client_ip", None),
-        )
-        db.add(audit)
+        ))
     except Exception:
         pass
 
     db.commit()
     db.refresh(estimation)
     return estimation
+
+
+@router.put("/estimations/{estimation_id}/revise", response_model=EstimationOut)
+def revise_estimation(estimation_id: int, request: HTTPRequest, data: EstimationRevise, user: User = Depends(RequireRole("ESTIMATOR")), db: Session = Depends(get_db)):
+    """Revise an estimation: re-run calculation with new inputs, bump version, reset to DRAFT."""
+    estimation = db.get(Estimation, estimation_id)
+    if not estimation:
+        raise HTTPException(404, "Estimation not found")
+    if estimation.status != "REVISED":
+        raise HTTPException(400, f"Estimation must be in REVISED status to revise (current: {estimation.status})")
+
+    # Snapshot the current version before overwriting it
+    snapshot = EstimationVersionSnapshot(
+        estimation_id=estimation.id,
+        version=estimation.version or 1,
+        snapshot_json=json.dumps(_snapshot_estimation(estimation)),
+    )
+    db.add(snapshot)
+
+    _apply_estimation_inputs(estimation, data, db)
+
+    estimation.status = "DRAFT"
+    estimation.version = (estimation.version or 1) + 1
+    estimation.approved_by = None
+    estimation.approved_at = None
+
+    try:
+        db.add(AuditLog(
+            user_id=user.id,
+            action="REVISE_ESTIMATION",
+            resource_type="estimation",
+            resource_id=estimation.id,
+            details_json=json.dumps({"new_version": estimation.version}),
+            ip_address=getattr(request.state, "client_ip", None),
+        ))
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(estimation)
+    return estimation
+
 
 
 @router.post("/estimations/{estimation_id}/export")
@@ -3177,7 +3406,7 @@ def publish_to_outline(
     # Add working weeks and hours per day
     grand_total_days = estimation.grand_total_days or 0
     est_data["working_weeks"] = round(grand_total_days / 5.0, 1)
-    est_data["working_hours_per_day"] = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    est_data["working_hours_per_day"] = _get_config_float(db, "working_hours_per_day", 7.0)
     est_data["start_date"] = str(estimation.start_date) if estimation.start_date else ""
     est_data["testing_start_date"] = _outline_wizard.get("testing_start_date", "")
     est_data["expected_delivery"] = str(estimation.expected_delivery) if estimation.expected_delivery else ""
@@ -3209,7 +3438,7 @@ def publish_to_outline(
     tasks = est_data.get("tasks", [])
     tasks.extend(_build_doc_synthetic_tasks(doc_deliverables))
     pr_details = _outline_wizard.get("pr_details", [])
-    pr_no_test_hrs_cfg = float(_get_config_value(db, "pr_no_test_hours", "8.0"))
+    pr_no_test_hrs_cfg = _get_config_float(db, "pr_no_test_hours", 8.0)
     tasks.extend(_build_pr_no_test_synthetic_tasks(pr_details, pr_no_test_hrs_cfg))
     est_data["tasks"] = tasks
 
@@ -3967,7 +4196,7 @@ def calculate_working_weeks(
     If start_date is provided, counts actual holidays in the period.
     Otherwise returns a simple conversion (total_days / 5).
     """
-    hours_per_day = float(_get_config_value(db, "working_hours_per_day", "7.0"))
+    hours_per_day = _get_config_float(db, "working_hours_per_day", 7.0)
 
     if start_date:
         from datetime import timedelta
@@ -4024,18 +4253,24 @@ def calculate_working_weeks(
 # ── Backup & Restore ──────────────────────────────────
 
 
-# Ordered by FK dependencies (parents before children)
+# Ordered by FK dependencies (parents before children).
+# `teams` must precede `team_members` (FK team_members.team_id -> teams.id).
 _BACKUP_TABLES: list[tuple[str, type]] = [
     ("features", Feature),
     ("task_templates", TaskTemplate),
     ("task_template_features", TaskTemplateFeature),
     ("dut_types", DutType),
     ("test_profiles", TestProfile),
+    ("teams", Team),
     ("team_members", TeamMember),
     ("risk_items", RiskItem),
     ("document_types", DocumentType),
     ("public_holidays", PublicHoliday),
 ]
+
+# Resolve a foreign-key target table name to its ORM model, so restore can
+# verify a referenced parent row exists before inserting a child.
+_MODEL_BY_TABLE: dict[str, type] = {name: model for name, model in _BACKUP_TABLES}
 
 
 def _row_to_dict(row) -> dict:
@@ -4141,8 +4376,27 @@ def admin_restore(
                                 row_data[col_name] = datetime.fromisoformat(row_data[col_name])
                             except (ValueError, TypeError):
                                 pass
+
+                # Guard against dangling foreign keys. Older backups omit some
+                # parent tables (e.g. `teams`), so a child row can reference a
+                # parent that no longer exists. For nullable FK columns, drop the
+                # orphaned reference to None instead of failing the whole restore.
+                for col in model_cls.__table__.columns:
+                    if not col.foreign_keys or not col.nullable:
+                        continue
+                    val = row_data.get(col.name)
+                    if val is None:
+                        continue
+                    fk = next(iter(col.foreign_keys))
+                    ref_model = _MODEL_BY_TABLE.get(fk.column.table.name)
+                    if ref_model is not None and db.get(ref_model, val) is None:
+                        row_data[col.name] = None
+
                 obj = model_cls(**row_data)
                 db.add(obj)
+            # Flush so rows inserted here are visible to db.get() when a later
+            # table's FK-existence check references them.
+            db.flush()
             tables_restored.append(table_name)
             rows_restored[table_name] = len(rows)
 

@@ -28,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 20  # v20 replaces unique(features.name) with unique(name, category)
+SCHEMA_VERSION = 23  # v23 adds features.base_effort_hours (per-feature baseline effort)
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -633,6 +633,120 @@ def _migrate_v19_to_v20(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v20_to_v21(engine, session: Session) -> None:
+    """Add project-scoped feature support: is_global + owner_estimation_id.
+
+    Global features keep the unique(name, category) guarantee via a partial
+    index; project-scoped features (is_global=0) are exempt so they may reuse
+    a global name within their owning estimation.
+    """
+    is_sqlite = engine.dialect.name == "sqlite"
+
+    if is_sqlite:
+        # Rebuild the table to its final shape in one step. We read the CURRENT
+        # columns from the same connection (PRAGMA) rather than inspect(engine),
+        # which can return a stale schema after the v19->v20 rebuild ran on this
+        # connection. This makes the migration correct whether create_all already
+        # added the new columns (fresh DB) or not (upgrade).
+        existing = {r[1] for r in session.execute(text("PRAGMA table_info(features)")).fetchall()}
+        session.execute(text("DROP TABLE IF EXISTS features_new"))
+        session.execute(text("""
+            CREATE TABLE features_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR NOT NULL,
+                category VARCHAR,
+                complexity_weight FLOAT NOT NULL DEFAULT 1.0,
+                has_existing_tests BOOLEAN NOT NULL DEFAULT 0,
+                description TEXT,
+                product_type VARCHAR,
+                study_effort_hours FLOAT,
+                is_global BOOLEAN NOT NULL DEFAULT 1,
+                owner_estimation_id INTEGER REFERENCES estimations(id),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        base_cols = [
+            "id", "name", "category", "complexity_weight", "has_existing_tests",
+            "description", "product_type", "study_effort_hours", "created_at",
+        ]
+        copy_cols = [c for c in base_cols if c in existing]
+        ig_sel = "is_global" if "is_global" in existing else "1"
+        oe_sel = "owner_estimation_id" if "owner_estimation_id" in existing else "NULL"
+        col_list = ", ".join(copy_cols)
+        session.execute(text(
+            f"INSERT INTO features_new ({col_list}, is_global, owner_estimation_id) "
+            f"SELECT {col_list}, {ig_sel}, {oe_sel} FROM features"
+        ))
+        session.execute(text("DROP TABLE features"))
+        session.execute(text("ALTER TABLE features_new RENAME TO features"))
+        # Global features keep a unique (name, category) guarantee; project
+        # features (is_global=0) are exempt via the partial WHERE clause.
+        session.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_features_global_name_category "
+            "ON features(name, category) WHERE is_global = 1"
+        ))
+        session.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_features_owner_estimation_id "
+            "ON features(owner_estimation_id)"
+        ))
+    else:
+        # MySQL / other: add columns if missing, drop the table-wide unique
+        # (project dupes must be allowed; global uniqueness enforced at the API).
+        if not _column_exists(engine, "features", "is_global"):
+            session.execute(text("ALTER TABLE features ADD COLUMN is_global BOOLEAN NOT NULL DEFAULT 1"))
+        if not _column_exists(engine, "features", "owner_estimation_id"):
+            session.execute(text("ALTER TABLE features ADD COLUMN owner_estimation_id INTEGER REFERENCES estimations(id)"))
+        try:
+            session.execute(text("ALTER TABLE features DROP INDEX uq_features_name_category"))
+        except Exception:
+            pass
+        try:
+            session.execute(text("CREATE INDEX ix_features_owner_estimation_id ON features(owner_estimation_id)"))
+        except Exception:
+            pass
+
+    _set_schema_version(session, 21)
+    session.commit()
+
+
+def _migrate_v21_to_v22(engine, session: Session) -> None:
+    """Add features.promotion_requested (estimator's request-to-global flag).
+
+    Column existence is read from the same connection (PRAGMA on SQLite) rather
+    than inspect(engine), which can be stale right after the v21 table rebuild.
+    """
+    if engine.dialect.name == "sqlite":
+        cols = {r[1] for r in session.execute(text("PRAGMA table_info(features)")).fetchall()}
+        if "promotion_requested" not in cols:
+            session.execute(text(
+                "ALTER TABLE features ADD COLUMN promotion_requested BOOLEAN NOT NULL DEFAULT 0"
+            ))
+    else:
+        if not _column_exists(engine, "features", "promotion_requested"):
+            session.execute(text(
+                "ALTER TABLE features ADD COLUMN promotion_requested BOOLEAN NOT NULL DEFAULT 0"
+            ))
+    _set_schema_version(session, 22)
+    session.commit()
+
+
+def _migrate_v22_to_v23(engine, session: Session) -> None:
+    """Add features.base_effort_hours (baseline effort for template-less features)."""
+    if engine.dialect.name == "sqlite":
+        cols = {r[1] for r in session.execute(text("PRAGMA table_info(features)")).fetchall()}
+        if "base_effort_hours" not in cols:
+            session.execute(text(
+                "ALTER TABLE features ADD COLUMN base_effort_hours FLOAT NOT NULL DEFAULT 0"
+            ))
+    else:
+        if not _column_exists(engine, "features", "base_effort_hours"):
+            session.execute(text(
+                "ALTER TABLE features ADD COLUMN base_effort_hours FLOAT NOT NULL DEFAULT 0"
+            ))
+    _set_schema_version(session, 23)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -689,6 +803,12 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v18_to_v19(engine, session)
         if current_version < 20:
             _migrate_v19_to_v20(engine, session)
+        if current_version < 21:
+            _migrate_v20_to_v21(engine, session)
+        if current_version < 22:
+            _migrate_v21_to_v22(engine, session)
+        if current_version < 23:
+            _migrate_v22_to_v23(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)

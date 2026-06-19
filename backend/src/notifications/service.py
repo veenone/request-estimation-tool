@@ -158,6 +158,38 @@ class NotificationService:
         )
         return self._send_email(list(recipients), subject, body)
 
+    def notify_feature_promotion_requested(
+        self,
+        feature_name: str,
+        category: str | None,
+        requested_by: str,
+    ) -> bool:
+        """Notify approvers/admins that a project feature awaits promotion."""
+        from ..auth.models import User  # deferred to avoid circular imports
+
+        recipients = [
+            u.email
+            for u in self.session.query(User)
+            .filter(
+                User.role.in_(["APPROVER", "ADMIN"]),
+                User.is_active == True,  # noqa: E712
+                User.email.isnot(None),
+            )
+            .all()
+            if u.email
+        ]
+        if not recipients:
+            return False
+        cat = category or "(no category)"
+        subject = f"Feature promotion requested: {feature_name}"
+        body = (
+            f"<p><b>{requested_by}</b> requested adding the project feature "
+            f"<b>{feature_name}</b> (category: {cat}) to the global catalog.</p>"
+            f"<p>Open the estimation's Features step and use "
+            f"<b>Promote to global</b> to approve the request.</p>"
+        )
+        return self._send_email(recipients, subject, body)
+
     def notify_user_assigned(
         self,
         estimation_number: str,

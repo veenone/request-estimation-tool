@@ -31,6 +31,7 @@ class FeatureBase(BaseModel):
     description: Optional[str] = None
     product_type: Optional[str] = None
     study_effort_hours: Optional[float] = None
+    base_effort_hours: float = 0.0
 
 class FeatureCreate(FeatureBase):
     pass
@@ -43,6 +44,7 @@ class FeatureUpdate(BaseModel):
     description: Optional[str] = None
     product_type: Optional[str] = None
     study_effort_hours: Optional[float] = None
+    base_effort_hours: Optional[float] = None
 
 class TaskTemplateOut(BaseModel):
     id: int
@@ -74,6 +76,9 @@ class TaskTemplateOut(BaseModel):
 
 class FeatureOut(FeatureBase):
     id: int
+    is_global: bool = True
+    owner_estimation_id: Optional[int] = None
+    promotion_requested: bool = False
     created_at: Optional[datetime] = None
     task_templates: list[TaskTemplateOut] = []
 

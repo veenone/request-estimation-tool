@@ -10,12 +10,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -69,8 +71,18 @@ class Request(Base):
 
 class Feature(Base):
     __tablename__ = "features"
+    # Global features must be unique by (name, category). Project-scoped
+    # features (is_global=0) are exempt — they may reuse a global name within
+    # their owning estimation. The partial index enforces this on SQLite;
+    # the API also enforces it for cross-dialect safety.
     __table_args__ = (
-        UniqueConstraint("name", "category", name="uq_features_name_category"),
+        Index(
+            "uq_features_global_name_category",
+            "name",
+            "category",
+            unique=True,
+            sqlite_where=text("is_global = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -81,6 +93,17 @@ class Feature(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     study_effort_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Baseline execution effort for features that aren't driven by a linked task
+    # template (e.g. custom project features). 0 = rely on linked templates only.
+    base_effort_hours: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    # Scope: global (shared catalog) vs project-specific (owned by one estimation).
+    is_global: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    owner_estimation_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("estimations.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    # Estimator has requested this project feature be promoted into the global
+    # catalog; an APPROVER fulfils the request via the promote endpoint.
+    promotion_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # Many-to-many: features linked to this template
