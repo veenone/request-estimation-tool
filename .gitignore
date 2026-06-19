@@ -34,3 +34,8 @@ QUICK_START_REQUEST_INBOX.md
 REQUEST_INBOX_DOCUMENTATION.md
 REQUEST_INBOX_INDEX.md
 SPEC.md
+.gstack/
+.nicegui/
+sample/
+_autosave_debug.log
+run-dev.sh
