@@ -717,6 +717,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 _cat = ui.input("Category", value="Project-Specific").classes("w-full")
                                 _weight = ui.number("Complexity weight", value=1.0, min=0.1, step=0.1).classes("w-full")
                                 _base = ui.number("Base effort (hours)", value=8.0, min=0, step=0.5).classes("w-full")
+                                _ptype = ui.select(["All"] + product_types, label="Product Type",
+                                                   value=(state.get("product_type_filter") or "All")).classes("w-full")
                                 _has_tests = ui.checkbox("Has existing tests", value=False)
                                 _desc = ui.textarea("Description (optional)").classes("w-full")
 
@@ -732,6 +734,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                                 "category": (_cat.value or "").strip() or None,
                                                 "complexity_weight": float(_weight.value or 1.0),
                                                 "base_effort_hours": float(_base.value or 0),
+                                                "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
                                                 "has_existing_tests": bool(_has_tests.value),
                                                 "description": (_desc.value or "").strip() or None,
                                             },
@@ -759,6 +762,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 _cat = ui.input("Category", value=feat.get("category") or "").classes("w-full")
                                 _weight = ui.number("Complexity weight", value=feat.get("complexity_weight", 1.0), min=0.1, step=0.1).classes("w-full")
                                 _base = ui.number("Base effort (hours)", value=feat.get("base_effort_hours", 0.0) or 0.0, min=0, step=0.5).classes("w-full")
+                                _ptype = ui.select(["All"] + product_types, label="Product Type",
+                                                   value=(feat.get("product_type") or "All")).classes("w-full")
                                 _has_tests = ui.checkbox("Has existing tests", value=bool(feat.get("has_existing_tests")))
                                 _desc = ui.textarea("Description (optional)", value=feat.get("description") or "").classes("w-full")
 
@@ -774,6 +779,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                                 "category": (_cat.value or "").strip() or None,
                                                 "complexity_weight": float(_weight.value or 1.0),
                                                 "base_effort_hours": float(_base.value or 0),
+                                                "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
                                                 "has_existing_tests": bool(_has_tests.value),
                                                 "description": (_desc.value or "").strip() or None,
                                             },
@@ -828,7 +834,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                             selected_pt = state.get("product_type_filter") or "All"
                             if selected_pt and selected_pt != "All":
-                                visible_features = [f for f in all_features if f.get("product_type") == selected_pt or not f.get("is_global", True)]
+                                visible_features = [f for f in all_features if not f.get("product_type") or f.get("product_type") == selected_pt]
                                 pt_info_label.set_text(f"Filtered by product type: {selected_pt}")
                             else:
                                 visible_features = list(all_features)
@@ -3431,6 +3437,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         _cat = ui.input("Category", value="Project-Specific").classes("w-full")
                         _weight = ui.number("Complexity weight", value=1.0, min=0.1, step=0.1).classes("w-full")
                         _base = ui.number("Base effort (hours)", value=8.0, min=0, step=0.5).classes("w-full")
+                        _ptype = ui.select(["All"] + product_types, label="Product Type",
+                                           value=(state.get("product_type_filter") or "All")).classes("w-full")
                         _has_tests = ui.checkbox("Has existing tests", value=False)
                         _desc = ui.textarea("Description (optional)").classes("w-full")
 
@@ -3446,6 +3454,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         "category": (_cat.value or "").strip() or None,
                                         "complexity_weight": float(_weight.value or 1.0),
                                         "base_effort_hours": float(_base.value or 0),
+                                        "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
                                         "has_existing_tests": bool(_has_tests.value),
                                         "description": (_desc.value or "").strip() or None,
                                     },
@@ -3486,6 +3495,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         _cat = ui.input("Category", value=feat.get("category") or "").classes("w-full")
                         _weight = ui.number("Complexity weight", value=feat.get("complexity_weight", 1.0), min=0.1, step=0.1).classes("w-full")
                         _base = ui.number("Base effort (hours)", value=feat.get("base_effort_hours", 0.0) or 0.0, min=0, step=0.5).classes("w-full")
+                        _ptype = ui.select(["All"] + product_types, label="Product Type",
+                                           value=(feat.get("product_type") or "All")).classes("w-full")
                         _has_tests = ui.checkbox("Has existing tests", value=bool(feat.get("has_existing_tests")))
                         _desc = ui.textarea("Description (optional)", value=feat.get("description") or "").classes("w-full")
 
@@ -3501,6 +3512,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         "category": (_cat.value or "").strip() or None,
                                         "complexity_weight": float(_weight.value or 1.0),
                                         "base_effort_hours": float(_base.value or 0),
+                                        "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
                                         "has_existing_tests": bool(_has_tests.value),
                                         "description": (_desc.value or "").strip() or None,
                                     },
