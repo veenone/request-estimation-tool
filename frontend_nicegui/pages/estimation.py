@@ -3397,7 +3397,17 @@ async def edit_estimation_page(estimation_id: int) -> None:
             with ui.step("Project Info"):
                 ui.label("Edit the basic project details.").classes("text-body2 text-grey q-mb-md")
                 name_input = ui.input("Project Name *", value=state["project_name"]).classes("w-full")
-                name_input.on("update:model-value", lambda e: state.update({"project_name": e.args}))
+                _name_error = ui.label("Project Name is required.").classes(
+                    "text-negative text-caption"
+                )
+                _name_error.set_visibility(False)
+
+                def _on_name_change(e) -> None:
+                    state.update({"project_name": e.args})
+                    if (e.args or "").strip():
+                        _name_error.set_visibility(False)
+
+                name_input.on("update:model-value", _on_name_change)
                 _pt_opts = list(_project_types)
                 _pt_val = state["project_type"]
                 if _pt_val and _pt_val not in _pt_opts:
@@ -3458,8 +3468,10 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         state["target_customer"] = customer_input.value or ""
                         state["project_reference"] = ref_input.value or ""
                         if not state["project_name"].strip():
+                            _name_error.set_visibility(True)
                             ui.notify("Project Name is required.", type="warning")
                             return
+                        _name_error.set_visibility(False)
                         if state["project_type"] == "CHANGE_REQUEST" and not state["project_reference"].strip():
                             ui.notify("Project Reference is required for Change Request.", type="warning")
                             return
@@ -3474,12 +3486,12 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                 async def _add_custom_feature() -> None:
                     """Create a project-specific feature owned by this estimation."""
-                    with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                    with ui.dialog() as _dlg, ui.card().classes("w-[min(460px,92vw)]"):
                         ui.label("Add project-specific feature").classes("text-h6")
                         ui.label(
                             "Exists only in this estimation until promoted to the global catalog."
                         ).classes("text-caption text-grey q-mb-sm")
-                        _name = ui.input("Feature name *").classes("w-full")
+                        _name = ui.input("Feature name *").classes("w-full").props("autofocus")
                         _cat = ui.input("Category", value="Project-Specific").classes("w-full")
                         _weight = ui.number("Complexity weight", value=1.0, min=0.1, step=0.1).classes("w-full")
                         _base = ui.number("Base effort (hours)", value=8.0, min=0, step=0.5).classes("w-full")
@@ -3492,22 +3504,18 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             if not (_name.value or "").strip():
                                 ui.notify("Feature name is required.", type="warning")
                                 return
-                            try:
-                                created = await api_post(
-                                    f"/estimations/{estimation_id}/features",
-                                    json={
-                                        "name": _name.value.strip(),
-                                        "category": (_cat.value or "").strip() or None,
-                                        "complexity_weight": float(_weight.value or 1.0),
-                                        "base_effort_hours": float(_base.value or 0),
-                                        "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
-                                        "has_existing_tests": bool(_has_tests.value),
-                                        "description": (_desc.value or "").strip() or None,
-                                    },
-                                )
-                            except Exception as exc:
-                                ui.notify(f"Could not add feature: {exc}", type="negative")
-                                return
+                            created = await api_post(
+                                f"/estimations/{estimation_id}/features",
+                                json={
+                                    "name": _name.value.strip(),
+                                    "category": (_cat.value or "").strip() or None,
+                                    "complexity_weight": float(_weight.value or 1.0),
+                                    "base_effort_hours": float(_base.value or 0),
+                                    "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
+                                    "has_existing_tests": bool(_has_tests.value),
+                                    "description": (_desc.value or "").strip() or None,
+                                },
+                            )
                             all_features.append(created)
                             # Pre-select the new feature so it's included right away.
                             if created["id"] not in state["feature_ids"]:
@@ -3518,7 +3526,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                         with ui.row().classes("w-full justify-end q-mt-sm"):
                             ui.button("Cancel", on_click=_dlg.close).props("flat")
-                            ui.button("Add", icon="add", on_click=_create).props("color=primary")
+                            _add_btn = ui.button("Add", icon="add").props("color=primary")
+                            _add_btn.on("click", run_async(
+                                _add_btn, _create, error_prefix="Could not add feature"))
                     _dlg.open()
 
                 async def _promote_feature(feat: dict) -> None:
@@ -3535,9 +3545,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                 async def _edit_custom_feature(feat: dict) -> None:
                     """Edit a project feature already added (fix a typo or detail)."""
-                    with ui.dialog() as _dlg, ui.card().classes("w-[460px]"):
+                    with ui.dialog() as _dlg, ui.card().classes("w-[min(460px,92vw)]"):
                         ui.label("Edit project feature").classes("text-h6")
-                        _name = ui.input("Feature name *", value=feat.get("name", "")).classes("w-full")
+                        _name = ui.input("Feature name *", value=feat.get("name", "")).classes("w-full").props("autofocus")
                         _cat = ui.input("Category", value=feat.get("category") or "").classes("w-full")
                         _weight = ui.number("Complexity weight", value=feat.get("complexity_weight", 1.0), min=0.1, step=0.1).classes("w-full")
                         _base = ui.number("Base effort (hours)", value=feat.get("base_effort_hours", 0.0) or 0.0, min=0, step=0.5).classes("w-full")
@@ -3550,22 +3560,18 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             if not (_name.value or "").strip():
                                 ui.notify("Feature name is required.", type="warning")
                                 return
-                            try:
-                                updated = await api_put(
-                                    f"/features/{feat['id']}",
-                                    json={
-                                        "name": _name.value.strip(),
-                                        "category": (_cat.value or "").strip() or None,
-                                        "complexity_weight": float(_weight.value or 1.0),
-                                        "base_effort_hours": float(_base.value or 0),
-                                        "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
-                                        "has_existing_tests": bool(_has_tests.value),
-                                        "description": (_desc.value or "").strip() or None,
-                                    },
-                                )
-                            except Exception as exc:
-                                ui.notify(f"Could not update feature: {exc}", type="negative")
-                                return
+                            updated = await api_put(
+                                f"/features/{feat['id']}",
+                                json={
+                                    "name": _name.value.strip(),
+                                    "category": (_cat.value or "").strip() or None,
+                                    "complexity_weight": float(_weight.value or 1.0),
+                                    "base_effort_hours": float(_base.value or 0),
+                                    "product_type": (None if _ptype.value in (None, "All") else _ptype.value),
+                                    "has_existing_tests": bool(_has_tests.value),
+                                    "description": (_desc.value or "").strip() or None,
+                                },
+                            )
                             feat.update(updated)
                             _rebuild_feature_list()
                             ui.notify(f"Updated '{updated['name']}'.", type="positive")
@@ -3573,7 +3579,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                         with ui.row().classes("w-full justify-end q-mt-sm"):
                             ui.button("Cancel", on_click=_dlg.close).props("flat")
-                            ui.button("Save", icon="save", on_click=_save).props("color=primary")
+                            _save_btn = ui.button("Save", icon="save").props("color=primary")
+                            _save_btn.on("click", run_async(
+                                _save_btn, _save, error_prefix="Could not update feature"))
                     _dlg.open()
 
                 _can_promote = has_permission("APPROVER")
@@ -3800,17 +3808,23 @@ async def edit_estimation_page(estimation_id: int) -> None:
                     with matrix_container:
                         ui.label("Combination Matrix").classes("text-subtitle2 q-mb-sm")
                         n_cols = len(sel_profs) + 1
-                        with ui.grid(columns=n_cols).classes("w-full items-center"):
-                            ui.label("DUT \\ Profile").classes("text-caption text-grey text-weight-bold")
-                            for prof in sel_profs:
-                                ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center text-weight-bold")
-                            for dut in sel_duts:
-                                ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption")
+                        # Wrap the matrix in a horizontally scrollable container so
+                        # wide DUT×Profile grids scroll on narrow screens instead of
+                        # breaking the layout.
+                        with ui.element("div").classes("w-full").style(
+                            "overflow-x: auto; -webkit-overflow-scrolling: touch;"
+                        ):
+                            with ui.grid(columns=n_cols).classes("items-center"):
+                                ui.label("DUT \\ Profile").classes("text-caption text-grey text-weight-bold")
                                 for prof in sel_profs:
-                                    key = (dut["id"], prof["id"])
-                                    pre_checked = key in [tuple(pair) for pair in state["dut_profile_matrix"]]
-                                    cb = ui.checkbox("", value=pre_checked).props("dense")
-                                    matrix_cb_refs[key] = cb
+                                    ui.label(prof.get("name", f"P{prof['id']}")).classes("text-caption text-center text-weight-bold")
+                                for dut in sel_duts:
+                                    ui.label(dut.get("name", f"D{dut['id']}")).classes("text-caption")
+                                    for prof in sel_profs:
+                                        key = (dut["id"], prof["id"])
+                                        pre_checked = key in [tuple(pair) for pair in state["dut_profile_matrix"]]
+                                        cb = ui.checkbox("", value=pre_checked).props("dense")
+                                        matrix_cb_refs[key] = cb
 
                 def _rebuild_dut_prof_lists() -> None:
                     for _did, _cb in dut_cb_refs.items():
@@ -4015,15 +4029,14 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                 ).classes("w-full")
 
                                 async def _fetch() -> None:
-                                    try:
-                                        items = await api_get("/integrations/JIRA/pr-items")
-                                        jira_items_table.rows = items if isinstance(items, list) else []
-                                        jira_items_table.update()
-                                        ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
-                                    except Exception as exc:
-                                        ui.notify(f"Failed to fetch: {exc}", type="negative")
+                                    items = await api_get("/integrations/JIRA/pr-items")
+                                    jira_items_table.rows = items if isinstance(items, list) else []
+                                    jira_items_table.update()
+                                    ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
 
-                                ui.button("Fetch PR Items", icon="refresh", on_click=_fetch).props("color=secondary flat dense")
+                                _fetch_btn = ui.button("Fetch PR Items", icon="refresh").props("color=secondary flat dense")
+                                _fetch_btn.on("click", run_async(
+                                    _fetch_btn, _fetch, error_prefix="Failed to fetch"))
 
                                 def _do_import() -> None:
                                     selected = jira_items_table.selected
@@ -4479,6 +4492,22 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             )
 
                 async def run_calculate():
+                    # Re-entrancy + double-submit guard: disable the button and
+                    # show Quasar's loading spinner for the duration of the call,
+                    # but keep the inline result rendering that follows.
+                    if getattr(calc_btn, "_busy", False):
+                        return
+                    calc_btn._busy = True
+                    calc_btn.enabled = False
+                    calc_btn.props("loading")
+                    try:
+                        await _run_calculate_body()
+                    finally:
+                        calc_btn._busy = False
+                        calc_btn.enabled = True
+                        calc_btn.props(remove="loading")
+
+                async def _run_calculate_body():
                     _render_summary()
                     payload: dict[str, Any] = {
                         "project_type": state["project_type"],
@@ -4547,24 +4576,23 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "task_assigned_testers": state.get("task_assigned_testers", {}),
                         "product_type_filter": state.get("product_type_filter", "All"),
                     }
-                    try:
-                        if _is_draft_edit:
-                            await api_put(f"/estimations/{estimation_id}/draft", json=payload)
-                            ui.notify("Draft updated.", type="positive")
-                        else:
-                            saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
-                            new_ver = saved.get("version", "?")
-                            ui.notify(f"Revision saved (v{new_ver}).", type="positive")
-                        ui.navigate.to(f"/estimation/{estimation_id}")
-                    except Exception as exc:
-                        ui.notify(f"Save failed: {exc}", type="negative")
+                    if _is_draft_edit:
+                        await api_put(f"/estimations/{estimation_id}/draft", json=payload)
+                        ui.notify("Draft updated.", type="positive")
+                    else:
+                        saved = await api_put(f"/estimations/{estimation_id}/revise", json=payload)
+                        new_ver = saved.get("version", "?")
+                        ui.notify(f"Revision saved (v{new_ver}).", type="positive")
+                    ui.navigate.to(f"/estimation/{estimation_id}")
 
                 _render_summary()
 
                 with ui.stepper_navigation():
                     ui.button("Back", on_click=lambda: stepper.previous()).props("flat")
-                    ui.button("Calculate", icon="calculate", on_click=run_calculate).props("color=secondary")
-                    ui.button(
+                    calc_btn = ui.button("Calculate", icon="calculate", on_click=run_calculate).props("color=secondary")
+                    save_btn = ui.button(
                         "Save Draft" if _is_draft_edit else "Save Revision",
-                        icon="save", on_click=save_revision,
+                        icon="save",
                     ).props("color=primary")
+                    save_btn.on("click", run_async(
+                        save_btn, save_revision, error_prefix="Save failed"))
