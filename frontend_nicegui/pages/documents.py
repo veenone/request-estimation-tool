@@ -9,7 +9,16 @@ API:
 """
 
 from nicegui import ui
-from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
+from frontend_nicegui.app import (
+    api_get,
+    api_post,
+    api_put,
+    is_authenticated,
+    loading_state,
+    run_async,
+    show_error_page,
+    sidebar,
+)
 
 _COLUMNS = [
     {"name": "name",             "label": "Name",           "field": "name",             "align": "left", "sortable": True},
@@ -53,7 +62,7 @@ async def document_types_page() -> None:
             ui.label(
                 "Manage document types used in reporting and documentation tasks. "
                 "Each type has a base effort (hours) for creating and submitting a document."
-            ).classes("ed-eyebrow").style("margin-bottom: 18px;")
+            ).classes("text-body2 opacity-70").style("margin-bottom: 18px;")
 
             kpi_container = ui.element("div").classes("ed-strip")
             seg_container = ui.element("div").classes("ed-segmented")
@@ -221,27 +230,32 @@ async def document_types_page() -> None:
 
                 async def _save() -> None:
                     name = (name_inp.value or "").strip()
-                    if not name:
-                        ui.notify("Name is required.", type="warning")
-                        return
-                    try:
-                        payload = {
-                            "name": name,
-                            "category": cat_inp.value or "Report",
-                            "base_effort_hours": float(hours_inp.value or 4.0),
-                            "description": (desc_inp.value or "").strip() or None,
-                            "task_template_id": tt_inp.value if tt_inp.value else None,
-                        }
-                        await api_post("/document-types", json=payload)
-                        ui.notify(f"Document type '{name}' created.", type="positive")
-                        dlg.close()
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Failed: {exc}", type="negative")
+                    payload = {
+                        "name": name,
+                        "category": cat_inp.value or "Report",
+                        "base_effort_hours": float(hours_inp.value or 4.0),
+                        "description": (desc_inp.value or "").strip() or None,
+                        "task_template_id": tt_inp.value if tt_inp.value else None,
+                    }
+                    await api_post("/document-types", json=payload)
+                    dlg.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md gap-2"):
-                    ui.button("Save", on_click=_save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
                     ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                    def _guarded_save(*_):
+                        if not (name_inp.value or "").strip():
+                            ui.notify("Name is required.", type="warning")
+                            return
+                        return run_async(
+                            save_btn, _save,
+                            success="Document type created.",
+                            error_prefix="Failed to create document type",
+                        )()
+
+                    save_btn.on("click", _guarded_save)
             dlg.open()
 
         # Edit dialog
@@ -264,26 +278,28 @@ async def document_types_page() -> None:
                 active_inp = ui.switch("Active", value=row.get("is_active") == "Yes")
 
                 async def _update() -> None:
-                    try:
-                        await api_put(f"/document-types/{item_id}", json={
-                            "name": (name_inp.value or "").strip() or None,
-                            "category": cat_inp.value or None,
-                            "base_effort_hours": float(hours_inp.value or 4.0),
-                            "task_template_id": tt_inp.value if tt_inp.value else None,
-                            "description": (desc_inp.value or "").strip() or None,
-                            "is_active": active_inp.value,
-                        })
-                        ui.notify("Document type updated.", type="positive")
-                        dlg.close()
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Failed: {exc}", type="negative")
+                    await api_put(f"/document-types/{item_id}", json={
+                        "name": (name_inp.value or "").strip() or None,
+                        "category": cat_inp.value or None,
+                        "base_effort_hours": float(hours_inp.value or 4.0),
+                        "task_template_id": tt_inp.value if tt_inp.value else None,
+                        "description": (desc_inp.value or "").strip() or None,
+                        "is_active": active_inp.value,
+                    })
+                    dlg.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md gap-2"):
-                    ui.button("Update", on_click=_update).props("color=primary")
+                    update_btn = ui.button("Update").props("color=primary")
+                    update_btn.on("click", run_async(
+                        update_btn, _update,
+                        success="Document type updated.",
+                        error_prefix="Failed to update document type",
+                    ))
                     ui.button("Cancel", on_click=dlg.close).props("flat")
             dlg.open()
 
         table.on("rowClick", _open_edit_dialog)
 
-        await refresh()
+        async with loading_state("Loading document types…"):
+            await refresh()

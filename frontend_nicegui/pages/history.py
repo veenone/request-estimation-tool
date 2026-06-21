@@ -12,7 +12,12 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     current_user,
+    empty_state,
+    format_age,
+    format_datetime,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -52,6 +57,9 @@ async def history_page() -> None:
             # Inject computed accuracy_ratio into each row for the table
             for row in projects:
                 row["accuracy_ratio"] = _compute_accuracy(row)
+                iso = row.get("completion_date") or ""
+                row["completion_date_age"] = format_age(iso) if iso else "—"
+                row["completion_date_full"] = format_datetime(iso) if iso else ""
         except Exception as exc:
             ui.notify(f"Failed to load projects: {exc}", type="negative")
             projects = []
@@ -64,7 +72,7 @@ async def history_page() -> None:
             ui.label("Add Historical Project").classes("text-h6")
             ui.separator()
 
-            f_name = ui.input("Project Name *").classes("w-full")
+            f_name = ui.input("Project Name *").classes("w-full").props("autofocus")
             f_type = ui.select(
                 label="Project Type *",
                 options=["NEW", "EVOLUTION", "SUPPORT"],
@@ -96,10 +104,6 @@ async def history_page() -> None:
             f_notes = ui.textarea("Notes").classes("w-full")
 
             async def submit() -> None:
-                if not f_name.value or not f_name.value.strip():
-                    ui.notify("Project Name is required.", type="warning")
-                    return
-
                 payload: dict = {
                     "project_name": f_name.value.strip(),
                     "project_type": f_type.value,
@@ -112,17 +116,25 @@ async def history_page() -> None:
                     "features_json": f_features.value or "[]",
                     "notes": f_notes.value or None,
                 }
-                try:
-                    await api_post("/historical-projects", json=payload)
-                    ui.notify("Project added successfully.", type="positive")
-                    dialog.close()
-                    await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error adding project: {exc}", type="negative")
+                await api_post("/historical-projects", json=payload)
+                dialog.close()
+                await refresh_table()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Add Project", on_click=submit).props("color=primary")
+                add_btn = ui.button("Add Project").props("color=primary")
+
+                def _guarded_submit(*_):
+                    if not f_name.value or not f_name.value.strip():
+                        ui.notify("Project Name is required.", type="warning")
+                        return
+                    return run_async(
+                        add_btn, submit,
+                        success="Project added successfully.",
+                        error_prefix="Error adding project",
+                    )()
+
+                add_btn.on("click", _guarded_submit)
 
         dialog.open()
 
@@ -145,7 +157,8 @@ async def history_page() -> None:
     can_add = role in ("APPROVER", "ADMIN")
 
     # Load data first
-    await load_projects()
+    async with loading_state("Loading projects…"):
+        await load_projects()
 
     # ---------------------------------------------------------------------------
     # Page layout
@@ -257,7 +270,7 @@ async def history_page() -> None:
             # ── Table ──────────────────────────────────────────
             with ui.element("div").classes("ed-card"):
                 if not projects:
-                    ui.label("No historical projects yet").classes("ed-empty")
+                    empty_state("No historical projects yet")
                 else:
                     columns = [
                         {"name": "project_name", "label": "Project Name", "field": "project_name", "sortable": True, "align": "left"},
@@ -265,7 +278,7 @@ async def history_page() -> None:
                         {"name": "estimated_hours", "label": "Estimated h", "field": "estimated_hours", "sortable": True, "align": "right"},
                         {"name": "actual_hours", "label": "Actual h", "field": "actual_hours", "sortable": True, "align": "right"},
                         {"name": "accuracy_ratio", "label": "Accuracy Ratio", "field": "accuracy_ratio", "sortable": True, "align": "right"},
-                        {"name": "completion_date", "label": "Completion Date", "field": "completion_date", "sortable": True, "align": "left"},
+                        {"name": "completion_date", "label": "Completion Date", "field": "completion_date_age", "sortable": True, "align": "left"},
                     ]
                     table_ref = ui.table(
                         columns=columns,
@@ -273,6 +286,17 @@ async def history_page() -> None:
                         row_key="id",
                         pagination={"rowsPerPage": 25},
                     ).classes("w-full").props("flat")
+                    table_ref.add_slot(
+                        "body-cell-completion_date",
+                        r"""
+                        <q-td :props="props">
+                            <span>{{ props.value }}</span>
+                            <q-tooltip v-if="props.row.completion_date_full">
+                                {{ props.row.completion_date_full }}
+                            </q-tooltip>
+                        </q-td>
+                        """,
+                    )
                     table_ref.add_slot(
                         "body-cell-accuracy_ratio",
                         r"""

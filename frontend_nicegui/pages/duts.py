@@ -14,8 +14,11 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     api_put,
+    empty_state,
     has_permission,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -75,17 +78,14 @@ async def duts_page() -> None:
                         ).classes("text-body2 q-mt-sm")
 
                         async def _confirm() -> None:
-                            try:
-                                await api_post("/dut-types/reinit")
-                                confirm_dlg.close()
-                                ui.notify("DUT registry reinitialized.", type="positive")
-                                await refresh()
-                            except Exception as exc:
-                                ui.notify(f"Error: {exc}", type="negative")
+                            await api_post("/dut-types/reinit")
+                            confirm_dlg.close()
+                            await refresh()
 
                         with ui.row().classes("q-mt-md justify-end w-full"):
                             ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
-                            ui.button("Delete All", on_click=_confirm).props("color=negative")
+                            reinit_btn = ui.button("Delete All").props("color=negative")
+                            reinit_btn.on("click", run_async(reinit_btn, _confirm, success="DUT registry reinitialized.", error_prefix="Reinit failed"))
                     confirm_dlg.open()
 
                 ui.button("Reinit Registry", icon="restart_alt",
@@ -130,6 +130,8 @@ async def duts_page() -> None:
                     pagination={"rowsPerPage": 25},
                     selection="multiple",
                 ).classes("w-full").props("flat")
+                empty_holder = ui.element("div").classes("w-full")
+                empty_holder.set_visibility(False)
 
         # Show/hide bulk buttons based on selection
         def _on_selection_change() -> None:
@@ -148,11 +150,11 @@ async def duts_page() -> None:
                     dense flat round icon="edit" color="primary" size="sm"
                     @click="() => $parent.$emit('edit-row', props.row)"
                     class="q-mr-xs"
-                />
+                ><q-tooltip>Edit</q-tooltip></q-btn>
                 <q-btn
                     dense flat round icon="delete" color="negative" size="sm"
                     @click="() => $parent.$emit('delete-row', props.row)"
-                />
+                ><q-tooltip>Delete</q-tooltip></q-btn>
             </q-td>
             """,
         )
@@ -232,6 +234,13 @@ async def duts_page() -> None:
                 ]
             table.rows = rows
             table.update()
+            no_rows = not rows
+            empty_holder.clear()
+            if no_rows:
+                with empty_holder:
+                    empty_state("No results match your filters.")
+            empty_holder.set_visibility(no_rows)
+            table.set_visibility(not no_rows)
 
         search_input.on("update:model-value", lambda _: _apply_search())
 
@@ -240,7 +249,8 @@ async def duts_page() -> None:
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
-                rows: list = await api_get("/dut-types")
+                async with loading_state():
+                    rows: list = await api_get("/dut-types")
                 all_rows_ref["data"] = rows
                 _render_kpis()
                 _render_segments()
@@ -254,10 +264,10 @@ async def duts_page() -> None:
         # Add dialog                                                           #
         # ------------------------------------------------------------------ #
         async def show_add_dialog() -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Add DUT Type").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *").classes("w-full")
+                name_input = ui.input("Name *").props("autofocus").classes("w-full")
                 category_select = ui.select(
                     categories,
                     label="Category",
@@ -283,24 +293,21 @@ async def duts_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "category": category_select.value,
-                            "complexity_multiplier": float(multiplier_input.value or 1.0),
-                        }
-                        if product_type_input.value:
-                            payload["product_type"] = product_type_input.value
-                        await api_post("/dut-types", json=payload)
-                        dialog.close()
-                        ui.notify("DUT type created.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error creating DUT type: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "category": category_select.value,
+                        "complexity_multiplier": float(multiplier_input.value or 1.0),
+                    }
+                    if product_type_input.value:
+                        payload["product_type"] = product_type_input.value
+                    await api_post("/dut-types", json=payload)
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="DUT type created.", error_prefix="Save failed"))
 
             dialog.open()
 
@@ -308,10 +315,10 @@ async def duts_page() -> None:
         # Edit dialog                                                          #
         # ------------------------------------------------------------------ #
         async def show_edit_dialog(row: dict) -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Edit DUT Type").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
+                name_input = ui.input("Name *", value=row.get("name", "")).props("autofocus").classes("w-full")
                 row_cat = row.get("category", categories[0] if categories else "Other")
                 cat_options = categories if row_cat in categories else [row_cat] + categories
                 category_select = ui.select(
@@ -339,23 +346,20 @@ async def duts_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "category": category_select.value,
-                            "complexity_multiplier": float(multiplier_input.value or 1.0),
-                            "product_type": product_type_input.value if product_type_input.value else None,
-                        }
-                        await api_put(f"/dut-types/{row['id']}", json=payload)
-                        dialog.close()
-                        ui.notify("DUT type updated.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error updating DUT type: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "category": category_select.value,
+                        "complexity_multiplier": float(multiplier_input.value or 1.0),
+                        "product_type": product_type_input.value if product_type_input.value else None,
+                    }
+                    await api_put(f"/dut-types/{row['id']}", json=payload)
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="DUT type updated.", error_prefix="Save failed"))
 
             dialog.open()
 
@@ -446,7 +450,8 @@ async def duts_page() -> None:
 
                 with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Apply", icon="check", on_click=apply).props("color=primary")
+                    apply_btn = ui.button("Apply", icon="check").props("color=primary")
+                    apply_btn.on("click", run_async(apply_btn, apply, error_prefix="Bulk update failed"))
 
             dialog.open()
 
@@ -489,7 +494,8 @@ async def duts_page() -> None:
 
                 with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Delete", icon="delete", on_click=confirm).props("color=negative")
+                    bulk_del_btn = ui.button("Delete", icon="delete").props("color=negative")
+                    bulk_del_btn.on("click", run_async(bulk_del_btn, confirm, error_prefix="Bulk delete failed"))
 
             dialog.open()
 
@@ -505,17 +511,14 @@ async def duts_page() -> None:
                 ).classes("text-body2 q-mt-sm")
 
                 async def confirm() -> None:
-                    try:
-                        await api_delete(f"/dut-types/{row['id']}")
-                        dialog.close()
-                        ui.notify("DUT type deleted.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error deleting DUT type: {exc}", type="negative")
+                    await api_delete(f"/dut-types/{row['id']}")
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Delete", on_click=confirm).props("color=negative")
+                    del_btn = ui.button("Delete").props("color=negative")
+                    del_btn.on("click", run_async(del_btn, confirm, success="DUT type deleted.", error_prefix="Delete failed"))
 
             dialog.open()
 

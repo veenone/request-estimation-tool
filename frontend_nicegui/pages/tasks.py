@@ -7,7 +7,10 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     api_put,
+    empty_state,
     is_authenticated,
+    loading_state,
+    run_async,
     show_error_page,
     sidebar,
 )
@@ -22,8 +25,9 @@ async def tasks_page():
     sidebar()
 
     try:
-        templates = await api_get("/task-templates")
-        features = await api_get("/features")
+        async with loading_state():
+            templates = await api_get("/task-templates")
+            features = await api_get("/features")
     except Exception as exc:
         show_error_page(exc)
         return
@@ -90,15 +94,17 @@ async def tasks_page():
                     row_key="id",
                     pagination={"rowsPerPage": 25},
                 ).classes("w-full").props("flat")
+                empty_holder = ui.element("div").classes("w-full")
+                empty_holder.set_visibility(False)
 
         table.add_slot(
             "body-cell-actions",
             r"""
             <q-td :props="props">
                 <q-btn dense flat round icon="edit" color="primary" size="sm"
-                    @click="$parent.$emit('edit-row', props.row)" class="q-mr-xs" />
+                    @click="$parent.$emit('edit-row', props.row)" class="q-mr-xs"><q-tooltip>Edit</q-tooltip></q-btn>
                 <q-btn dense flat round icon="delete" color="negative" size="sm"
-                    @click="$parent.$emit('delete-row', props.row)" />
+                    @click="$parent.$emit('delete-row', props.row)"><q-tooltip>Delete</q-tooltip></q-btn>
             </q-td>
             """,
         )
@@ -208,6 +214,13 @@ async def tasks_page():
                         if (r.get("product_type") or "") == state["filter_product_type"]]
             table.rows = rows
             table.update()
+            no_rows = not rows
+            empty_holder.clear()
+            if no_rows:
+                with empty_holder:
+                    empty_state("No results match your filters.")
+            empty_holder.set_visibility(no_rows)
+            table.set_visibility(not no_rows)
 
         def _refresh_table():
             _render_kpis()
@@ -220,7 +233,7 @@ async def tasks_page():
         async def _show_add_dialog():
             with ui.dialog() as dlg, ui.card().classes("w-[520px]"):
                 ui.label("Add Task Template").classes("text-h6 q-mb-md")
-                name_input = ui.input("Name *").classes("w-full")
+                name_input = ui.input("Name *").props("autofocus").classes("w-full")
                 type_select = ui.select(
                     options=["SETUP", "EXECUTION", "ANALYSIS", "REPORTING", "STUDY"],
                     label="Task Type",
@@ -296,18 +309,15 @@ async def tasks_page():
                         "description": desc_input.value or None,
                         "product_type": pt_select.value if pt_select.value else None,
                     }
-                    try:
-                        new_tmpl = await api_post("/task-templates", json=payload)
-                        templates.append(new_tmpl)
-                        ui.notify("Task template created.", type="positive")
-                        dlg.close()
-                        _refresh_table()
-                    except Exception as exc:
-                        ui.notify(f"Failed: {exc}", type="negative")
+                    new_tmpl = await api_post("/task-templates", json=payload)
+                    templates.append(new_tmpl)
+                    dlg.close()
+                    _refresh_table()
 
                 with ui.row().classes("w-full justify-end q-mt-md"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    ui.button("Save", on_click=_save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, _save, success="Task template created.", error_prefix="Save failed"))
 
             dlg.open()
 
@@ -323,7 +333,7 @@ async def tasks_page():
 
             with ui.dialog() as dlg, ui.card().classes("w-[520px]"):
                 ui.label("Edit Task Template").classes("text-h6 q-mb-md")
-                name_input = ui.input("Name *", value=tmpl["name"]).classes("w-full")
+                name_input = ui.input("Name *", value=tmpl["name"]).props("autofocus").classes("w-full")
                 type_select = ui.select(
                     options=["SETUP", "EXECUTION", "ANALYSIS", "REPORTING", "STUDY"],
                     label="Task Type",
@@ -410,22 +420,19 @@ async def tasks_page():
                         "description": desc_input.value or None,
                         "product_type": pt_select.value if pt_select.value else None,
                     }
-                    try:
-                        updated = await api_put(f"/task-templates/{tmpl['id']}", json=payload)
-                        # Update in-memory list
-                        for i, t in enumerate(templates):
-                            if t["id"] == tmpl["id"]:
-                                templates[i] = updated
-                                break
-                        ui.notify("Task template updated.", type="positive")
-                        dlg.close()
-                        _refresh_table()
-                    except Exception as exc:
-                        ui.notify(f"Failed: {exc}", type="negative")
+                    updated = await api_put(f"/task-templates/{tmpl['id']}", json=payload)
+                    # Update in-memory list
+                    for i, t in enumerate(templates):
+                        if t["id"] == tmpl["id"]:
+                            templates[i] = updated
+                            break
+                    dlg.close()
+                    _refresh_table()
 
                 with ui.row().classes("w-full justify-end q-mt-md"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    ui.button("Save", on_click=_save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, _save, success="Task template updated.", error_prefix="Save failed"))
 
             dlg.open()
 
@@ -441,18 +448,15 @@ async def tasks_page():
                 ).classes("text-body2 q-mt-sm")
 
                 async def _confirm():
-                    try:
-                        await api_delete(f"/task-templates/{row['id']}")
-                        templates[:] = [t for t in templates if t["id"] != row["id"]]
-                        dlg.close()
-                        ui.notify("Task template deleted.", type="positive")
-                        _refresh_table()
-                    except Exception as exc:
-                        ui.notify(f"Failed: {exc}", type="negative")
+                    await api_delete(f"/task-templates/{row['id']}")
+                    templates[:] = [t for t in templates if t["id"] != row["id"]]
+                    dlg.close()
+                    _refresh_table()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    ui.button("Delete", on_click=_confirm).props("color=negative")
+                    del_btn = ui.button("Delete").props("color=negative")
+                    del_btn.on("click", run_async(del_btn, _confirm, success="Task template deleted.", error_prefix="Delete failed"))
 
             dlg.open()
 

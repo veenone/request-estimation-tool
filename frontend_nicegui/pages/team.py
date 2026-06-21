@@ -20,7 +20,11 @@ from frontend_nicegui.app import (
     api_post,
     api_put,
     current_user,
+    empty_state,
+    icon_action,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -98,7 +102,7 @@ async def team_page() -> None:
             ui.label("Add Team Member").classes("text-h6")
             ui.separator()
 
-            f_name = ui.input("Name *").classes("w-full")
+            f_name = ui.input("Name *").classes("w-full").props("autofocus")
             f_role = ui.select(
                 label="Role *", options=_ROLES, value="TESTER"
             ).classes("w-full")
@@ -142,25 +146,22 @@ async def team_page() -> None:
                     "available_hours_per_day": f_hours.value or 7.0,
                     "skills_json": _json.dumps(selected_skills),
                 }
-                try:
-                    new_member = await api_post("/team-members", json=payload)
-                    # Link user if selected
-                    linked_uid = f_linked_user.value
-                    if linked_uid and linked_uid != 0 and new_member:
-                        try:
-                            from frontend_nicegui.app import api_put as _api_put
-                            await _api_put(f"/users/{linked_uid}", json={"team_member_id": new_member["id"]})
-                        except Exception:
-                            pass
-                    ui.notify("Team member added.", type="positive")
-                    dialog.close()
-                    await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error adding member: {exc}", type="negative")
+                new_member = await api_post("/team-members", json=payload)
+                # Link user if selected
+                linked_uid = f_linked_user.value
+                if linked_uid and linked_uid != 0 and new_member:
+                    try:
+                        from frontend_nicegui.app import api_put as _api_put
+                        await _api_put(f"/users/{linked_uid}", json={"team_member_id": new_member["id"]})
+                    except Exception:
+                        pass
+                dialog.close()
+                await refresh_table()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Add Member", on_click=submit).props("color=primary")
+                add_btn = ui.button("Add Member").props("color=primary")
+                add_btn.on("click", run_async(add_btn, submit, success="Team member added.", error_prefix="Add member failed"))
 
         dialog.open()
 
@@ -174,7 +175,7 @@ async def team_page() -> None:
             ui.label(f"Edit: {member.get('name', '')}").classes("text-h6")
             ui.separator()
 
-            f_name = ui.input("Name *", value=member.get("name", "")).classes("w-full")
+            f_name = ui.input("Name *", value=member.get("name", "")).classes("w-full").props("autofocus")
             f_role = ui.select(
                 label="Role *",
                 options=_ROLES,
@@ -223,33 +224,30 @@ async def team_page() -> None:
                     "available_hours_per_day": f_hours.value or 7.0,
                     "skills_json": _json.dumps(selected_skills),
                 }
-                try:
-                    await api_put(f"/team-members/{member['id']}", json=payload)
-                    # Update linked user
-                    new_linked = f_linked_user.value if f_linked_user.value != 0 else None
-                    old_linked = member.get("linked_user_id")
-                    if new_linked != old_linked:
-                        # Unlink old user
-                        if old_linked:
-                            try:
-                                await api_put(f"/users/{old_linked}", json={"team_member_id": None})
-                            except Exception:
-                                pass
-                        # Link new user
-                        if new_linked:
-                            try:
-                                await api_put(f"/users/{new_linked}", json={"team_member_id": member["id"]})
-                            except Exception:
-                                pass
-                    ui.notify("Team member updated.", type="positive")
-                    dialog.close()
-                    await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error updating member: {exc}", type="negative")
+                await api_put(f"/team-members/{member['id']}", json=payload)
+                # Update linked user
+                new_linked = f_linked_user.value if f_linked_user.value != 0 else None
+                old_linked = member.get("linked_user_id")
+                if new_linked != old_linked:
+                    # Unlink old user
+                    if old_linked:
+                        try:
+                            await api_put(f"/users/{old_linked}", json={"team_member_id": None})
+                        except Exception:
+                            pass
+                    # Link new user
+                    if new_linked:
+                        try:
+                            await api_put(f"/users/{new_linked}", json={"team_member_id": member["id"]})
+                        except Exception:
+                            pass
+                dialog.close()
+                await refresh_table()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Save Changes", on_click=submit).props("color=primary")
+                save_btn = ui.button("Save Changes").props("color=primary")
+                save_btn.on("click", run_async(save_btn, submit, success="Team member updated.", error_prefix="Update failed"))
 
         dialog.open()
 
@@ -265,17 +263,14 @@ async def team_page() -> None:
             )
 
             async def confirm() -> None:
-                try:
-                    await api_delete(f"/team-members/{member['id']}")
-                    ui.notify("Team member deleted.", type="positive")
-                    dialog.close()
-                    await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error deleting member: {exc}", type="negative")
+                await api_delete(f"/team-members/{member['id']}")
+                dialog.close()
+                await refresh_table()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Delete", on_click=confirm).props("color=negative")
+                del_btn = ui.button("Delete").props("color=negative")
+                del_btn.on("click", run_async(del_btn, confirm, success="Team member deleted.", error_prefix="Delete failed"))
 
         dialog.open()
 
@@ -296,24 +291,21 @@ async def team_page() -> None:
         with ui.dialog() as dialog, ui.card().classes("w-[420px]"):
             ui.label("Create Team").classes("text-h6")
             ui.separator()
-            f_name = ui.input("Team Name *").classes("w-full")
+            f_name = ui.input("Team Name *").classes("w-full").props("autofocus")
             f_desc = ui.textarea("Description").classes("w-full")
 
             async def submit() -> None:
                 if not f_name.value or not f_name.value.strip():
                     ui.notify("Team name is required.", type="warning")
                     return
-                try:
-                    await api_post("/teams", json={"name": f_name.value.strip(), "description": (f_desc.value or "").strip() or None})
-                    ui.notify("Team created.", type="positive")
-                    dialog.close()
-                    ui.navigate.to("/team")
-                except Exception as exc:
-                    ui.notify(f"Error: {exc}", type="negative")
+                await api_post("/teams", json={"name": f_name.value.strip(), "description": (f_desc.value or "").strip() or None})
+                dialog.close()
+                ui.navigate.to("/team")
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Create", on_click=submit).props("color=primary")
+                create_btn = ui.button("Create").props("color=primary")
+                create_btn.on("click", run_async(create_btn, submit, success="Team created.", error_prefix="Create team failed"))
         dialog.open()
 
     async def open_manage_team_dialog(team: dict) -> None:
@@ -336,32 +328,26 @@ async def team_page() -> None:
             ).classes("w-full").props("use-chips")
 
             async def save_members() -> None:
-                try:
-                    await api_put(f"/teams/{team['id']}/members", json={"member_ids": f_members.value or []})
-                    ui.notify("Team members updated.", type="positive")
-                    dialog.close()
-                    ui.navigate.to("/team")
-                except Exception as exc:
-                    ui.notify(f"Error: {exc}", type="negative")
+                await api_put(f"/teams/{team['id']}/members", json={"member_ids": f_members.value or []})
+                dialog.close()
+                ui.navigate.to("/team")
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Save", on_click=save_members).props("color=primary")
+                save_members_btn = ui.button("Save").props("color=primary")
+                save_members_btn.on("click", run_async(save_members_btn, save_members, success="Team members updated.", error_prefix="Save failed"))
         dialog.open()
 
     async def delete_team(team: dict) -> None:
-        try:
-            await api_delete(f"/teams/{team['id']}")
-            ui.notify("Team deleted.", type="positive")
-            ui.navigate.to("/team")
-        except Exception as exc:
-            ui.notify(f"Error: {exc}", type="negative")
+        await api_delete(f"/teams/{team['id']}")
+        ui.navigate.to("/team")
 
     # ---------------------------------------------------------------------------
     # State + initial load
     # ---------------------------------------------------------------------------
     state: dict = {"filter_role": "All"}
-    await load_members()
+    async with loading_state("Loading team…"):
+        await load_members()
 
     # ---------------------------------------------------------------------------
     # Page layout
@@ -538,9 +524,13 @@ async def team_page() -> None:
             r"""
             <q-td :props="props">
                 <q-btn flat round icon="edit" size="sm"
-                       @click="$parent.$emit('edit', props.row)" />
+                       @click="$parent.$emit('edit', props.row)">
+                    <q-tooltip>Edit member</q-tooltip>
+                </q-btn>
                 <q-btn flat round icon="delete" size="sm" color="negative"
-                       @click="$parent.$emit('delete', props.row)" />
+                       @click="$parent.$emit('delete', props.row)">
+                    <q-tooltip>Delete member</q-tooltip>
+                </q-btn>
             </q-td>
             """,
         )
@@ -580,8 +570,10 @@ async def team_page() -> None:
                                 ui.button("Manage", icon="settings",
                                           on_click=lambda t=team: open_manage_team_dialog(t)) \
                                     .props("flat dense color=primary size=sm")
-                                ui.button("Delete", icon="delete",
-                                          on_click=lambda t=team: delete_team(t)) \
+                                _del_team_btn = ui.button("Delete", icon="delete") \
                                     .props("flat dense color=negative size=sm")
+                                _del_team_btn.on("click", run_async(
+                                    _del_team_btn, lambda t=team: delete_team(t),
+                                    success="Team deleted.", error_prefix="Delete team failed"))
             else:
-                ui.label("No teams created yet").classes("ed-empty")
+                empty_state("No teams created yet")

@@ -23,6 +23,8 @@ from frontend_nicegui.app import (
     api_put,
     auth_headers,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -153,7 +155,8 @@ async def public_holidays_page():
                         )
                         ui.label(f"top: {top_country}").classes("ed-stat-tile-sub")
 
-        await _load_holidays()
+        async with loading_state("Loading holidays…"):
+            await _load_holidays()
 
         # ---- helpers -------------------------------------------------------------
         def _holidays_for_date(y: int, m: int, d: int) -> list[dict]:
@@ -292,10 +295,10 @@ async def public_holidays_page():
 
         # ---- Add dialog ----------------------------------------------------------
         def _show_add_dialog(prefill_date: str = ""):
-            with ui.dialog() as dlg, ui.card().classes("w-96"):
+            with ui.dialog() as dlg, ui.card().classes("w-[480px]"):
                 ui.label("Add Public Holiday").classes("text-h6 q-mb-sm")
 
-                date_input = ui.input("Date (YYYY-MM-DD)", value=prefill_date).classes("w-full")
+                date_input = ui.input("Date (YYYY-MM-DD)", value=prefill_date).classes("w-full").props("autofocus")
                 name_input = ui.input("Holiday Name").classes("w-full")
                 country_input = ui.input("Country / Region", value="").classes("w-full")
                 recurring_switch = ui.switch("Recurring annually", value=False)
@@ -315,32 +318,29 @@ async def public_holidays_page():
                     if not date_val:
                         ui.notify("Invalid date value.", type="warning")
                         return
-                    try:
-                        result = await api_post("/public-holidays", json={
-                            "date": date_val,
-                            "name": name_input.value.strip(),
-                            "country": country_input.value or "",
-                            "is_recurring": recurring_switch.value,
-                        })
-                        state["holidays"].append(result)
-                        _render_calendar()
-                        _render_table()
-                        dlg.close()
-                        ui.notify(f"Holiday '{name_input.value}' added.", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Error: {exc}", type="negative")
+                    result = await api_post("/public-holidays", json={
+                        "date": date_val,
+                        "name": name_input.value.strip(),
+                        "country": country_input.value or "",
+                        "is_recurring": recurring_switch.value,
+                    })
+                    state["holidays"].append(result)
+                    _render_calendar()
+                    _render_table()
+                    dlg.close()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    ui.button("Save", on_click=_save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, _save, success="Holiday added.", error_prefix="Add holiday failed"))
             dlg.open()
 
         # ---- Edit dialog ---------------------------------------------------------
         def _show_edit_dialog(holiday: dict):
-            with ui.dialog() as dlg, ui.card().classes("w-96"):
+            with ui.dialog() as dlg, ui.card().classes("w-[480px]"):
                 ui.label("Edit Public Holiday").classes("text-h6 q-mb-sm")
 
-                date_input = ui.input("Date (YYYY-MM-DD)", value=holiday.get("date", "")).classes("w-full")
+                date_input = ui.input("Date (YYYY-MM-DD)", value=holiday.get("date", "")).classes("w-full").props("autofocus")
                 name_input = ui.input("Holiday Name", value=holiday.get("name", "")).classes("w-full")
                 country_input = ui.input("Country / Region", value=holiday.get("country", "")).classes("w-full")
                 recurring_switch = ui.switch("Recurring annually", value=holiday.get("is_recurring", False))
@@ -360,41 +360,52 @@ async def public_holidays_page():
                     if not date_val:
                         ui.notify("Invalid date value.", type="warning")
                         return
-                    try:
-                        updated = await api_put(f"/public-holidays/{holiday['id']}", json={
-                            "date": date_val,
-                            "name": name_input.value.strip(),
-                            "country": country_input.value or "",
-                            "is_recurring": recurring_switch.value,
-                        })
-                        # Update local state
-                        for i, h in enumerate(state["holidays"]):
-                            if h["id"] == holiday["id"]:
-                                state["holidays"][i] = updated
-                                break
-                        _render_calendar()
-                        _render_table()
-                        dlg.close()
-                        ui.notify("Holiday updated.", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Error: {exc}", type="negative")
+                    updated = await api_put(f"/public-holidays/{holiday['id']}", json={
+                        "date": date_val,
+                        "name": name_input.value.strip(),
+                        "country": country_input.value or "",
+                        "is_recurring": recurring_switch.value,
+                    })
+                    # Update local state
+                    for i, h in enumerate(state["holidays"]):
+                        if h["id"] == holiday["id"]:
+                            state["holidays"][i] = updated
+                            break
+                    _render_calendar()
+                    _render_table()
+                    dlg.close()
 
                 async def _delete_from_edit():
-                    try:
-                        await api_delete(f"/public-holidays/{holiday['id']}")
-                        state["holidays"] = [h for h in state["holidays"] if h["id"] != holiday["id"]]
-                        _render_calendar()
-                        _render_table()
-                        dlg.close()
-                        ui.notify("Holiday deleted.", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Delete failed: {exc}", type="negative")
+                    await api_delete(f"/public-holidays/{holiday['id']}")
+                    state["holidays"] = [h for h in state["holidays"] if h["id"] != holiday["id"]]
+                    _render_calendar()
+                    _render_table()
+                    dlg.close()
+
+                def _confirm_delete_from_edit() -> None:
+                    with ui.dialog() as confirm_dlg, ui.card().classes("w-80"):
+                        ui.label("Delete Holiday").classes("text-h6")
+                        ui.label(
+                            f"Delete holiday '{holiday.get('name', '')}'? "
+                            "This cannot be undone."
+                        ).classes("text-body2 q-mt-sm")
+
+                        async def _do_delete():
+                            confirm_dlg.close()
+                            await _delete_from_edit()
+
+                        with ui.row().classes("q-mt-md justify-end w-full"):
+                            ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
+                            confirm_del_btn = ui.button("Delete").props("color=negative")
+                            confirm_del_btn.on("click", run_async(confirm_del_btn, _do_delete, success="Holiday deleted.", error_prefix="Delete failed"))
+                    confirm_dlg.open()
 
                 with ui.row().classes("q-mt-md justify-between w-full"):
-                    ui.button("Delete", icon="delete", on_click=_delete_from_edit).props("flat color=negative")
+                    ui.button("Delete", icon="delete", on_click=_confirm_delete_from_edit).props("flat color=negative")
                     with ui.row().classes("gap-2"):
                         ui.button("Cancel", on_click=dlg.close).props("flat")
-                        ui.button("Save", on_click=_save_edit).props("color=primary")
+                        save_edit_btn = ui.button("Save").props("color=primary")
+                        save_edit_btn.on("click", run_async(save_edit_btn, _save_edit, success="Holiday updated.", error_prefix="Update failed"))
             dlg.open()
 
         # ---- ICS import ----------------------------------------------------------
@@ -465,7 +476,7 @@ async def public_holidays_page():
                     columns=_TABLE_COLUMNS,
                     rows=sorted_holidays,
                     row_key="id",
-                    pagination={"rowsPerPage": 15},
+                    pagination={"rowsPerPage": 25},
                 ).classes("w-full").props("flat bordered dense")
 
                 tbl.add_slot("body-cell-is_recurring", """
@@ -478,9 +489,13 @@ async def public_holidays_page():
                 tbl.add_slot("body-cell-actions", """
                     <q-td :props="props">
                         <q-btn flat dense icon="edit" color="primary" size="sm"
-                               @click="() => $parent.$emit('edit-row', props.row)" class="q-mr-xs" />
+                               @click="() => $parent.$emit('edit-row', props.row)" class="q-mr-xs">
+                            <q-tooltip>Edit holiday</q-tooltip>
+                        </q-btn>
                         <q-btn flat dense icon="delete" color="negative" size="sm"
-                               @click="() => $parent.$emit('delete-row', props.row)" />
+                               @click="() => $parent.$emit('delete-row', props.row)">
+                            <q-tooltip>Delete holiday</q-tooltip>
+                        </q-btn>
                     </q-td>
                 """)
 

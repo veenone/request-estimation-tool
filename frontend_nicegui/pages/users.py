@@ -20,7 +20,10 @@ from frontend_nicegui.app import (
     api_post,
     api_put,
     current_user,
+    empty_state,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -44,7 +47,8 @@ async def users_page() -> None:
 
     # Fetch team members for linking
     try:
-        team_members: list[dict] = await api_get("/team-members")
+        async with loading_state("Loading users…"):
+            team_members: list[dict] = await api_get("/team-members")
     except Exception:
         team_members = []
 
@@ -89,7 +93,7 @@ async def users_page() -> None:
             ui.label("Add User").classes("text-h6")
             ui.separator()
 
-            f_username = ui.input("Username *").classes("w-full")
+            f_username = ui.input("Username *").classes("w-full").props("autofocus")
             f_display = ui.input("Display Name *").classes("w-full")
             f_email = ui.input("Email").classes("w-full")
             f_password = ui.input(
@@ -132,17 +136,22 @@ async def users_page() -> None:
                     "auth_provider": f_provider.value,
                     "team_member_id": tm_id,
                 }
-                try:
-                    await api_post("/users", json=payload)
-                    ui.notify("User created.", type="positive")
+
+                async def _on_created(_):
                     dialog.close()
                     await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error creating user: {exc}", type="negative")
+
+                await run_async(
+                    create_btn,
+                    lambda: api_post("/users", json=payload),
+                    success="User created.",
+                    on_success=_on_created,
+                    error_prefix="Error creating user",
+                )()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Create User", on_click=submit).props("color=primary")
+                create_btn = ui.button("Create User", on_click=submit).props("color=primary")
 
         dialog.open()
 
@@ -154,9 +163,11 @@ async def users_page() -> None:
             ui.label(f"Edit User: {target.get('username', '')}").classes("text-h6")
             ui.separator()
 
+            is_self = target.get("id") == current_user_id
+
             f_display = ui.input(
                 "Display Name *", value=target.get("display_name", "")
-            ).classes("w-full")
+            ).classes("w-full").props("autofocus")
             f_email = ui.input(
                 "Email", value=target.get("email") or ""
             ).classes("w-full")
@@ -165,6 +176,14 @@ async def users_page() -> None:
                 options=_ROLES,
                 value=target.get("role", "VIEWER"),
             ).classes("w-full")
+            if is_self:
+                # Self-lockout guard: prevent the logged-in admin from
+                # downgrading their own role and locking themselves out.
+                f_role.props("disable")
+                f_role.tooltip(
+                    "You cannot change your own role — this prevents locking "
+                    "yourself out of admin access."
+                )
             f_active = ui.checkbox(
                 "Active", value=target.get("is_active", True)
             )
@@ -187,21 +206,27 @@ async def users_page() -> None:
                 payload = {
                     "display_name": f_display.value.strip(),
                     "email": f_email.value.strip() or None,
-                    "role": f_role.value,
+                    # Keep self's role unchanged regardless of the (disabled) field.
+                    "role": target.get("role", "VIEWER") if is_self else f_role.value,
                     "is_active": f_active.value,
                     "team_member_id": tm_id,
                 }
-                try:
-                    await api_put(f"/users/{target['id']}", json=payload)
-                    ui.notify("User updated.", type="positive")
+
+                async def _on_saved(_):
                     dialog.close()
                     await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error updating user: {exc}", type="negative")
+
+                await run_async(
+                    save_btn,
+                    lambda: api_put(f"/users/{target['id']}", json=payload),
+                    success="User updated.",
+                    on_success=_on_saved,
+                    error_prefix="Error updating user",
+                )()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Save Changes", on_click=submit).props("color=primary")
+                save_btn = ui.button("Save Changes", on_click=submit).props("color=primary")
 
         dialog.open()
 
@@ -218,21 +243,25 @@ async def users_page() -> None:
             ui.label("Confirm Delete").classes("text-h6")
             ui.separator()
             ui.label(
-                f"Delete user '{target.get('username', '')}'? This cannot be undone."
-            )
+                f"Delete user '{target.get('username', '')}'? This permanently "
+                "removes their account and unlinks any team member / assignments. "
+                "This cannot be undone."
+            ).classes("text-body2")
 
-            async def confirm() -> None:
-                try:
-                    await api_delete(f"/users/{target_id}")
-                    ui.notify("User deleted.", type="positive")
-                    dialog.close()
-                    await refresh_table()
-                except Exception as exc:
-                    ui.notify(f"Error deleting user: {exc}", type="negative")
+            async def _on_deleted(_):
+                dialog.close()
+                await refresh_table()
 
             with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Delete", on_click=confirm).props("color=negative")
+                del_btn = ui.button("Delete").props("color=negative")
+                del_btn.on_click(run_async(
+                    del_btn,
+                    lambda: api_delete(f"/users/{target_id}"),
+                    success="User deleted.",
+                    on_success=_on_deleted,
+                    error_prefix="Error deleting user",
+                ))
 
         dialog.open()
 
@@ -245,32 +274,76 @@ async def users_page() -> None:
             ui.notify("Select at least one user first.", type="warning")
             return
 
-        with ui.dialog() as dialog, ui.card().classes("w-[400px]"):
+        # Self-lockout guard: if the logged-in admin is among the selected
+        # users, changing their own role could remove their admin access.
+        includes_self = any(row.get("id") == current_user_id for row in selected)
+        names = [str(row.get("username") or row.get("display_name") or row.get("id"))
+                 for row in selected]
+        shown = names[:10]
+        names_text = ", ".join(shown)
+        if len(names) > len(shown):
+            names_text += f", … (+{len(names) - len(shown)} more)"
+
+        with ui.dialog() as dialog, ui.card().classes("w-[440px]"):
             ui.label("Bulk Set Role").classes("text-h6")
             ui.separator()
-            ui.label(f"Change role for {len(selected)} selected user(s):").classes("text-body2 q-mb-sm")
+            ui.label(
+                f"This will change {len(selected)} user(s): {names_text}"
+            ).classes("text-body2 q-mb-sm")
             f_role = ui.select(
                 label="New Role", options=_ROLES, value="VIEWER"
             ).classes("w-full")
 
-            async def apply() -> None:
+            if includes_self:
+                ui.label(
+                    "Warning: your own account is in this selection. To avoid "
+                    "locking yourself out, your role will not be changed."
+                ).classes("text-warning text-caption q-mt-sm")
+
+            confirm_cb = ui.checkbox(
+                f"I understand this changes {len(selected)} users"
+            ).classes("q-mt-sm")
+
+            with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                apply_btn = ui.button("Apply").props("color=primary")
+
+            async def _bulk_apply():
                 new_role = f_role.value
                 success = 0
                 for row in selected:
+                    # Skip self to honor the self-lockout guard.
+                    if row.get("id") == current_user_id:
+                        continue
                     try:
                         await api_put(f"/users/{row['id']}", json={"role": new_role})
                         success += 1
                     except Exception:
                         pass
-                ui.notify(f"Role updated for {success}/{len(selected)} users.", type="positive")
+                return success
+
+            async def _on_bulk_done(success):
+                ui.notify(
+                    f"Role updated for {success}/{len(selected)} users.",
+                    type="positive",
+                )
                 dialog.close()
                 if table_ref:
                     table_ref.selected.clear()
                 await refresh_table()
 
-            with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Apply", on_click=apply).props("color=primary")
+            apply_btn.on_click(run_async(
+                apply_btn,
+                _bulk_apply,
+                on_success=_on_bulk_done,
+                error_prefix="Bulk role update failed",
+            ))
+
+            def _gate() -> None:
+                apply_btn.set_enabled(bool(confirm_cb.value))
+
+            _gate()
+            confirm_cb.on_value_change(lambda _: _gate())
 
         dialog.open()
 
@@ -424,6 +497,11 @@ async def users_page() -> None:
                     pagination={"rowsPerPage": 25},
                     selection="multiple",
                 ).classes("w-full").props("flat")
+                table_ref.add_slot(
+                    "no-data",
+                    '<div class="ed-empty full-width column flex-center q-pa-md">'
+                    'No users match the current filter.</div>',
+                )
 
         def _on_selection_change() -> None:
             has_sel = bool(table_ref.selected) if table_ref else False
@@ -481,10 +559,14 @@ async def users_page() -> None:
             rf"""
             <q-td :props="props">
                 <q-btn flat round icon="edit" size="sm"
-                       @click="$parent.$emit('edit', props.row)" />
+                       @click="$parent.$emit('edit', props.row)">
+                    <q-tooltip>Edit user</q-tooltip>
+                </q-btn>
                 <q-btn flat round icon="delete" size="sm" color="negative"
                        :disable="props.row.id === {current_user_id}"
-                       @click="$parent.$emit('delete', props.row)" />
+                       @click="$parent.$emit('delete', props.row)">
+                    <q-tooltip>{{{{ props.row.id === {current_user_id} ? 'You cannot delete your own account' : 'Delete user' }}}}</q-tooltip>
+                </q-btn>
             </q-td>
             """,
         )

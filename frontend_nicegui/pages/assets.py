@@ -14,6 +14,7 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     is_authenticated,
+    loading_state,
     sidebar,
 )
 
@@ -289,5 +290,6 @@ async def assets_page() -> None:
         # ------------------------------------------------------------------ #
         # Initial data load                                                    #
         # ------------------------------------------------------------------ #
-        await _load_config()
-        await refresh()
+        async with loading_state("Loading assets…"):
+            await _load_config()
+            await refresh()

@@ -20,7 +20,13 @@ from frontend_nicegui.app import (
     api_put,
     auth_headers,
     current_user,
+    empty_state,
+    format_age,
+    format_datetime,
     is_authenticated,
+    loading_state,
+    notify_error,
+    run_async,
     show_error_page,
     sidebar,
 )
@@ -104,39 +110,10 @@ async def requests_list_page() -> None:
     }
     kpi_container: ui.element | None = None
     seg_container: ui.element | None = None
-
-    def _format_age(iso: str | None) -> str:
-        if not iso:
-            return ""
-        try:
-            from datetime import datetime, timezone
-            d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
-            now = datetime.now(timezone.utc) if d.tzinfo else datetime.now()
-            delta = now - d
-            days = delta.days
-            if days < 1:
-                return "today"
-            if days < 7:
-                return f"{days}d"
-            if days < 30:
-                return f"{days // 7}w"
-            return f"{days // 30}mo"
-        except Exception:
-            return iso[:10]
+    empty_holder: ui.element | None = None
 
     def _count_by_status(rows: list[dict], st: str) -> int:
         return sum(1 for r in rows if (r.get("status") or "") == st)
-
-    def _today_count(rows: list[dict], st: str) -> int:
-        today = date.today().isoformat()
-        return sum(1 for r in rows
-                   if (r.get("status") or "") == st
-                   and (r.get("created_at") or "").startswith(today))
-
-    def _high_pri_count(rows: list[dict], st: str) -> int:
-        return sum(1 for r in rows
-                   if (r.get("status") or "") == st
-                   and (r.get("priority") or "") in ("HIGH", "CRITICAL"))
 
     def _filter_rows() -> list[dict]:
         out = list(requests_data)
@@ -158,10 +135,17 @@ async def requests_list_page() -> None:
     def _refresh_table():
         rows = _filter_rows()
         for r in rows:
-            r["age"] = _format_age(r.get("created_at"))
+            r["age"] = format_age(r.get("created_at"))
+            r["age_full"] = format_datetime(r.get("created_at"))
         if table_ref:
             table_ref.rows = rows
             table_ref.update()
+            if not rows:
+                empty_holder.clear()
+                with empty_holder:
+                    empty_state("No requests match the current filters.")
+            else:
+                empty_holder.clear()
 
     def _set_status(st: str):
         state["status"] = st
@@ -199,40 +183,46 @@ async def requests_list_page() -> None:
             # Page title
             ui.label("Request Inbox").classes("text-h4 q-mb-md")
 
-            # ── KPI tiles (clickable) ──────────────────────────
+            # ── KPI tiles (non-interactive summary) ────────────
+            # The segmented control below is the single interactive status
+            # filter; this strip surfaces DISTINCT at-a-glance metrics that the
+            # status segments do not duplicate (open backlog, freshness, urgency,
+            # unassigned load) so the two controls never compete for the same action.
             kpi_container = ui.element("div").classes("ed-strip")
 
-            def _stat_tile(label: str, count: int, sub: str, status_key: str) -> None:
-                cls = "ed-strip-cell ed-stat-tile"
-                if state["status"] == status_key:
-                    cls += " active"
-                el = ui.element("div").classes(cls)
-                el.on("click", lambda _, k=status_key: _set_status(k))
+            def _stat_tile(label: str, count: int, sub: str) -> None:
+                el = ui.element("div").classes("ed-strip-cell ed-stat-tile")
                 with el:
                     ui.label(label).classes("ed-eyebrow")
                     ui.label(str(count)).classes("ed-strip-num")
                     if sub:
                         ui.label(sub).classes("ed-stat-tile-sub")
 
+            def _open_count(rows: list[dict]) -> int:
+                closed = {"COMPLETED", "REJECTED", "DELETED_UPSTREAM"}
+                return sum(1 for r in rows if (r.get("status") or "") not in closed)
+
+            def _new_today_count(rows: list[dict]) -> int:
+                today = date.today().isoformat()
+                return sum(1 for r in rows if (r.get("created_at") or "").startswith(today))
+
+            def _high_priority_count(rows: list[dict]) -> int:
+                return sum(1 for r in rows if (r.get("priority") or "") in ("HIGH", "CRITICAL"))
+
+            def _unassigned_count(rows: list[dict]) -> int:
+                closed = {"COMPLETED", "REJECTED", "DELETED_UPSTREAM"}
+                return sum(1 for r in rows
+                           if not r.get("assigned_to_id")
+                           and (r.get("status") or "") not in closed)
+
             def _render_kpis():
                 kpi_container.clear()
                 with kpi_container:
-                    n_new = _count_by_status(requests_data, "NEW")
-                    n_in  = _count_by_status(requests_data, "IN_ESTIMATION")
-                    n_est = _count_by_status(requests_data, "ESTIMATED")
-                    n_co  = _count_by_status(requests_data, "COMPLETED")
-                    _stat_tile("New",            n_new,
-                               f"{_today_count(requests_data, 'NEW')} today" if n_new else "—",
-                               "NEW")
-                    _stat_tile("In Estimation",  n_in,
-                               f"{_high_pri_count(requests_data, 'IN_ESTIMATION')} high priority" if n_in else "—",
-                               "IN_ESTIMATION")
-                    _stat_tile("Estimated",      n_est,
-                               "ready for approval" if n_est else "—",
-                               "ESTIMATED")
-                    _stat_tile("Completed",      n_co,
-                               "archived" if n_co else "—",
-                               "COMPLETED")
+                    n_open = _open_count(requests_data)
+                    _stat_tile("Open",          n_open,        "in progress")
+                    _stat_tile("New today",     _new_today_count(requests_data),  "received today")
+                    _stat_tile("High priority", _high_priority_count(requests_data), "HIGH / CRITICAL")
+                    _stat_tile("Unassigned",    _unassigned_count(requests_data), "need an owner")
 
             # ── Segmented status pills (full set) ──────────────
             seg_container = ui.element("div").classes("ed-segmented")
@@ -290,7 +280,7 @@ async def requests_list_page() -> None:
             # ── Table ──────────────────────────────────────────
             columns = [
                 {"name": "request_number", "label": "Number",   "field": "request_number", "sortable": True, "align": "left"},
-                {"name": "source_icon",    "label": "",         "field": "request_source", "align": "center"},
+                {"name": "source_icon",    "label": "Source",   "field": "request_source", "align": "center"},
                 {"name": "title",          "label": "Title",    "field": "title",          "sortable": True, "align": "left"},
                 {"name": "priority",       "label": "Priority", "field": "priority",       "sortable": True, "align": "left"},
                 {"name": "status",         "label": "Status",   "field": "status",         "sortable": True, "align": "left"},
@@ -329,7 +319,9 @@ async def requests_list_page() -> None:
                         <q-icon :name="{
                             'JIRA':'integration_instructions','REDMINE':'rss_feed',
                             'EMAIL':'mail','MANUAL':'edit'
-                        }[props.value] || 'help_outline'" size="18px" class="text-grey-6" />
+                        }[props.value] || 'help_outline'" size="18px" class="text-grey-6">
+                            <q-tooltip>{{ props.value || 'Unknown source' }}</q-tooltip>
+                        </q-icon>
                     </q-td>
                 """)
 
@@ -363,19 +355,34 @@ async def requests_list_page() -> None:
 
                 table_ref.add_slot("body-cell-age", r"""
                     <q-td :props="props">
-                        <span class="ed-mono" style="font-size:11px; opacity:0.7;">{{ props.value }}</span>
+                        <span class="ed-mono" style="font-size:11px; opacity:0.7;">{{ props.value }}
+                            <q-tooltip v-if="props.row.age_full">{{ props.row.age_full }}</q-tooltip>
+                        </span>
                     </q-td>
                 """)
 
                 table_ref.add_slot("body-cell-actions", r"""
                     <q-td :props="props" class="text-center">
-                        <q-btn flat dense icon="visibility" color="primary"
-                            @click="$parent.$emit('view-request', props.row)" />
+                        <q-btn flat dense round size="sm"
+                            v-if="!['COMPLETED','REJECTED','DELETED_UPSTREAM'].includes(props.row.status)"
+                            icon="add_chart" color="positive"
+                            @click="$parent.$emit('estimate-request', props.row)">
+                            <q-tooltip>Create estimation from this request</q-tooltip>
+                        </q-btn>
+                        <q-btn flat dense round size="sm" icon="visibility" color="primary"
+                            @click="$parent.$emit('view-request', props.row)">
+                            <q-tooltip>View request</q-tooltip>
+                        </q-btn>
                     </q-td>
                 """)
 
                 table_ref.on("view-request",
                              lambda e: ui.navigate.to(f"/requests/{e.args['id']}"))
+                table_ref.on("estimate-request",
+                             lambda e: ui.navigate.to(f"/estimation/new?request_id={e.args['id']}"))
+
+            # Empty-state placeholder shown when no rows match the filters.
+            empty_holder = ui.element("div").classes("w-full")
 
     # ─────────────────────────────────────────────────────────────
     # Add Request Dialog (preserved verbatim)
@@ -429,19 +436,7 @@ async def requests_list_page() -> None:
 
         form_error = ui.label("").classes("text-negative text-caption")
 
-        async def submit_add_request() -> None:
-            form_error.set_text("")
-            missing = []
-            if not f_request_number.value:
-                missing.append("Request Number")
-            if not f_title.value:
-                missing.append("Title")
-            if not f_requester_name.value:
-                missing.append("Requester Name")
-            if missing:
-                form_error.set_text(f"Required: {', '.join(missing)}")
-                return
-
+        def _build_add_payload() -> dict:
             payload: dict = {
                 "request_number": f_request_number.value.strip(),
                 "request_source": f_request_source.value,
@@ -461,18 +456,34 @@ async def requests_list_page() -> None:
                 payload["received_date"] = f_received_date.value
             if f_product_type.value:
                 payload["product_type"] = f_product_type.value
+            return payload
 
-            try:
-                await api_post("/requests", json=payload)
-                add_dialog.close()
-                ui.notify("Request created successfully.", type="positive")
-                await load_requests()
-            except Exception as exc:
-                ui.notify(f"Error: {exc}", type="negative")
+        async def _do_add_request():
+            await api_post("/requests", json=_build_add_payload())
+            add_dialog.close()
+            await load_requests()
 
         with ui.row().classes("justify-end q-mt-md"):
             ui.button("Cancel", on_click=add_dialog.close).props("flat")
-            ui.button("Create", on_click=submit_add_request).props("color=primary")
+            create_btn = ui.button("Create").props("color=primary")
+
+            def _on_create(_=None):
+                form_error.set_text("")
+                missing = []
+                if not f_request_number.value:
+                    missing.append("Request Number")
+                if not f_title.value:
+                    missing.append("Title")
+                if not f_requester_name.value:
+                    missing.append("Requester Name")
+                if missing:
+                    form_error.set_text(f"Required: {', '.join(missing)}")
+                    return
+                run_async(create_btn, _do_add_request,
+                          success="Request created successfully.",
+                          error_prefix="Failed to create request")()
+
+            create_btn.on("click", _on_create)
 
     # ─────────────────────────────────────────────────────────────
     # Data loader
@@ -486,9 +497,10 @@ async def requests_list_page() -> None:
             _render_segments()
             _refresh_table()
         except Exception as exc:
-            ui.notify(f"Failed to load requests: {exc}", type="negative")
+            notify_error(exc, "Failed to load requests")
 
-    await load_requests()
+    async with loading_state("Loading requests…"):
+        await load_requests()
 
 # ---------------------------------------------------------------------------
 # Route 2: /requests/{id} — Request Detail
@@ -646,25 +658,27 @@ async def request_detail_page(request_id: int) -> None:
                     with_input=True,
                 ).classes("w-72")
 
-                async def do_assign() -> None:
-                    selected_id = assign_select.value
-                    if not selected_id:
+                async def _do_assign() -> None:
+                    # /requests/{id}/assign takes assigned_to_id as a query param
+                    async with httpx.AsyncClient() as client:
+                        r = await client.post(
+                            f"{API_URL}/requests/{request_id}/assign",
+                            headers=auth_headers(),
+                            params={"assigned_to_id": assign_select.value},
+                        )
+                        r.raise_for_status()
+
+                assign_btn = ui.button("Assign", icon="person_add").props("color=primary")
+
+                def _on_assign(_=None):
+                    if not assign_select.value:
                         ui.notify("Please select a user.", type="warning")
                         return
-                    try:
-                        # /requests/{id}/assign takes assigned_to_id as a query param
-                        async with httpx.AsyncClient() as client:
-                            r = await client.post(
-                                f"{API_URL}/requests/{request_id}/assign",
-                                headers=auth_headers(),
-                                params={"assigned_to_id": selected_id},
-                            )
-                            r.raise_for_status()
-                        ui.notify("Request assigned successfully.", type="positive")
-                    except Exception as exc:
-                        ui.notify(f"Assignment failed: {exc}", type="negative")
+                    run_async(assign_btn, _do_assign,
+                              success="Request assigned successfully.",
+                              error_prefix="Assignment failed")()
 
-                ui.button("Assign", icon="person_add", on_click=do_assign).props("color=primary")
+                assign_btn.on("click", _on_assign)
 
         # ── Linked estimations ───────────────────────────────────────────────
         with ui.card().classes("w-full q-mb-md"):
@@ -744,12 +758,7 @@ async def request_detail_page(request_id: int) -> None:
 
         edit_error = ui.label("").classes("text-negative text-caption")
 
-        async def submit_edit_request() -> None:
-            edit_error.set_text("")
-            if not e_title.value.strip():
-                edit_error.set_text("Title is required.")
-                return
-
+        async def _do_edit_request() -> None:
             payload: dict = {
                 "title": e_title.value.strip(),
                 "description": e_description.value.strip() or None,
@@ -757,19 +766,25 @@ async def request_detail_page(request_id: int) -> None:
                 "status": e_status.value,
                 "notes": e_notes.value.strip() or None,
             }
-
-            try:
-                await api_put(f"/requests/{request_id}", json=payload)
-                edit_dialog.close()
-                ui.notify("Request updated. Refreshing…", type="positive")
-                # Reload the page to reflect new values
-                ui.navigate.to(f"/requests/{request_id}")
-            except Exception as exc:
-                ui.notify(f"Update failed: {exc}", type="negative")
+            await api_put(f"/requests/{request_id}", json=payload)
+            edit_dialog.close()
+            # Reload the page to reflect new values
+            ui.navigate.to(f"/requests/{request_id}")
 
         with ui.row().classes("justify-end q-mt-md"):
             ui.button("Cancel", on_click=edit_dialog.close).props("flat")
-            ui.button("Save", on_click=submit_edit_request).props("color=primary")
+            save_btn = ui.button("Save").props("color=primary")
+
+            def _on_save(_=None):
+                edit_error.set_text("")
+                if not e_title.value.strip():
+                    edit_error.set_text("Title is required.")
+                    return
+                run_async(save_btn, _do_edit_request,
+                          success="Request updated.",
+                          error_prefix="Update failed")()
+
+            save_btn.on("click", _on_save)
 
 
 # ---------------------------------------------------------------------------

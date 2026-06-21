@@ -29,6 +29,8 @@ from frontend_nicegui.app import (
     api_put,
     current_user,
     is_authenticated,
+    loading_state,
+    run_async,
     show_error_page,
     sidebar,
 )
@@ -59,6 +61,27 @@ _PERMISSIONS: list[tuple[str, str]] = [
     ("LDAP Sync",            "ldap_sync"),
     ("Reinit Registries",    "reinit_registries"),
 ]
+
+# Short human descriptions of what each permission grants (for row tooltips).
+_PERMISSION_DESCRIPTIONS: dict[str, str] = {
+    "view_estimations":   "View existing estimations.",
+    "create_estimations": "Create and edit estimations.",
+    "approve_estimations": "Approve or reject submitted estimations.",
+    "manage_users":       "Create, edit and delete user accounts.",
+    "view_reports":       "View generated reports.",
+    "download_reports":   "Download reports as PDF / Word / Excel.",
+    "manage_features":    "Add, edit and remove catalog features.",
+    "manage_duts":        "Manage the DUT (device) registry.",
+    "manage_profiles":    "Manage test configuration profiles.",
+    "manage_team":        "Manage team members and assignments.",
+    "manage_integrations": "Configure Redmine / JIRA / Outline integrations.",
+    "manage_settings":    "Change global application settings.",
+    "view_audit_log":     "View the security / audit log.",
+    "view_requests":      "View incoming test requests.",
+    "manage_requests":    "Triage and manage test requests.",
+    "ldap_sync":          "Trigger LDAP user synchronization.",
+    "reinit_registries":  "Re-initialize seed registries.",
+}
 
 # Sensible built-in defaults (used when no rbac_matrix key exists in the DB)
 _DEFAULT_MATRIX: dict[str, list[str]] = {
@@ -150,18 +173,19 @@ async def rbac_page() -> None:
     with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
         # ── Sticky toolbar ──────────────────────────────────────
+        # Button refs captured here; click handlers wired through run_async
+        # once the async action functions are defined further below.
+        save_btn = reset_btn = reload_btn = None
         with ui.element("div").classes("ed-toolbar"):
             if role == "ADMIN":
-                ui.button("Save Changes", icon="save",
-                          on_click=lambda: save_matrix()) \
+                save_btn = ui.button("Save Changes", icon="save") \
                     .props("flat dense color=primary")
                 ui.element("div").classes("ed-toolbar-spacer")
-                ui.button("Reset Defaults", icon="restart_alt",
+                reset_btn = ui.button("Reset Defaults", icon="restart_alt",
                           on_click=lambda: reset_to_defaults()) \
                     .props("flat dense color=warning")
                 ui.element("div").classes("ed-toolbar-spacer")
-                ui.button("Reload", icon="refresh",
-                          on_click=lambda: reload_from_server()) \
+                reload_btn = ui.button("Reload", icon="refresh") \
                     .props("flat dense")
             ui.element("div").classes("ed-toolbar-grow")
             with ui.element("div").classes("ed-status-now"):
@@ -173,7 +197,20 @@ async def rbac_page() -> None:
             ui.label("RBAC Management").classes("text-h4 q-mb-md")
             ui.label(
                 "Configure which permissions each role grants across the application."
-            ).classes("ed-eyebrow").style("margin-bottom: 22px;")
+            ).classes("ed-eyebrow").style("margin-bottom: 14px;")
+
+            # ---- prominent note (read before editing) --------------------------
+            with ui.element("div").classes("ed-card") \
+                    .style("border-color: var(--q-info); margin-bottom: 18px;"):
+                with ui.row().classes("items-start gap-2"):
+                    ui.icon("info", size="sm").classes("text-info q-mt-xs")
+                    ui.label(
+                        "ADMIN always has all permissions regardless of the "
+                        "checkboxes below. Changes saved here update the "
+                        "rbac_matrix configuration key used by the frontend for "
+                        "UI-level access hints — backend endpoints enforce role "
+                        "checks independently via the RequireRole dependency."
+                    ).classes("text-caption")
 
             # ---- access guard --------------------------------------------------
             if role != "ADMIN":
@@ -189,7 +226,8 @@ async def rbac_page() -> None:
         # ---- load current matrix from /configuration ----------------------------
         raw_matrix_value: str | None = None
         try:
-            config_list: list[dict[str, Any]] = await api_get("/configuration")
+            async with loading_state("Loading permissions…"):
+                config_list: list[dict[str, Any]] = await api_get("/configuration")
             for item in config_list:
                 if item.get("key") == "rbac_matrix":
                     raw_matrix_value = item.get("value")
@@ -255,10 +293,13 @@ async def rbac_page() -> None:
                 )
                 with ui.row().classes(row_class):
 
-                    # Permission label
+                    # Permission label (with a help tooltip describing the grant)
+                    perm_desc = _PERMISSION_DESCRIPTIONS.get(
+                        perm_key, f"Controls the '{label}' capability."
+                    )
                     ui.label(label).style("min-width: 220px; flex: 1;").classes(
                         "text-body2"
-                    )
+                    ).tooltip(perm_desc)
 
                     # One checkbox per role
                     for r in _ROLES:
@@ -274,6 +315,8 @@ async def rbac_page() -> None:
                                 # permissions, which would be misleading
                                 # (the backend enforces ADMIN = superuser anyway).
                             )
+                            # a11y: announce both the permission and the role.
+                            cb.props(f'aria-label="{label} for {r}"')
                             if r == "ADMIN":
                                 cb.props("disable")
                                 cb.value = True  # always ticked
@@ -301,65 +344,68 @@ async def rbac_page() -> None:
             """Persist the current checkbox state to the backend."""
             current_matrix = _collect_matrix()
             payload_value = _matrix_to_json(current_matrix)
-            try:
-                await api_put(
-                    "/configuration/rbac_matrix",
-                    json={"value": payload_value},
-                )
-                # Update the live matrix state
-                for r in _ROLES:
-                    matrix[r] = set(current_matrix[r])
-                ui.notify("RBAC matrix saved successfully.", type="positive")
-                status_label.set_text("Matrix saved.")
-            except Exception as exc:
-                ui.notify(f"Failed to save RBAC matrix: {exc}", type="negative")
-                status_label.set_text(f"Save error: {exc}")
+            await api_put(
+                "/configuration/rbac_matrix",
+                json={"value": payload_value},
+            )
+            # Update the live matrix state
+            for r in _ROLES:
+                matrix[r] = set(current_matrix[r])
+            status_label.set_text("Matrix saved.")
 
         async def reset_to_defaults() -> None:
             """Show a confirmation dialog then restore factory defaults."""
-            with ui.dialog() as dialog, ui.card().classes("w-[420px] q-pa-md"):
+            with ui.dialog() as dialog, ui.card().classes("w-[440px] q-pa-md"):
                 ui.label("Reset to Defaults?").classes("text-h6")
                 ui.separator()
                 ui.label(
-                    "This will restore the built-in default permissions for every "
-                    "role and save them to the server. Any custom changes will be "
-                    "overwritten."
+                    "This will overwrite ALL custom permissions for every role "
+                    "with the built-in defaults and save them to the server. "
+                    "ADMIN always retains all permissions. This cannot be undone."
                 ).classes("text-body2 text-grey q-mb-md")
 
-                async def confirm_reset() -> None:
-                    dialog.close()
-                    default_matrix = {
-                        r: list(perms) for r, perms in _DEFAULT_MATRIX.items()
-                    }
-                    # Apply defaults to checkboxes
+                ack_cb = ui.checkbox(
+                    "I understand this overwrites all custom permissions"
+                ).classes("q-mb-sm")
+
+                default_matrix = {
+                    r: list(perms) for r, perms in _DEFAULT_MATRIX.items()
+                }
+
+                async def _do_reset():
+                    payload_value = _matrix_to_json(default_matrix)
+                    await api_put(
+                        "/configuration/rbac_matrix",
+                        json={"value": payload_value},
+                    )
+                    # Apply defaults to checkboxes + live state
                     for (perm_key, r), cb in checkbox_refs.items():
                         if r == "ADMIN":
                             continue  # always ticked, already disabled
                         cb.value = perm_key in default_matrix.get(r, [])
-                    # Persist to server
-                    payload_value = _matrix_to_json(default_matrix)
-                    try:
-                        await api_put(
-                            "/configuration/rbac_matrix",
-                            json={"value": payload_value},
-                        )
-                        for r in _ROLES:
-                            matrix[r] = set(default_matrix[r])
-                        ui.notify("RBAC matrix reset to defaults.", type="positive")
-                        status_label.set_text("Reset to defaults.")
-                    except Exception as exc:
-                        ui.notify(
-                            f"Failed to save default matrix: {exc}",
-                            type="negative",
-                        )
-                        status_label.set_text(f"Reset error: {exc}")
+                    for r in _ROLES:
+                        matrix[r] = set(default_matrix[r])
+                    status_label.set_text("Reset to defaults.")
+
+                async def _on_reset(_):
+                    dialog.close()
 
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button(
-                        "Reset to Defaults",
-                        on_click=confirm_reset,
-                    ).props("color=warning")
+                    confirm_btn = ui.button("Reset to Defaults").props("color=warning")
+                    confirm_btn.on_click(run_async(
+                        confirm_btn,
+                        _do_reset,
+                        success="RBAC matrix reset to defaults.",
+                        on_success=_on_reset,
+                        error_prefix="Failed to save default matrix",
+                    ))
+
+                def _gate() -> None:
+                    confirm_btn.set_enabled(bool(ack_cb.value))
+
+                _gate()
+                ack_cb.on_value_change(lambda _: _gate())
 
             dialog.open()
 
@@ -388,14 +434,20 @@ async def rbac_page() -> None:
             ui.notify("RBAC matrix reloaded from server.", type="info")
             status_label.set_text("Reloaded from server.")
 
-        # ---- info note (action buttons live in the sticky toolbar) ---------------
-        with ui.row().classes("items-start gap-2 q-mt-md"):
-            ui.icon("info", size="xs").classes("text-grey q-mt-xs")
-            ui.label(
-                "Note: ADMIN always has all permissions regardless of the checkboxes "
-                "shown above. Changes saved here update the rbac_matrix configuration "
-                "key used by the frontend for UI-level access hints. Backend endpoints "
-                "enforce role checks independently via the RequireRole dependency."
-            ).classes("text-caption text-grey")
+        # ---- wire toolbar buttons through run_async (defined above) --------------
+        # (The prominent ADMIN-permissions note now lives at the TOP of the page.)
+        if save_btn is not None:
+            save_btn.on_click(run_async(
+                save_btn,
+                save_matrix,
+                success="RBAC matrix saved successfully.",
+                error_prefix="Failed to save RBAC matrix",
+            ))
+        if reload_btn is not None:
+            reload_btn.on_click(run_async(
+                reload_btn,
+                reload_from_server,
+                error_prefix="Reload failed",
+            ))
 
         status_label  # silence linter — defined above and referenced inside actions

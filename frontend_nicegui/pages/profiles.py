@@ -14,7 +14,10 @@ from frontend_nicegui.app import (
     api_get,
     api_post,
     api_put,
+    empty_state,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -80,6 +83,8 @@ async def profiles_page() -> None:
                     row_key="id",
                     pagination={"rowsPerPage": 25},
                 ).classes("w-full").props("flat")
+                empty_holder = ui.element("div").classes("w-full")
+                empty_holder.set_visibility(False)
 
         # Truncate long descriptions in the table cell
         table.add_slot(
@@ -113,11 +118,11 @@ async def profiles_page() -> None:
                     dense flat round icon="edit" color="primary" size="sm"
                     @click="$parent.$emit('edit-row', props.row)"
                     class="q-mr-xs"
-                />
+                ><q-tooltip>Edit</q-tooltip></q-btn>
                 <q-btn
                     dense flat round icon="delete" color="negative" size="sm"
                     @click="$parent.$emit('delete-row', props.row)"
-                />
+                ><q-tooltip>Delete</q-tooltip></q-btn>
             </q-td>
             """,
         )
@@ -203,6 +208,13 @@ async def profiles_page() -> None:
                 ]
             table.rows = rows
             table.update()
+            no_rows = not rows
+            empty_holder.clear()
+            if no_rows:
+                with empty_holder:
+                    empty_state("No results match your filters.")
+            empty_holder.set_visibility(no_rows)
+            table.set_visibility(not no_rows)
 
         search_input.on("update:model-value", lambda _: _apply_search())
 
@@ -211,7 +223,8 @@ async def profiles_page() -> None:
         # ------------------------------------------------------------------ #
         async def refresh() -> None:
             try:
-                rows: list = await api_get("/profiles")
+                async with loading_state():
+                    rows: list = await api_get("/profiles")
                 all_rows_ref["data"] = rows
                 _render_kpis()
                 _render_segments()
@@ -223,10 +236,10 @@ async def profiles_page() -> None:
         # Add dialog                                                            #
         # ------------------------------------------------------------------ #
         async def show_add_dialog() -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Add Test Profile").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *").classes("w-full")
+                name_input = ui.input("Name *").props("autofocus").classes("w-full")
                 description_input = ui.textarea("Description").classes("w-full")
                 multiplier_input = ui.number(
                     "Effort Multiplier",
@@ -248,27 +261,24 @@ async def profiles_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "description": str(description_input.value or "").strip(),
-                            "effort_multiplier": float(multiplier_input.value or 1.0),
-                        }
-                        if product_type_input.value:
-                            payload["product_type"] = product_type_input.value
-                        await api_post(
-                            "/profiles",
-                            json=payload,
-                        )
-                        dialog.close()
-                        ui.notify("Profile created.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error creating profile: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "description": str(description_input.value or "").strip(),
+                        "effort_multiplier": float(multiplier_input.value or 1.0),
+                    }
+                    if product_type_input.value:
+                        payload["product_type"] = product_type_input.value
+                    await api_post(
+                        "/profiles",
+                        json=payload,
+                    )
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="Profile created.", error_prefix="Save failed"))
 
             dialog.open()
 
@@ -276,10 +286,10 @@ async def profiles_page() -> None:
         # Edit dialog                                                           #
         # ------------------------------------------------------------------ #
         async def show_edit_dialog(row: dict) -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Edit Test Profile").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
+                name_input = ui.input("Name *", value=row.get("name", "")).props("autofocus").classes("w-full")
                 description_input = ui.textarea(
                     "Description",
                     value=row.get("description", "") or "",
@@ -308,27 +318,24 @@ async def profiles_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "description": str(description_input.value or "").strip(),
-                            "effort_multiplier": float(multiplier_input.value or 1.0),
-                            "product_type": product_type_input.value if product_type_input.value else None,
-                            "is_active": is_active_input.value,
-                        }
-                        await api_put(
-                            f"/profiles/{row['id']}",
-                            json=payload,
-                        )
-                        dialog.close()
-                        ui.notify("Profile updated.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error updating profile: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "description": str(description_input.value or "").strip(),
+                        "effort_multiplier": float(multiplier_input.value or 1.0),
+                        "product_type": product_type_input.value if product_type_input.value else None,
+                        "is_active": is_active_input.value,
+                    }
+                    await api_put(
+                        f"/profiles/{row['id']}",
+                        json=payload,
+                    )
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="Profile updated.", error_prefix="Save failed"))
 
             dialog.open()
 
@@ -344,17 +351,14 @@ async def profiles_page() -> None:
                 ).classes("text-body2 q-mt-sm")
 
                 async def confirm() -> None:
-                    try:
-                        await api_delete(f"/profiles/{row['id']}")
-                        dialog.close()
-                        ui.notify("Profile deleted.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error deleting profile: {exc}", type="negative")
+                    await api_delete(f"/profiles/{row['id']}")
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Delete", on_click=confirm).props("color=negative")
+                    del_btn = ui.button("Delete").props("color=negative")
+                    del_btn.on("click", run_async(del_btn, confirm, success="Profile deleted.", error_prefix="Delete failed"))
 
             dialog.open()
 

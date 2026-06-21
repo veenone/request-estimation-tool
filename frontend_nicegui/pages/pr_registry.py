@@ -7,7 +7,12 @@ API:
 """
 
 from nicegui import ui
-from frontend_nicegui.app import api_get, is_authenticated, sidebar
+from frontend_nicegui.app import (
+    api_get,
+    is_authenticated,
+    run_async,
+    sidebar,
+)
 
 
 _COLUMNS = [
@@ -44,10 +49,10 @@ async def pr_registry_page() -> None:
     with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
         # ── Sticky toolbar ──────────────────────────────────────
+        refresh_btn = None
         with ui.element("div").classes("ed-toolbar"):
             if jira_ok:
-                ui.button("Refresh", icon="refresh",
-                          on_click=lambda: _refresh()) \
+                refresh_btn = ui.button("Refresh", icon="refresh") \
                     .props("flat dense color=secondary")
             ui.element("div").classes("ed-toolbar-grow")
             with ui.element("div").classes("ed-status-now"):
@@ -191,17 +196,21 @@ async def pr_registry_page() -> None:
                     </q-td>
                 """)
 
-            async def _refresh() -> None:
+            async def _refresh() -> int:
                 nonlocal all_rows
-                try:
-                    items = await api_get("/integrations/JIRA/pr-items")
-                    all_rows = items if isinstance(items, list) else []
-                    _render_kpis()
-                    _render_segments()
-                    _filter_table()
-                    ui.notify(f"Loaded {len(all_rows)} PR item(s).", type="positive")
-                except Exception as exc:
-                    ui.notify(f"Failed to load PR items: {exc}", type="negative")
+                items = await api_get("/integrations/JIRA/pr-items")
+                all_rows = items if isinstance(items, list) else []
+                _render_kpis()
+                _render_segments()
+                _filter_table()
+                return len(all_rows)
+
+            if refresh_btn is not None:
+                refresh_btn.on("click", run_async(
+                    refresh_btn, _refresh,
+                    on_success=lambda n: ui.notify(f"Loaded {n} PR item(s).", type="positive"),
+                    error_prefix="Failed to load PR items",
+                ))
 
             # Detail dialog on row click
             async def _show_detail(e) -> None:

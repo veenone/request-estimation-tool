@@ -9,7 +9,20 @@ import asyncio
 import json
 
 from nicegui import ui
-from frontend_nicegui.app import API_URL, _safe_storage, api_get, api_post, api_put, auth_headers, is_authenticated, show_error_page, sidebar
+from frontend_nicegui.app import (
+    API_URL,
+    _safe_storage,
+    api_get,
+    api_post,
+    api_put,
+    auth_headers,
+    is_authenticated,
+    loading_state,
+    notify_error,
+    run_async,
+    show_error_page,
+    sidebar,
+)
 
 # ---------------------------------------------------------------------------
 # Role mapping constants
@@ -107,7 +120,8 @@ async def settings_page():
 
     # ---- Load configuration before building UI ----------------------------------
     try:
-        config_list: list[dict] = await api_get("/configuration")
+        async with loading_state("Loading configuration…"):
+            config_list: list[dict] = await api_get("/configuration")
     except Exception as exc:
         show_error_page(exc)
         return
@@ -116,13 +130,17 @@ async def settings_page():
 
         # ── Sticky toolbar ──────────────────────────────────────
         with ui.element("div").classes("ed-toolbar"):
-            ui.button("Save Changes", icon="save",
-                      on_click=lambda: save_changes()) \
+            save_btn = ui.button("Save Changes", icon="save") \
                 .props("flat dense color=primary")
+            # Unsaved-changes indicator (hidden until something differs)
+            dirty_label = ui.label("● Unsaved changes") \
+                .classes("ed-mono q-ml-sm") \
+                .style("color: var(--q-warning);")
+            dirty_label.visible = False
             ui.element("div").classes("ed-toolbar-spacer")
-            ui.button("Reset Defaults", icon="restart_alt",
-                      on_click=lambda: confirm_reset()) \
+            reset_btn = ui.button("Reset Defaults", icon="restart_alt") \
                 .props("flat dense color=warning")
+            reset_btn.on("click", lambda: confirm_reset())
             ui.element("div").classes("ed-toolbar-grow")
             with ui.element("div").classes("ed-status-now"):
                 ui.element("span").classes("ed-status-dot")
@@ -196,13 +214,13 @@ async def settings_page():
                             if key == "logo_url":
                                 _logo_inp = inp  # capture for closure
                                 _logo_preview = None
-                                with ui.row().classes("items-center gap-2 q-mt-xs"):
+                                with ui.row().classes("items-center gap-2 q-mt-xs") as _logo_row:
                                     if value:
                                         _logo_preview = ui.image(value).classes("q-mr-sm").style(
                                             "max-height: 40px; max-width: 120px;"
                                         )
 
-                                    def _make_logo_handler(logo_input=_logo_inp, logo_preview=_logo_preview):
+                                    def _make_logo_handler(logo_input=_logo_inp, logo_preview=_logo_preview, logo_row=_logo_row):
                                         async def _handle_logo_upload(e) -> None:
                                             import httpx
                                             # NiceGUI 3.8+: e is UploadEventArguments with .file (FileUpload)
@@ -238,16 +256,25 @@ async def settings_page():
                                                 # Invalidate the sidebar/theme cache so the next render
                                                 # picks up the freshly-saved logo URL.
                                                 _safe_storage().pop("_rbac_cache", None)
+                                                # Refresh the inline preview so the user sees the new
+                                                # logo immediately. Append a cache-busting query param
+                                                # so the browser does not show a stale cached image.
+                                                if new_url:
+                                                    import time as _time
+                                                    bust = f"{new_url}{'&' if '?' in new_url else '?'}v={int(_time.time())}"
+                                                    if logo_preview is not None:
+                                                        logo_preview.set_source(bust)
+                                                    else:
+                                                        with logo_row:
+                                                            ui.image(bust).classes("q-mr-sm").style(
+                                                                "max-height: 40px; max-width: 120px;"
+                                                            )
                                                 ui.notify(
-                                                    "Logo uploaded and saved. Reloading page...",
+                                                    "Logo uploaded and saved.",
                                                     type="positive",
                                                 )
-                                                ui.timer(1.5, lambda: ui.navigate.to("/settings"), once=True)
                                             except Exception as exc:
-                                                ui.notify(
-                                                    f"Logo upload failed: {exc}",
-                                                    type="negative",
-                                                )
+                                                notify_error(exc, "Logo upload failed")
                                         return _handle_logo_upload
 
                                     ui.upload(
@@ -328,6 +355,38 @@ async def settings_page():
                             ).classes("flex-grow")
                             mapping_inputs[cfg_key][app_role] = role_input
 
+        # ---- dirty tracking ------------------------------------------------------
+        def _is_dirty() -> bool:
+            for key, inp in inputs.items():
+                if (inp.value or "").strip() != original_values.get(key, ""):
+                    return True
+            for cfg_key, role_inputs in mapping_inputs.items():
+                new_mapping = {
+                    role: v
+                    for role, inp in role_inputs.items()
+                    if (v := (inp.value or "").strip())
+                }
+                new_json = json.dumps(new_mapping, separators=(",", ":"))
+                if new_json != original_values.get(cfg_key, "{}"):
+                    return True
+            return False
+
+        def _recompute_dirty(*_) -> None:
+            dirty = _is_dirty()
+            dirty_label.visible = dirty
+            save_btn.set_enabled(dirty)
+            save_btn.set_text("Save Changes" if dirty else "No changes")
+
+        # Wire every input to the dirty recompute
+        for _inp in inputs.values():
+            _inp.on("update:model-value", _recompute_dirty)
+        for _role_inputs in mapping_inputs.values():
+            for _inp in _role_inputs.values():
+                _inp.on("update:model-value", _recompute_dirty)
+
+        # Initial state: nothing changed yet
+        _recompute_dirty()
+
         # ---- action buttons ------------------------------------------------------
         status_label = ui.label("").classes("text-caption q-mt-sm")
 
@@ -374,6 +433,7 @@ async def settings_page():
                 status_label.set_text(
                     f"Partial save — {len(errors)} error(s). See notification."
                 )
+                _recompute_dirty()
             elif changed:
                 # Invalidate cached config so sidebar/theme picks up new values
                 _safe_storage().pop("_rbac_cache", None)
@@ -387,6 +447,12 @@ async def settings_page():
             else:
                 ui.notify("No changes detected.", type="info")
                 status_label.set_text("No changes to save.")
+                _recompute_dirty()
+
+        # Wire the toolbar Save button (disables + spins during the PUTs)
+        save_btn.on("click", run_async(
+            save_btn, save_changes, error_prefix="Save failed",
+        ))
 
         async def confirm_reset():
             """Show a confirmation dialog then reload from the API."""
@@ -424,50 +490,54 @@ async def settings_page():
                 original_values[key] = val
                 if key in inputs:
                     inputs[key].value = val
+            # Reset role-mapping matrix inputs to their fresh server values
+            for cfg_key, role_inputs in mapping_inputs.items():
+                raw = original_values.get(cfg_key, "{}")
+                try:
+                    mapping = json.loads(raw) if raw else {}
+                    if not isinstance(mapping, dict):
+                        mapping = {}
+                except (json.JSONDecodeError, TypeError):
+                    mapping = {}
+                for role, inp in role_inputs.items():
+                    inp.value = mapping.get(role, "")
             status_label.set_text("Reloaded from server.")
             ui.notify("Configuration reloaded from server.", type="info")
+            _recompute_dirty()
 
         # ---- Connection test functions ──────────────────────────────────────
+        def _field_value(key: str) -> str:
+            inp = inputs.get(key)
+            return (inp.value or "").strip() if inp is not None else ""
+
         async def test_smtp():
-            ui.notify("Testing SMTP connection...", type="info", timeout=2000)
-            try:
-                result = await api_post("/integrations/EMAIL/test")
-                if result.get("success"):
-                    ui.notify(f"SMTP OK: {result.get('message', '')}",
-                              type="positive", timeout=5000)
-                else:
-                    ui.notify(f"SMTP failed: {result.get('message', '')}",
-                              type="warning", timeout=6000)
-            except Exception as exc:
-                ui.notify(f"SMTP test error: {exc}", type="negative")
+            result = await api_post("/integrations/EMAIL/test")
+            if result.get("success"):
+                ui.notify(f"SMTP OK: {result.get('message', '')}",
+                          type="positive", timeout=5000)
+            else:
+                ui.notify(f"SMTP failed: {result.get('message', '')}",
+                          type="warning", timeout=6000)
 
         async def test_ldap():
-            ui.notify("Testing LDAP connection...", type="info", timeout=2000)
-            try:
-                result = await api_post("/integrations/LDAP/test")
-                if result.get("success"):
-                    ui.notify(f"LDAP OK: {result.get('message', '')}",
-                              type="positive", timeout=5000)
-                else:
-                    ui.notify(f"LDAP failed: {result.get('message', '')}",
-                              type="warning", timeout=6000)
-            except Exception as exc:
-                ui.notify(f"LDAP test error: {exc}", type="negative")
+            result = await api_post("/integrations/LDAP/test")
+            if result.get("success"):
+                ui.notify(f"LDAP OK: {result.get('message', '')}",
+                          type="positive", timeout=5000)
+            else:
+                ui.notify(f"LDAP failed: {result.get('message', '')}",
+                          type="warning", timeout=6000)
 
         async def sync_ldap_users():
-            ui.notify("Syncing LDAP users...", type="info", timeout=2000)
-            try:
-                result = await api_post("/auth/ldap/sync")
-                synced = result.get("synced", 0)
-                created = result.get("created", 0)
-                updated = result.get("updated", 0)
-                ui.notify(
-                    f"LDAP sync complete: {synced} synced, "
-                    f"{created} created, {updated} updated",
-                    type="positive", timeout=5000,
-                )
-            except Exception as exc:
-                ui.notify(f"LDAP sync error: {exc}", type="negative")
+            result = await api_post("/auth/ldap/sync")
+            synced = result.get("synced", 0)
+            created = result.get("created", 0)
+            updated = result.get("updated", 0)
+            ui.notify(
+                f"LDAP sync complete: {synced} synced, "
+                f"{created} created, {updated} updated",
+                type="positive", timeout=5000,
+            )
 
         # ---- Connection test card ──────────────────────────────────────────
         with ui.element("div").classes("ed-card").style("margin-top: 22px;"):
@@ -475,9 +545,33 @@ async def settings_page():
                 ui.label("Connection Tests").classes("ed-cap")
                 ui.label("validate integration credentials").classes("ed-card-head-meta")
             with ui.row().classes("gap-2 flex-wrap"):
-                ui.button("Test SMTP", icon="email",
-                          on_click=test_smtp).props("flat color=secondary")
-                ui.button("Test LDAP", icon="domain",
-                          on_click=test_ldap).props("flat color=secondary")
-                ui.button("Sync LDAP Users", icon="sync",
-                          on_click=sync_ldap_users).props("flat color=accent")
+                smtp_btn = ui.button("Test SMTP", icon="email").props("flat color=secondary")
+
+                def _on_smtp_click(*_):
+                    if not _field_value("smtp_host"):
+                        ui.notify("SMTP Host is required before testing. Save it first.",
+                                  type="warning")
+                        return
+                    if not _field_value("smtp_port"):
+                        ui.notify("SMTP Port is required before testing. Save it first.",
+                                  type="warning")
+                        return
+                    return run_async(smtp_btn, test_smtp, error_prefix="SMTP test error")()
+
+                smtp_btn.on("click", _on_smtp_click)
+
+                ldap_btn = ui.button("Test LDAP", icon="domain").props("flat color=secondary")
+
+                def _on_ldap_click(*_):
+                    if not _field_value("ldap_url"):
+                        ui.notify("LDAP URL is required before testing. Save it first.",
+                                  type="warning")
+                        return
+                    return run_async(ldap_btn, test_ldap, error_prefix="LDAP test error")()
+
+                ldap_btn.on("click", _on_ldap_click)
+
+                ldap_sync_btn = ui.button("Sync LDAP Users", icon="sync").props("flat color=accent")
+                ldap_sync_btn.on("click", run_async(
+                    ldap_sync_btn, sync_ldap_users, error_prefix="LDAP sync error",
+                ))

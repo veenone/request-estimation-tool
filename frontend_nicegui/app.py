@@ -19,6 +19,9 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import os
+import contextlib
+import inspect
+from datetime import datetime, timezone
 
 import httpx
 from nicegui import app, ui
@@ -136,7 +139,8 @@ ui.add_head_html("""
   /* Reusable filter components (used by data-mgmt list pages + inbox) */
   .ed-stat-tile     { cursor: pointer; transition: background 160ms ease; }
   .ed-stat-tile:hover { background: var(--ed-bg-soft); }
-  .ed-stat-tile.active { background: color-mix(in srgb, var(--q-primary) 10%, transparent); }
+  .ed-stat-tile.active { background: color-mix(in srgb, var(--q-primary) 12%, transparent);
+                         box-shadow: inset 0 0 0 2px var(--q-primary); }
   .ed-stat-tile.active .ed-strip-num { color: var(--q-primary); }
   .ed-stat-tile-sub { font-family: inherit; font-size: 11px;
                       opacity: 0.6; margin-top: 4px; }
@@ -681,6 +685,137 @@ async def api_delete(path: str) -> dict:
         if r.status_code == 204 or not r.content:
             return {}
         return r.json()
+
+
+# ---------------------------------------------------------------------------
+# Shared UI interaction primitives
+#
+# These exist so every page handles async work, errors, timestamps, empty
+# states and icon buttons the SAME way. Prefer these over re-implementing the
+# pattern per page.
+# ---------------------------------------------------------------------------
+
+def notify_error(exc: Exception, prefix: str = "Error") -> None:
+    """Standardized error toast: human-readable detail, multi-line, dismissable."""
+    ui.notify(
+        f"{prefix}: {extract_error_detail(exc)}",
+        type="negative",
+        multi_line=True,
+        close_button="OK",
+        timeout=6000,
+    )
+
+
+def run_async(
+    button: ui.button,
+    action,
+    *,
+    success: str | None = None,
+    on_success=None,
+    error_prefix: str = "Error",
+):
+    """Return an on_click handler that guards an async ``action``.
+
+    While ``action`` runs, the button is disabled and shows Quasar's built-in
+    ``loading`` spinner — preventing double-submit and giving instant feedback.
+    Errors are reported through :func:`notify_error`; on success an optional
+    toast is shown and ``on_success(result)`` (sync or async) is invoked.
+
+    ``action`` is a no-argument callable returning an awaitable.
+    """
+    async def _handler(*_):
+        if getattr(button, "_ed_busy", False):
+            return
+        button._ed_busy = True
+        was_enabled = button.enabled
+        button.enabled = False
+        button.props("loading")
+        try:
+            result = await action()
+            if success:
+                ui.notify(success, type="positive")
+            if on_success is not None:
+                maybe = on_success(result)
+                if inspect.isawaitable(maybe):
+                    await maybe
+            return result
+        except Exception as exc:  # noqa: BLE001 — surface everything to the user
+            notify_error(exc, error_prefix)
+        finally:
+            button._ed_busy = False
+            button.props(remove="loading")
+            button.enabled = was_enabled
+    return _handler
+
+
+@contextlib.asynccontextmanager
+async def loading_state(message: str = "Loading…"):
+    """Show a centered spinner in the current container while awaiting work.
+
+    Usage::
+
+        async with loading_state():
+            rows = await api_get("/things")
+        build_table(rows)   # spinner already removed
+    """
+    holder = ui.row().classes("w-full justify-center items-center q-pa-lg")
+    with holder:
+        ui.spinner(size="lg")
+        ui.label(message).classes("ed-eyebrow q-ml-sm")
+    try:
+        yield
+    finally:
+        holder.delete()
+
+
+def empty_state(message: str = "No results") -> ui.element:
+    """Render the shared ``ed-empty`` placeholder (use when a list is empty)."""
+    el = ui.element("div").classes("ed-empty")
+    with el:
+        ui.label(message)
+    return el
+
+
+def icon_action(icon: str, tooltip: str, on_click=None, *, color: str | None = None) -> ui.button:
+    """A flat icon button that ALWAYS carries a tooltip (a11y + discoverability).
+
+    Use for table row actions (edit/delete) instead of bare ``ui.button(icon=…)``.
+    """
+    btn = ui.button(icon=icon, on_click=on_click).props("flat dense round size=sm")
+    if color:
+        btn.props(f"color={color}")
+    btn.tooltip(tooltip)
+    return btn
+
+
+def format_age(iso: str | None) -> str:
+    """Compact relative age, e.g. ``today`` / ``3d`` / ``2w`` / ``5mo``."""
+    if not iso:
+        return ""
+    try:
+        d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
+        now = datetime.now(timezone.utc) if d.tzinfo else datetime.now()
+        days = (now - d).days
+        if days < 1:
+            return "today"
+        if days < 7:
+            return f"{days}d"
+        if days < 30:
+            return f"{days // 7}w"
+        return f"{days // 30}mo"
+    except Exception:
+        return iso[:10]
+
+
+def format_datetime(iso: str | None) -> str:
+    """Human-readable absolute timestamp for tooltips, e.g. ``21 Jun 2026, 14:32``."""
+    if not iso:
+        return ""
+    try:
+        d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
+        return d.strftime("%d %b %Y, %H:%M")
+    except Exception:
+        return iso[:19].replace("T", " ")
 
 
 # ---------------------------------------------------------------------------
@@ -1466,8 +1601,11 @@ async def dashboard_page():
                 "#26C6DA", "#EC407A", "#8D6E63", "#78909C", "#FFEE58"]
 
     # ─── Helpers ─────────────────────────────────────────────────
-    def _kpi_hero(label: str, value: str, sub: str = "", icon: str = "") -> None:
-        with ui.element("div").classes("ed-kpi-hero-cell"):
+    def _kpi_hero(label: str, value: str, sub: str = "", icon: str = "", help: str = "") -> None:
+        cell = ui.element("div").classes("ed-kpi-hero-cell")
+        if help:
+            cell.tooltip(help)
+        with cell:
             ui.label(label).classes("ed-eyebrow")
             ui.label(value).classes("ed-kpi-hero-num")
             if sub or icon:
@@ -1496,32 +1634,15 @@ async def dashboard_page():
             ui.label(num).classes("ed-feed-num")
             ui.label(meta).classes("ed-feed-meta")
 
-    def _format_age(iso: str | None) -> str:
-        if not iso:
-            return ""
-        try:
-            from datetime import datetime, timezone
-            d = datetime.fromisoformat(iso.replace("Z", "+00:00")) if "T" in iso else datetime.fromisoformat(iso)
-            now = datetime.now(timezone.utc) if d.tzinfo else datetime.now()
-            delta = now - d
-            days = delta.days
-            if days < 1:
-                return "today"
-            if days < 7:
-                return f"{days}d"
-            if days < 30:
-                return f"{days // 7}w"
-            return f"{days // 30}mo"
-        except Exception:
-            return iso[:10]
+    _format_age = format_age  # shared helper (single source of truth)
 
-    def _donut(title: str, series_name: str, data: list[dict]) -> None:
+    def _donut(title: str, series_name: str, data: list[dict], nav: str | None = None) -> None:
         with ui.element("div").classes("ed-card ed-chart-card"):
             with ui.element("div").classes("ed-card-head"):
                 ui.label(title).classes("ed-cap")
                 _t = sum(d.get("value", 0) for d in data)
                 ui.label(f"{_t} TOTAL").classes("ed-card-head-meta")
-            ui.echart({
+            chart = ui.echart({
                 "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
                 "legend": _legend,
                 "series": [{
@@ -1535,6 +1656,11 @@ async def dashboard_page():
                     "data": data,
                 }],
             }).classes("w-full")
+            # Drill-in: clicking a segment opens the related list page.
+            if nav:
+                chart.classes("cursor-pointer")
+                chart.on_point_click(lambda e, n=nav: ui.navigate.to(n))
+                chart.tooltip("Click a segment to open the list")
 
     def _bar(title: str, categories: list[str], values: list[int], color: str = "#42A5F5") -> None:
         with ui.element("div").classes("ed-card ed-chart-card"):
@@ -1602,6 +1728,8 @@ async def dashboard_page():
                     f"{util:.0f}%",
                     "of allocated capacity",
                     "speed",
+                    help="Average % of available hours consumed by assigned "
+                         "estimators across final + approved estimations.",
                 )
 
             # ── Pipeline flow card ──────────────────────────────
@@ -1648,6 +1776,7 @@ async def dashboard_page():
                         {"value": stats.get("estimations_approved", 0), "name": "Approved",
                          "itemStyle": {"color": "#4CAF50"}},
                     ],
+                    nav="/estimations",
                 )
 
                 # Requests donut
@@ -1664,7 +1793,7 @@ async def dashboard_page():
                 if rejected > 0:
                     req_data.append({"value": rejected, "name": "Other",
                                      "itemStyle": {"color": "#BDBDBD"}})
-                _donut(f"Requests · {total_req}", "Requests", req_data)
+                _donut(f"Requests · {total_req}", "Requests", req_data, nav="/requests")
 
             with ui.element("div").classes("ed-chart-grid"):
                 # Features by category
@@ -1676,11 +1805,14 @@ async def dashboard_page():
                         for i, (cat, cnt) in enumerate(feat_cat.items())
                     ]
                     _donut(f"Features · {sum(d['value'] for d in feat_data)}",
-                           "Features", feat_data)
+                           "Features", feat_data, nav="/features")
                 else:
                     with ui.element("div").classes("ed-card ed-chart-card"):
                         ui.label("Features").classes("ed-cap")
-                        ui.label("No features configured").classes("ed-empty q-mt-md")
+                        ui.label("No features configured yet").classes("ed-empty q-mt-md")
+                        ui.button("Configure Features", icon="category",
+                                  on_click=lambda: ui.navigate.to("/features")) \
+                            .props("flat dense color=primary").classes("q-mt-sm")
 
                 # Risks by likelihood
                 risk_lh = stats.get("risks_by_likelihood", {})
@@ -1693,11 +1825,14 @@ async def dashboard_page():
                         for lh, cnt in risk_lh.items()
                     ]
                     _donut(f"Risks · {sum(d['value'] for d in risk_lh_data)}",
-                           "Likelihood", risk_lh_data)
+                           "Likelihood", risk_lh_data, nav="/risks")
                 else:
                     with ui.element("div").classes("ed-card ed-chart-card"):
                         ui.label("Risk Likelihood").classes("ed-cap")
-                        ui.label("No risks configured").classes("ed-empty q-mt-md")
+                        ui.label("No risks configured yet").classes("ed-empty q-mt-md")
+                        ui.button("Add Risks", icon="warning",
+                                  on_click=lambda: ui.navigate.to("/risks")) \
+                            .props("flat dense color=primary").classes("q-mt-sm")
 
             # Tasks bar (full width since it's horizontal)
             tasks_type = stats.get("tasks_by_type", {})

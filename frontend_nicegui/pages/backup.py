@@ -13,6 +13,7 @@ from frontend_nicegui.app import (
     auth_headers,
     current_user,
     is_authenticated,
+    run_async,
     sidebar,
 )
 
@@ -33,10 +34,9 @@ async def backup_page():
     with ui.column().classes("w-full q-pa-md").style("gap: 0;"):
 
         # ── Sticky toolbar ──────────────────────────────────────
+        # (Download action lives as the primary action in the card body below
+        #  to avoid a duplicate button.)
         with ui.element("div").classes("ed-toolbar"):
-            ui.button("Download Backup", icon="download",
-                      on_click=lambda: ui.run_javascript(_download_backup_js())) \
-                .props("flat dense color=primary")
             ui.element("div").classes("ed-toolbar-grow")
             with ui.element("div").classes("ed-status-now"):
                 ui.element("span").classes("ed-status-dot")
@@ -81,9 +81,13 @@ async def backup_page():
                     "test profiles, team members, risk items, document types, public holidays) "
                     "as a JSON file you can store off-platform or hand to another instance."
                 ).style("font-size: 13px; opacity: 0.78; margin-bottom: 18px;")
-                ui.button("Download Backup", icon="download",
-                          on_click=lambda: ui.run_javascript(_download_backup_js())) \
+                download_btn = ui.button("Download Backup", icon="download") \
                     .props("color=primary")
+                download_btn.on_click(run_async(
+                    download_btn,
+                    lambda: ui.run_javascript(_download_backup_js()),
+                    error_prefix="Download failed",
+                ))
 
             # ── Restore section ────────────────────────────────
             with ui.element("div").classes("ed-card") \
@@ -105,10 +109,16 @@ async def backup_page():
 
                 result_container = ui.column().classes("w-full")
 
+                ui.label(
+                    "Select a file, then confirm the restore in the dialog that "
+                    "appears. Nothing is sent to the server until you confirm."
+                ).style("font-size: 12px; opacity: 0.7; margin-bottom: 6px;")
+                # No auto_upload: the file is only read locally on selection; the
+                # actual overwrite happens after explicit confirmation below.
                 ui.upload(
-                    label="Upload Backup File",
+                    label="Select Backup File",
                     on_upload=lambda e: _handle_restore(e),
-                    auto_upload=True,
+                    auto_upload=False,
                 ).props('accept=".json" color=secondary').classes("q-mb-md w-full")
 
             async def _handle_restore(e: events.UploadEventArguments):
@@ -130,46 +140,55 @@ async def backup_page():
                     ui.notify("Could not read upload file.", type="warning")
                     return
 
-                # Confirm dialog
+                # Confirm dialog — the restore (upload + overwrite) only runs
+                # when the user explicitly clicks "Restore" below.
                 with ui.dialog() as confirm_dlg, ui.card().classes("w-96"):
                     ui.label("Confirm Restore").classes("text-h6 q-mb-sm")
                     ui.label(
-                        "This will replace all current configuration data. "
-                        "Are you sure you want to continue?"
+                        f"Restore from '{fname}'? This OVERWRITES all current "
+                        "configuration data (features, task templates, DUTs, "
+                        "profiles, team members, risks, document types, public "
+                        "holidays) with the backup contents. This cannot be undone."
                     ).classes("text-body2 q-mb-md")
 
-                    async def _do_restore():
+                    async def _run_restore():
+                        import httpx
+                        hdrs = auth_headers()
+                        async with httpx.AsyncClient(timeout=60.0) as client:
+                            resp = await client.post(
+                                f"{API_URL}/admin/restore",
+                                headers=hdrs,
+                                files={"file": (fname, file_content, "application/json")},
+                            )
+                            resp.raise_for_status()
+                            return resp.json()
+
+                    def _render_result(data: dict) -> None:
                         confirm_dlg.close()
-                        try:
-                            import httpx
-                            hdrs = auth_headers()
-                            async with httpx.AsyncClient(timeout=60.0) as client:
-                                resp = await client.post(
-                                    f"{API_URL}/admin/restore",
-                                    headers=hdrs,
-                                    files={"file": (fname, file_content, "application/json")},
+                        tables = data.get("tables_restored", []) or []
+                        rows = data.get("rows_restored", {}) or {}
+                        parts = [f"{tbl} ({rows.get(tbl, 0)})" for tbl in tables]
+                        result_container.clear()
+                        with result_container:
+                            ui.label("Restore completed successfully!").classes(
+                                "text-positive text-h6 q-mb-sm"
+                            )
+                            if parts:
+                                ui.label("Restored: " + ", ".join(parts)).classes(
+                                    "text-body2"
                                 )
-                                resp.raise_for_status()
-                                data = resp.json()
-
-                            result_container.clear()
-                            with result_container:
-                                ui.label("Restore completed successfully!").classes(
-                                    "text-positive text-h6 q-mb-sm"
-                                )
-                                tables = data.get("tables_restored", [])
-                                rows = data.get("rows_restored", {})
-                                for tbl in tables:
-                                    ui.label(f"  {tbl}: {rows.get(tbl, 0)} rows").classes(
-                                        "text-body2"
-                                    )
-
-                            ui.notify("Restore completed successfully!", type="positive")
-                        except Exception as exc:
-                            ui.notify(f"Restore failed: {exc}", type="negative")
+                            else:
+                                ui.label("No tables reported.").classes("text-body2")
 
                     with ui.row().classes("q-mt-md justify-end w-full gap-2"):
                         ui.button("Cancel", on_click=confirm_dlg.close).props("flat")
-                        ui.button("Restore", on_click=_do_restore).props("color=negative")
+                        restore_btn = ui.button("Restore").props("color=negative")
+                        restore_btn.on_click(run_async(
+                            restore_btn,
+                            _run_restore,
+                            success="Restore completed successfully!",
+                            on_success=_render_result,
+                            error_prefix="Restore failed",
+                        ))
 
                 confirm_dlg.open()

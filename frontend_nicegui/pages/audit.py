@@ -14,7 +14,11 @@ from nicegui import ui
 from frontend_nicegui.app import (
     api_get,
     current_user,
+    empty_state,
+    format_age,
+    format_datetime,
     is_authenticated,
+    loading_state,
     sidebar,
 )
 
@@ -99,6 +103,10 @@ async def audit_page() -> None:
             try:
                 data = await api_get("/audit-log", params=params)
                 logs = data if isinstance(data, list) else []
+                for row in logs:
+                    iso = row.get("created_at") or ""
+                    row["created_at_age"] = format_age(iso) if iso else "—"
+                    row["created_at_full"] = format_datetime(iso) if iso else ""
             except Exception as exc:
                 ui.notify(f"Failed to load audit log: {exc}", type="negative")
                 logs = []
@@ -209,8 +217,7 @@ async def audit_page() -> None:
                     ).classes("ed-card-head-meta")
 
                 if not rows:
-                    ui.label("No audit entries match the current filters") \
-                        .classes("ed-empty")
+                    empty_state("No audit entries match the current filters")
                     return
 
                 columns = [
@@ -219,7 +226,7 @@ async def audit_page() -> None:
                     {"name": "resource_type", "label": "Resource Type", "field": "resource_type", "sortable": True, "align": "left"},
                     {"name": "resource_id", "label": "Res ID", "field": "resource_id", "sortable": True, "align": "right"},
                     {"name": "ip_address", "label": "IP Address", "field": "ip_address", "align": "left"},
-                    {"name": "created_at", "label": "Timestamp", "field": "created_at", "sortable": True, "align": "left"},
+                    {"name": "created_at", "label": "Timestamp", "field": "created_at_age", "sortable": True, "align": "left"},
                 ]
 
                 t = ui.table(
@@ -245,14 +252,15 @@ async def audit_page() -> None:
                     """,
                 )
 
-                # Truncate timestamps for readability
+                # Relative age with full timestamp on hover
                 t.add_slot(
                     "body-cell-created_at",
                     r"""
                     <q-td :props="props">
-                        <span class="text-caption">
-                            {{ props.value ? props.value.substring(0, 19).replace('T', ' ') : '—' }}
-                        </span>
+                        <span class="text-caption">{{ props.value }}</span>
+                        <q-tooltip v-if="props.row.created_at_full">
+                            {{ props.row.created_at_full }}
+                        </q-tooltip>
                     </q-td>
                     """,
                 )
@@ -294,7 +302,8 @@ async def audit_page() -> None:
         f_limit.on("update:model-value", lambda _: do_refresh())
 
         # Initial load
-        await load_logs()
+        async with loading_state("Loading audit log…"):
+            await load_logs()
         _render_kpis()
         _render_segments()
         render_table()

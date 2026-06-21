@@ -15,6 +15,8 @@ from frontend_nicegui.app import (
     api_post,
     api_put,
     is_authenticated,
+    loading_state,
+    run_async,
     sidebar,
 )
 
@@ -111,11 +113,15 @@ async def risks_page() -> None:
                     dense flat round icon="edit" color="primary" size="sm"
                     @click="$parent.$emit('edit-row', props.row)"
                     class="q-mr-xs"
-                />
+                >
+                    <q-tooltip>Edit risk</q-tooltip>
+                </q-btn>
                 <q-btn
                     dense flat round icon="delete" color="negative" size="sm"
                     @click="$parent.$emit('delete-row', props.row)"
-                />
+                >
+                    <q-tooltip>Delete risk</q-tooltip>
+                </q-btn>
             </q-td>
             """,
         )
@@ -224,10 +230,10 @@ async def risks_page() -> None:
         # Add dialog                                                            #
         # ------------------------------------------------------------------ #
         async def show_add_dialog() -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Add Risk").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *").classes("w-full")
+                name_input = ui.input("Name *").classes("w-full").props("autofocus")
                 category_input = ui.input("Category").classes("w-full")
                 likelihood_select = ui.select(
                     LIKELIHOOD_OPTIONS,
@@ -250,28 +256,25 @@ async def risks_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "category": str(category_input.value or "").strip(),
-                            "likelihood": likelihood_select.value,
-                            "impact": impact_select.value,
-                            "description": str(description_input.value or "").strip(),
-                            "mitigation": str(mitigation_input.value or "").strip(),
-                        }
-                        await api_post(
-                            "/risk-items",
-                            json=payload,
-                        )
-                        dialog.close()
-                        ui.notify("Risk item created.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error creating risk item: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "category": str(category_input.value or "").strip(),
+                        "likelihood": likelihood_select.value,
+                        "impact": impact_select.value,
+                        "description": str(description_input.value or "").strip(),
+                        "mitigation": str(mitigation_input.value or "").strip(),
+                    }
+                    await api_post(
+                        "/risk-items",
+                        json=payload,
+                    )
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="Risk item created.", error_prefix="Create failed"))
 
             dialog.open()
 
@@ -279,10 +282,10 @@ async def risks_page() -> None:
         # Edit dialog                                                           #
         # ------------------------------------------------------------------ #
         async def show_edit_dialog(row: dict) -> None:
-            with ui.dialog() as dialog, ui.card().classes("w-96"):
+            with ui.dialog() as dialog, ui.card().classes("w-[480px]"):
                 ui.label("Edit Risk").classes("text-h6 q-mb-sm")
 
-                name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full")
+                name_input = ui.input("Name *", value=row.get("name", "")).classes("w-full").props("autofocus")
                 category_input = ui.input("Category", value=row.get("category", "")).classes("w-full")
                 likelihood_select = ui.select(
                     LIKELIHOOD_OPTIONS,
@@ -307,28 +310,25 @@ async def risks_page() -> None:
                     if not name_input.value or not str(name_input.value).strip():
                         ui.notify("Name is required.", type="warning")
                         return
-                    try:
-                        payload: dict = {
-                            "name": str(name_input.value).strip(),
-                            "category": str(category_input.value or "").strip(),
-                            "likelihood": likelihood_select.value,
-                            "impact": impact_select.value,
-                            "description": str(description_input.value or "").strip(),
-                            "mitigation": str(mitigation_input.value or "").strip(),
-                        }
-                        await api_put(
-                            f"/risk-items/{row['id']}",
-                            json=payload,
-                        )
-                        dialog.close()
-                        ui.notify("Risk item updated.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error updating risk item: {exc}", type="negative")
+                    payload: dict = {
+                        "name": str(name_input.value).strip(),
+                        "category": str(category_input.value or "").strip(),
+                        "likelihood": likelihood_select.value,
+                        "impact": impact_select.value,
+                        "description": str(description_input.value or "").strip(),
+                        "mitigation": str(mitigation_input.value or "").strip(),
+                    }
+                    await api_put(
+                        f"/risk-items/{row['id']}",
+                        json=payload,
+                    )
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Save", on_click=save).props("color=primary")
+                    save_btn = ui.button("Save").props("color=primary")
+                    save_btn.on("click", run_async(save_btn, save, success="Risk item updated.", error_prefix="Update failed"))
 
             dialog.open()
 
@@ -344,17 +344,14 @@ async def risks_page() -> None:
                 ).classes("text-body2 q-mt-sm")
 
                 async def confirm() -> None:
-                    try:
-                        await api_delete(f"/risk-items/{row['id']}")
-                        dialog.close()
-                        ui.notify("Risk item deleted.", type="positive")
-                        await refresh()
-                    except Exception as exc:
-                        ui.notify(f"Error deleting risk item: {exc}", type="negative")
+                    await api_delete(f"/risk-items/{row['id']}")
+                    dialog.close()
+                    await refresh()
 
                 with ui.row().classes("q-mt-md justify-end w-full"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Delete", on_click=confirm).props("color=negative")
+                    del_btn = ui.button("Delete").props("color=negative")
+                    del_btn.on("click", run_async(del_btn, confirm, success="Risk item deleted.", error_prefix="Delete failed"))
 
             dialog.open()
 
@@ -367,4 +364,5 @@ async def risks_page() -> None:
         # ------------------------------------------------------------------ #
         # Initial data load                                                     #
         # ------------------------------------------------------------------ #
-        await refresh()
+        async with loading_state("Loading risks…"):
+            await refresh()

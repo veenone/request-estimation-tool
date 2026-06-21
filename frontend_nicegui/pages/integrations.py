@@ -16,7 +16,18 @@ from __future__ import annotations
 import json
 
 from nicegui import ui
-from frontend_nicegui.app import api_get, api_post, api_put, is_authenticated, show_error_page, sidebar
+from frontend_nicegui.app import (
+    api_get,
+    api_post,
+    api_put,
+    format_age,
+    format_datetime,
+    is_authenticated,
+    loading_state,
+    run_async,
+    show_error_page,
+    sidebar,
+)
 
 SYSTEMS: list[str] = ["REDMINE", "JIRA", "EMAIL", "OUTLINE", "SNIPE_IT"]
 
@@ -33,71 +44,94 @@ SYSTEM_ICONS: dict[str, str] = {
 # Shared action buttons (Test Connection / Sync)
 # ---------------------------------------------------------------------------
 
-def _render_action_buttons(system: str, last_sync: str | None) -> None:
-    """Render Test Connection and Sync buttons plus last-sync info."""
+def _render_action_buttons(
+    system: str,
+    last_sync: str | None,
+    required_check=None,
+) -> None:
+    """Render Test Connection and Sync buttons plus last-sync info.
+
+    ``required_check`` is an optional no-arg callable returning a string with a
+    warning message when a required field (e.g. host/url) is missing, or
+    ``None`` / "" when the pre-check passes.  It short-circuits the API call so
+    we never fire a doomed request.
+    """
     with ui.row().classes("items-center gap-2 flex-wrap q-mt-sm"):
 
         async def test_connection(_sys: str = system) -> None:
-            try:
-                result: dict = await api_post(f"/integrations/{_sys}/test")
-                if result.get("success"):
-                    ui.notify(
-                        f"Connection OK: {result.get('message', '')}",
-                        type="positive",
-                        timeout=5000,
-                    )
-                else:
-                    ui.notify(
-                        f"Connection failed: {result.get('message', '')}",
-                        type="warning",
-                        timeout=6000,
-                    )
-            except Exception as exc:
-                ui.notify(f"Test error: {exc}", type="negative")
+            result: dict = await api_post(f"/integrations/{_sys}/test")
+            if result.get("success"):
+                ui.notify(
+                    f"Connection OK: {result.get('message', '')}",
+                    type="positive",
+                    timeout=5000,
+                )
+            else:
+                ui.notify(
+                    f"Connection failed: {result.get('message', '')}",
+                    type="warning",
+                    timeout=6000,
+                )
 
         async def run_sync(_sys: str = system) -> None:
-            try:
-                result: dict = await api_post(f"/integrations/{_sys}/sync")
-                status     = result.get("status", "unknown")
-                processed  = result.get("items_processed", 0)
-                created    = result.get("items_created", 0)
-                updated    = result.get("items_updated", 0)
-                failed     = result.get("items_failed", 0)
-                errors     = result.get("errors", [])
+            result: dict = await api_post(f"/integrations/{_sys}/sync")
+            status     = result.get("status", "unknown")
+            processed  = result.get("items_processed", 0)
+            created    = result.get("items_created", 0)
+            updated    = result.get("items_updated", 0)
+            failed     = result.get("items_failed", 0)
+            errors     = result.get("errors", [])
 
-                summary = (
-                    f"Sync {status} — "
-                    f"{processed} processed, "
-                    f"{created} created, "
-                    f"{updated} updated, "
-                    f"{failed} failed."
-                )
-                if errors:
-                    summary += f" Errors: {'; '.join(errors[:3])}"
+            summary = (
+                f"Sync {status} — "
+                f"{processed} processed, "
+                f"{created} created, "
+                f"{updated} updated, "
+                f"{failed} failed."
+            )
+            if errors:
+                summary += f" Errors: {'; '.join(errors[:3])}"
 
-                notify_type = (
-                    "positive" if status in ("SUCCESS", "success") else
-                    "warning"  if failed > 0 else
-                    "info"
-                )
-                ui.notify(summary, type=notify_type, timeout=7000)
-            except Exception as exc:
-                ui.notify(f"Sync error: {exc}", type="negative")
+            notify_type = (
+                "positive" if status in ("SUCCESS", "success") else
+                "warning"  if failed > 0 else
+                "info"
+            )
+            ui.notify(summary, type=notify_type, timeout=7000)
 
-        ui.button(
+        test_btn = ui.button(
             "Test Connection",
             icon="wifi_tethering",
-            on_click=test_connection,
         ).props("flat color=secondary")
 
-        ui.button(
+        sync_btn = ui.button(
             "Sync",
             icon="sync",
-            on_click=run_sync,
         ).props("flat color=accent")
 
+        def _guard(handler):
+            async def _on_click(*_):
+                if required_check is not None:
+                    msg = required_check()
+                    if msg:
+                        ui.notify(msg, type="warning")
+                        return
+                await handler()
+            return _on_click
+
+        test_btn.on(
+            "click",
+            _guard(run_async(test_btn, test_connection, error_prefix="Test error")),
+        )
+        sync_btn.on(
+            "click",
+            _guard(run_async(sync_btn, run_sync, error_prefix="Sync error")),
+        )
+
         if last_sync:
-            ui.label(f"Last synced: {last_sync}").classes("text-caption text-grey q-ml-sm")
+            ui.label(f"Last synced: {format_age(last_sync)}") \
+                .classes("text-caption text-grey q-ml-sm") \
+                .tooltip(format_datetime(last_sync))
         else:
             ui.label("Never synced.").classes("text-caption text-grey q-ml-sm")
 
@@ -270,7 +304,11 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
         )
 
         # -- Action buttons (Test / Sync) ---------------------------------------
-        _render_action_buttons("REDMINE", last_sync)
+        _render_action_buttons(
+            "REDMINE", last_sync,
+            required_check=lambda: "Base URL is required before testing/syncing."
+            if not (base_url_input.value or "").strip() else None,
+        )
 
         # -- Save ---------------------------------------------------------------
         async def save_redmine(
@@ -307,17 +345,24 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
             if raw_key:
                 payload["api_key"] = raw_key
 
-            try:
-                await api_put("/integrations/REDMINE", json=payload)
-                # Save webhook watchers config
-                selected_ids = _watchers.value if _watchers.value else []
-                await api_put("/configuration/webhook_watchers", json={"value": json.dumps(selected_ids)})
-                ui.notify("Redmine configuration saved.", type="positive")
-                _key.value = ""
-            except Exception as exc:
-                ui.notify(f"Save failed: {exc}", type="negative")
+            await api_put("/integrations/REDMINE", json=payload)
+            # Save webhook watchers config
+            selected_ids = _watchers.value if _watchers.value else []
+            await api_put("/configuration/webhook_watchers", json={"value": json.dumps(selected_ids)})
 
-        ui.button("Save", icon="save", on_click=save_redmine).props("color=primary")
+        def _on_redmine_saved(_result, _key=api_key_input) -> None:
+            # Keep the credential field populated on success; just mark it as
+            # stored so the user knows the secret persisted.
+            if (_key.value or "").strip():
+                _key.props('placeholder="(unchanged)"')
+
+        save_btn = ui.button("Save", icon="save").props("color=primary")
+        save_btn.on("click", run_async(
+            save_btn, save_redmine,
+            success="Credentials saved securely.",
+            on_success=_on_redmine_saved,
+            error_prefix="Save failed",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -528,26 +573,30 @@ def _build_jira_panel(data: dict) -> None:
         async def _sync_pr_items(
             _pr_jql=pr_jql_input,
         ) -> None:
-            jql = (_pr_jql.value or "").strip()
-            if not jql:
+            items = await api_get(
+                "/integrations/JIRA/pr-items",
+                params={"jql": (_pr_jql.value or "").strip()},
+            )
+            count = len(items) if isinstance(items, list) else 0
+            pr_result_label.set_text(f"Fetched {count} PR item(s)")
+            if count:
+                ui.notify(f"Found {count} PR item(s).", type="positive")
+            else:
+                ui.notify("No items found matching the filter.", type="info")
+
+        pr_fetch_btn = ui.button(
+            "Fetch PR Items", icon="bug_report",
+        ).props("flat color=secondary")
+
+        def _on_pr_fetch_click(*_):
+            if not (pr_jql_input.value or "").strip():
                 ui.notify("PR JQL Filter is empty.", type="warning")
                 return
-            ui.notify("Fetching PR items from Jira...", type="info", timeout=2000)
-            try:
-                items = await api_get(
-                    "/integrations/JIRA/pr-items",
-                    params={"jql": jql},
-                )
-                count = len(items) if isinstance(items, list) else 0
-                pr_result_label.set_text(f"Fetched {count} PR item(s)")
-                ui.notify(f"Found {count} PR item(s).", type="positive")
-            except Exception as exc:
-                pr_result_label.set_text("")
-                ui.notify(f"PR fetch failed: {exc}", type="negative")
+            return run_async(
+                pr_fetch_btn, _sync_pr_items, error_prefix="PR fetch failed",
+            )()
 
-        ui.button(
-            "Fetch PR Items", icon="bug_report", on_click=_sync_pr_items,
-        ).props("flat color=secondary")
+        pr_fetch_btn.on("click", _on_pr_fetch_click)
 
         ui.separator()
 
@@ -558,7 +607,11 @@ def _build_jira_panel(data: dict) -> None:
         )
 
         # -- Action buttons (Test / Sync) ---------------------------------------
-        _render_action_buttons("JIRA", last_sync)
+        _render_action_buttons(
+            "JIRA", last_sync,
+            required_check=lambda: "Base URL is required before testing/syncing."
+            if not (base_url_input.value or "").strip() else None,
+        )
 
         # -- Save ---------------------------------------------------------------
         async def save_jira(
@@ -614,14 +667,21 @@ def _build_jira_panel(data: dict) -> None:
             if raw_key:
                 payload["api_key"] = raw_key
 
-            try:
-                await api_put("/integrations/JIRA", json=payload)
-                ui.notify("Jira configuration saved.", type="positive")
-                _key.value = ""
-            except Exception as exc:
-                ui.notify(f"Save failed: {exc}", type="negative")
+            await api_put("/integrations/JIRA", json=payload)
 
-        ui.button("Save", icon="save", on_click=save_jira).props("color=primary")
+        def _on_jira_saved(_result, _key=api_key_input, _pr_key=pr_api_key_input) -> None:
+            if (_key.value or "").strip():
+                _key.props('placeholder="(unchanged)"')
+            if (_pr_key.value or "").strip():
+                _pr_key.props('placeholder="(unchanged)"')
+
+        save_btn = ui.button("Save", icon="save").props("color=primary")
+        save_btn.on("click", run_async(
+            save_btn, save_jira,
+            success="Credentials saved securely.",
+            on_success=_on_jira_saved,
+            error_prefix="Save failed",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +784,14 @@ def _build_email_panel(data: dict) -> None:
         )
 
         # -- Action buttons (Test / Sync) ---------------------------------------
-        _render_action_buttons("EMAIL", last_sync)
+        def _email_precheck() -> str | None:
+            if not (smtp_host_input.value or "").strip():
+                return "SMTP Host is required before testing."
+            if not (smtp_port_input.value or 0):
+                return "SMTP Port is required before testing."
+            return None
+
+        _render_action_buttons("EMAIL", last_sync, required_check=_email_precheck)
 
         # -- Save ---------------------------------------------------------------
         async def save_email(
@@ -754,14 +821,19 @@ def _build_email_panel(data: dict) -> None:
             if raw_key:
                 payload["api_key"] = raw_key
 
-            try:
-                await api_put("/integrations/EMAIL", json=payload)
-                ui.notify("Email configuration saved.", type="positive")
-                _key.value = ""
-            except Exception as exc:
-                ui.notify(f"Save failed: {exc}", type="negative")
+            await api_put("/integrations/EMAIL", json=payload)
 
-        ui.button("Save", icon="save", on_click=save_email).props("color=primary")
+        def _on_email_saved(_result, _key=api_key_input) -> None:
+            if (_key.value or "").strip():
+                _key.props('placeholder="(unchanged)"')
+
+        save_btn = ui.button("Save", icon="save").props("color=primary")
+        save_btn.on("click", run_async(
+            save_btn, save_email,
+            success="Credentials saved securely.",
+            on_success=_on_email_saved,
+            error_prefix="Save failed",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +906,11 @@ def _build_outline_panel(data: dict) -> None:
         )
 
         # -- Action buttons (Test / Sync) ---------------------------------------
-        _render_action_buttons("OUTLINE", last_sync)
+        _render_action_buttons(
+            "OUTLINE", last_sync,
+            required_check=lambda: "Outline URL is required before testing/syncing."
+            if not (base_url_input.value or "").strip() else None,
+        )
 
         # -- Save ---------------------------------------------------------------
         async def save_outline(
@@ -858,14 +934,19 @@ def _build_outline_panel(data: dict) -> None:
             if raw_key:
                 payload["api_key"] = raw_key
 
-            try:
-                await api_put("/integrations/OUTLINE", json=payload)
-                ui.notify("Outline configuration saved.", type="positive")
-                _key.value = ""
-            except Exception as exc:
-                ui.notify(f"Save failed: {exc}", type="negative")
+            await api_put("/integrations/OUTLINE", json=payload)
 
-        ui.button("Save", icon="save", on_click=save_outline).props("color=primary")
+        def _on_outline_saved(_result, _key=api_key_input) -> None:
+            if (_key.value or "").strip():
+                _key.props('placeholder="(unchanged)"')
+
+        save_btn = ui.button("Save", icon="save").props("color=primary")
+        save_btn.on("click", run_async(
+            save_btn, save_outline,
+            success="Credentials saved securely.",
+            on_success=_on_outline_saved,
+            error_prefix="Save failed",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -929,16 +1010,29 @@ def _build_snipe_it_panel(data: dict) -> None:
         ).classes("text-caption text-grey")
 
         async def _fetch_categories(_sel=categories_select) -> None:
-            try:
-                cats: list = await api_get("/integrations/SNIPE_IT/categories")
-                names = sorted([c.get("name", "") for c in cats if c.get("name")])
-                _sel.options = names
-                _sel.update()
+            cats: list = await api_get("/integrations/SNIPE_IT/categories")
+            names = sorted([c.get("name", "") for c in cats if c.get("name")])
+            _sel.options = names
+            _sel.update()
+            if names:
                 ui.notify(f"Loaded {len(names)} categories from Snipe-IT.", type="positive")
-            except Exception as exc:
-                ui.notify(f"Failed to fetch categories: {exc}", type="negative")
+            else:
+                ui.notify("No items found matching the filter.", type="info")
 
-        ui.button("Fetch Categories", icon="sync", on_click=_fetch_categories).props("flat color=secondary dense")
+        fetch_cats_btn = ui.button(
+            "Fetch Categories", icon="sync",
+        ).props("flat color=secondary dense")
+
+        def _on_fetch_cats_click(*_):
+            if not (base_url_input.value or "").strip():
+                ui.notify("Base URL is required before fetching categories.", type="warning")
+                return
+            return run_async(
+                fetch_cats_btn, _fetch_categories,
+                error_prefix="Failed to fetch categories",
+            )()
+
+        fetch_cats_btn.on("click", _on_fetch_cats_click)
 
         timeout_input = ui.number(
             label="Timeout (seconds)",
@@ -956,7 +1050,11 @@ def _build_snipe_it_panel(data: dict) -> None:
             value=bool(data.get("enabled", False)),
         )
 
-        _render_action_buttons("SNIPE_IT", last_sync)
+        _render_action_buttons(
+            "SNIPE_IT", last_sync,
+            required_check=lambda: "Base URL is required before testing/syncing."
+            if not (base_url_input.value or "").strip() else None,
+        )
 
         async def save_snipeit(
             _tog=enabled_toggle,
@@ -982,14 +1080,19 @@ def _build_snipe_it_panel(data: dict) -> None:
             if raw_key:
                 payload["api_key"] = raw_key
 
-            try:
-                await api_put("/integrations/SNIPE_IT", json=payload)
-                ui.notify("Snipe-IT configuration saved.", type="positive")
-                _key.value = ""
-            except Exception as exc:
-                ui.notify(f"Save failed: {exc}", type="negative")
+            await api_put("/integrations/SNIPE_IT", json=payload)
 
-        ui.button("Save", icon="save", on_click=save_snipeit).props("color=primary")
+        def _on_snipeit_saved(_result, _key=api_key_input) -> None:
+            if (_key.value or "").strip():
+                _key.props('placeholder="(unchanged)"')
+
+        save_btn = ui.button("Save", icon="save").props("color=primary")
+        save_btn.on("click", run_async(
+            save_btn, save_snipeit,
+            success="Credentials saved securely.",
+            on_success=_on_snipeit_saved,
+            error_prefix="Save failed",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -1019,7 +1122,8 @@ async def integrations_page() -> None:
 
     # ---- load all integrations BEFORE building UI -----------------------
     try:
-        raw_list: list[dict] = await api_get("/integrations")
+        async with loading_state("Loading integrations…"):
+            raw_list: list[dict] = await api_get("/integrations")
     except Exception as exc:
         show_error_page(exc)
         return
@@ -1032,18 +1136,19 @@ async def integrations_page() -> None:
     # Fetch assignable users and current watchers for Redmine panel
     assignable_users: list[dict] = []
     current_watchers: list[int] = []
-    try:
-        assignable_users = await api_get("/users/assignable")
-    except Exception:
-        pass
-    try:
-        configs = await api_get("/configuration")
-        for cfg in configs:
-            if cfg.get("key") == "webhook_watchers":
-                current_watchers = json.loads(cfg.get("value", "[]"))
-                break
-    except Exception:
-        pass
+    async with loading_state("Loading users & watchers…"):
+        try:
+            assignable_users = await api_get("/users/assignable")
+        except Exception:
+            pass
+        try:
+            configs = await api_get("/configuration")
+            for cfg in configs:
+                if cfg.get("key") == "webhook_watchers":
+                    current_watchers = json.loads(cfg.get("value", "[]"))
+                    break
+        except Exception:
+            pass
 
     enabled_n = sum(1 for s in SYSTEMS
                     if by_system.get(s, {}).get("enabled"))
@@ -1073,7 +1178,8 @@ async def integrations_page() -> None:
                 for sys in SYSTEMS:
                     sys_data = by_system.get(sys, {})
                     is_enabled = bool(sys_data.get("enabled"))
-                    last_sync = sys_data.get("last_sync_at") or "never synced"
+                    last_sync = sys_data.get("last_sync_at")
+                    sync_failed = bool(sys_data.get("last_sync_failed"))
                     icon = SYSTEM_ICONS.get(sys, "settings")
                     with ui.element("div").classes("ed-strip-cell"):
                         with ui.row().classes("items-center gap-2"):
@@ -1081,11 +1187,18 @@ async def integrations_page() -> None:
                                 "font-size: 14px; opacity: 0.7;"
                             )
                             ui.label(sys).classes("ed-eyebrow")
-                        ui.label("ON" if is_enabled else "OFF").classes("ed-strip-num") \
-                            .style(f"color: {'var(--q-positive)' if is_enabled else 'var(--q-negative)'}; "
-                                   "font-size: 18px;")
-                        ui.label(str(last_sync)[:10] if last_sync != "never synced" else "never") \
-                            .classes("ed-stat-tile-sub")
+                        if not is_enabled:
+                            ui.badge("OFF").props("color=grey")
+                        elif sync_failed:
+                            ui.badge("FAILED").props("color=negative")
+                        else:
+                            ui.badge("CONNECTED").props("color=positive")
+                        if last_sync:
+                            ui.label(format_age(last_sync)) \
+                                .classes("ed-stat-tile-sub") \
+                                .tooltip(format_datetime(last_sync))
+                        else:
+                            ui.label("Never synced").classes("ed-stat-tile-sub")
 
             # ── Tabs ────────────────────────────────────────────
             with ui.tabs().classes("ed-tabs w-full").props("inline-label align=left no-caps") as tabs:
