@@ -39,3 +39,13 @@ SPEC.md
 sample/
 _autosave_debug.log
 run-dev.sh
+
+# Ruflo / claude-flow tooling state (local, machine-specific)
+.claude-flow/
+.swarm/
+*.rvf
+*.rvf.lock
+ruvector.db
+
+# Scratch / accidental
+/10
