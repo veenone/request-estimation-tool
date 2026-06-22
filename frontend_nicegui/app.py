@@ -497,11 +497,12 @@ def show_error_page(exc: Exception) -> None:
                 on_click=lambda url=action_url: ui.navigate.to(url),
             ).props(f"color={cfg['color']} unelevated").classes("q-mt-sm")
         else:
-            # Retry = reload current page
+            # Retry = reload the current page (use the real URL, not the route
+            # pattern, which would 422 on parametrized pages like /estimation/{id}).
             ui.button(
                 cfg["action_label"],
                 icon="refresh",
-                on_click=lambda: ui.navigate.to(ui.context.client.page.path),
+                on_click=lambda: ui.navigate.to(_current_request_path()),
             ).props(f"color={cfg['color']} unelevated").classes("q-mt-sm")
 
 
@@ -633,12 +634,31 @@ def extract_error_detail(exc: Exception) -> str:
     return str(exc)
 
 
+def _current_request_path() -> str:
+    """Return the actual browser path of the current page (e.g. /estimation/15).
+
+    ``ui.context.client.page.path`` returns the ROUTE PATTERN
+    (``/estimation/{estimation_id}``); navigating to that literal placeholder
+    makes NiceGUI's own int path-param validation reject it with a 422. The
+    Starlette request on the client carries the resolved path instead.
+    """
+    try:
+        req = ui.context.client.request
+        if req is not None and req.url and req.url.path:
+            return req.url.path
+    except Exception:
+        pass
+    try:
+        path = ui.context.client.page.path
+        # Never return an unresolved pattern as a navigation target.
+        return path if "{" not in path else "/"
+    except Exception:
+        return "/"
+
+
 def _handle_401() -> None:
     """Clear auth state and redirect to login, preserving return URL."""
-    try:
-        current_path = ui.context.client.page.path
-    except Exception:
-        current_path = "/"
+    current_path = _current_request_path()
     return_url = current_path if current_path != "/login" else "/"
     app.storage.user.clear()
     app.storage.user["_return_url"] = return_url
