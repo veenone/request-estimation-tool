@@ -83,6 +83,32 @@ class LDAPProvider:
         """Return ``True`` when a non-empty ``ldap_url`` is configured."""
         return bool(self.config.get("ldap_url"))
 
+    def test_connection(self) -> tuple[bool, str]:
+        """Bind to the directory with the service account to verify the stored
+        configuration. Returns ``(success, message)`` for the Settings UI.
+        """
+        if not self.is_configured:
+            return False, "LDAP is not configured. Set ldap_url in Settings and save."
+        try:
+            import ldap3  # type: ignore[import-untyped]
+        except ImportError:
+            return False, "ldap3 library is not installed on the server."
+        try:
+            server = ldap3.Server(
+                self.config["ldap_url"], get_info=ldap3.ALL, connect_timeout=10
+            )
+            bind_dn = self.config.get("ldap_bind_dn") or None
+            bind_pw = self.config.get("ldap_bind_password") or None
+            conn = ldap3.Connection(
+                server, user=bind_dn, password=bind_pw,
+                auto_bind=True, receive_timeout=10,
+            )
+            conn.unbind()
+            who = bind_dn or "anonymous"
+            return True, f"Bound to {self.config['ldap_url']} as {who}."
+        except Exception as exc:
+            return False, f"LDAP connection failed: {exc}"
+
     # ------------------------------------------------------------------
     # Interactive login
     # ------------------------------------------------------------------

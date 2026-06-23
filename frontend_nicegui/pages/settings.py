@@ -511,7 +511,7 @@ async def settings_page():
             return (inp.value or "").strip() if inp is not None else ""
 
         async def test_smtp():
-            result = await api_post("/integrations/EMAIL/test")
+            result = await api_post("/notifications/test-email")
             if result.get("success"):
                 ui.notify(f"SMTP OK: {result.get('message', '')}",
                           type="positive", timeout=5000)
@@ -520,7 +520,7 @@ async def settings_page():
                           type="warning", timeout=6000)
 
         async def test_ldap():
-            result = await api_post("/integrations/LDAP/test")
+            result = await api_post("/auth/ldap/test")
             if result.get("success"):
                 ui.notify(f"LDAP OK: {result.get('message', '')}",
                           type="positive", timeout=5000)

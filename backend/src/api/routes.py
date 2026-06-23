@@ -512,6 +512,16 @@ def ldap_sync(request: HTTPRequest, user: User = Depends(RequireRole("ADMIN")), 
     return result
 
 
+@router.post("/auth/ldap/test")
+def ldap_test(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)) -> dict:
+    """Test the LDAP configuration stored in the Configuration table (the
+    ldap_* keys edited on the Settings page), binding with the service account.
+    """
+    from ..auth.ldap_provider import LDAPProvider
+    ok, message = LDAPProvider(db).test_connection()
+    return {"success": ok, "message": message}
+
+
 # ── Audit Log (APPROVER+) ──────────────────────────────
 
 @router.get("/audit-log")
@@ -2296,6 +2306,16 @@ def mark_notification_read(notification_id: int, user: User = Depends(get_curren
     notif.is_read = True
     db.commit()
     return {"ok": True}
+
+
+@router.post("/notifications/test-email")
+def test_email_connection(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(get_db)) -> dict:
+    """Test the SMTP configuration stored in the Configuration table (the smtp_*
+    keys edited on the Settings page) by opening a connection and logging in.
+    """
+    from ..notifications.service import NotificationService
+    ok, message = NotificationService(db).test_connection()
+    return {"success": ok, "message": message}
 
 
 @router.post("/notifications/mark-all-read")

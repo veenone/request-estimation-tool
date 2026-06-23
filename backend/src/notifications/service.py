@@ -46,6 +46,37 @@ class NotificationService:
         """Return True when an SMTP host has been set in configuration."""
         return bool(self._get_config("smtp_host"))
 
+    def test_connection(self) -> tuple[bool, str]:
+        """Open an SMTP connection (and login if credentials are set) to verify
+        the stored configuration. Returns ``(success, message)`` with the real
+        error so the Settings UI can surface it, unlike ``_send_email`` which
+        swallows failures so notifications never break business operations.
+        """
+        if not self.is_configured:
+            return False, "SMTP is not configured. Set smtp_host in Settings and save."
+
+        smtp_host = self._get_config("smtp_host")
+        try:
+            smtp_port = int(self._get_config("smtp_port", "587") or "587")
+        except ValueError:
+            smtp_port = 587
+        smtp_user = self._get_config("smtp_user")
+        smtp_password = self._get_config("smtp_password")
+        smtp_tls = self._get_config("smtp_tls", "true").lower() == "true"
+
+        try:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+            if smtp_tls:
+                server.starttls()
+            authed = bool(smtp_user and smtp_password)
+            if authed:
+                server.login(smtp_user, smtp_password)
+            server.quit()
+            suffix = " and authenticated" if authed else " (no auth credentials set)"
+            return True, f"Connected to {smtp_host}:{smtp_port}{suffix}."
+        except Exception as exc:
+            return False, f"SMTP connection failed: {exc}"
+
     def _send_email(
         self, to_emails: list[str], subject: str, html_body: str
     ) -> bool:
