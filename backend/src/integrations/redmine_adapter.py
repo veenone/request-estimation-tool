@@ -51,6 +51,10 @@ class RedmineAdapter(BaseAdapter):
                             pass
         self.custom_fields = custom_fields
         self.timeout = int(self.additional_config.get("timeout", 30))
+        # One session so ssl_verify applies to every request — corp Redmine
+        # commonly sits behind a self-signed / internal-CA chain.
+        self._session = http_requests.Session()
+        self._session.verify = self.ssl_verify
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -67,7 +71,7 @@ class RedmineAdapter(BaseAdapter):
         if not self.base_url or not self.api_key:
             return ConnectionTestResult(False, "Redmine URL or API key not configured.")
         try:
-            resp = http_requests.get(
+            resp = self._session.get(
                 self._url("/users/current.json"),
                 headers=self._headers(),
                 timeout=self.timeout,
@@ -104,7 +108,7 @@ class RedmineAdapter(BaseAdapter):
             if self.tracker_id:
                 params["tracker_id"] = self.tracker_id
 
-            resp = http_requests.get(
+            resp = self._session.get(
                 self._url("/issues.json"),
                 headers=self._headers(),
                 params=params,
@@ -282,7 +286,7 @@ class RedmineAdapter(BaseAdapter):
             # Try to resolve project from parent issue
             if external_id:
                 try:
-                    parent_resp = http_requests.get(
+                    parent_resp = self._session.get(
                         self._url(f"/issues/{external_id}.json"),
                         headers=self._headers(),
                         timeout=self.timeout,
@@ -351,7 +355,7 @@ class RedmineAdapter(BaseAdapter):
                 if subtask_tracker_id:
                     issue_payload["issue"]["tracker_id"] = int(subtask_tracker_id)
 
-                resp = http_requests.post(
+                resp = self._session.post(
                     self._url("/issues.json"),
                     headers=self._headers(),
                     json=issue_payload,
@@ -391,7 +395,7 @@ class RedmineAdapter(BaseAdapter):
         """Upload an attachment (report) to a Redmine issue."""
         try:
             # Step 1: Upload the file
-            upload_resp = http_requests.post(
+            upload_resp = self._session.post(
                 self._url("/uploads.json"),
                 headers={
                     "X-Redmine-API-Key": self.api_key,
@@ -443,7 +447,7 @@ class RedmineAdapter(BaseAdapter):
         """Update the assigned_to on a Redmine issue by resolving a username to a Redmine user ID."""
         try:
             # Resolve login to Redmine user ID
-            resp = http_requests.get(
+            resp = self._session.get(
                 self._url("/users.json"),
                 headers=self._headers(),
                 params={"name": assignee_login, "limit": 5},

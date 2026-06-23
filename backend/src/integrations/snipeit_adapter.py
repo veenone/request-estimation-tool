@@ -30,6 +30,7 @@ class SnipeItAdapter(BaseAdapter):
 
     def _request(self, method: str, url: str, **kwargs) -> http_requests.Response:
         timeout = self.additional_config.get("timeout", 30)
+        kwargs.setdefault("verify", self.ssl_verify)
         return http_requests.request(
             method, url, headers=self._headers(), timeout=timeout, **kwargs
         )

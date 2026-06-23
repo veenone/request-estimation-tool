@@ -50,10 +50,15 @@ class OutlineAdapter(BaseAdapter):
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.base_url = self.base_url.rstrip("/")
+        self.timeout: int = int(self.additional_config.get("timeout", 30))
+        # One session so ssl_verify applies to every request — corp Outline
+        # commonly sits behind a self-signed CA chain. Must be set before
+        # _resolve_collection_id below, which issues a request.
+        self._session = requests.Session()
+        self._session.verify = self.ssl_verify
         raw_collection = self.additional_config.get("collection_id", "")
         self.parent_document_id: str = ""
         self.collection_id: str = self._resolve_collection_id(raw_collection)
-        self.timeout: int = int(self.additional_config.get("timeout", 30))
 
     # ------------------------------------------------------------------
     # BaseAdapter interface
@@ -79,7 +84,7 @@ class OutlineAdapter(BaseAdapter):
             with HTTP 200, or ``success=False`` with an error message otherwise.
         """
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self.base_url}/api/collections.list",
                 headers=self._headers,
                 json={},
@@ -186,7 +191,7 @@ class OutlineAdapter(BaseAdapter):
             existing_doc_id = self._find_document(est_number)
 
             if existing_doc_id:
-                resp = requests.post(
+                resp = self._session.post(
                     f"{self.base_url}/api/documents.update",
                     headers=self._headers,
                     json={"id": existing_doc_id, "title": title, "text": markdown},
@@ -199,7 +204,7 @@ class OutlineAdapter(BaseAdapter):
                     payload["collectionId"] = self.collection_id
                 if self.parent_document_id:
                     payload["parentDocumentId"] = self.parent_document_id
-                resp = requests.post(
+                resp = self._session.post(
                     f"{self.base_url}/api/documents.create",
                     headers=self._headers,
                     json=payload,
@@ -258,7 +263,7 @@ class OutlineAdapter(BaseAdapter):
             Returns an empty list on any error.
         """
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self.base_url}/api/documents.search",
                 headers=self._headers,
                 json={"query": query, "limit": limit},
@@ -316,7 +321,7 @@ class OutlineAdapter(BaseAdapter):
         if doc_match:
             doc_slug = doc_match.group(1)
             try:
-                resp = requests.post(
+                resp = self._session.post(
                     f"{self.base_url}/api/documents.search",
                     headers=self._headers,
                     json={"query": doc_slug.rsplit("-", 1)[0].replace("-", " "), "limit": 10},
@@ -347,7 +352,7 @@ class OutlineAdapter(BaseAdapter):
         target_path = f"/collection/{slug}"
 
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self.base_url}/api/collections.list",
                 headers=self._headers,
                 json={},

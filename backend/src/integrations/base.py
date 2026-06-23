@@ -71,6 +71,26 @@ class BaseAdapter(ABC):
         self.api_key = config.get("api_key", "")
         self.username = config.get("username", "")
         self.additional_config = config.get("additional_config", {})
+        # TLS verification — corp services often use a self-signed CA chain.
+        # Stored per-integration in additional_config["ssl_verify"]; accepts a
+        # bool, a "true"/"false" string, or a CA-bundle path string. Defaults
+        # to True (verify). Set False to skip verification on self-signed certs.
+        self.ssl_verify: bool | str = self._normalize_ssl_verify(
+            self.additional_config.get("ssl_verify", True)
+        )
+
+    @staticmethod
+    def _normalize_ssl_verify(value: Any) -> bool | str:
+        """Coerce a stored ssl_verify value into requests' ``verify`` arg."""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("false", "0", "no", "off"):
+                return False
+            if lowered in ("true", "1", "yes", "on", ""):
+                return True
+            # Any other string is treated as a CA-bundle path.
+            return value
+        return bool(value)
 
     @abstractmethod
     def test_connection(self) -> ConnectionTestResult:

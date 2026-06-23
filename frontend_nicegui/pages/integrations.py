@@ -295,6 +295,15 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
             "Redmine tracker ID for sub-tasks. Leave empty to use the same tracker as the parent issue."
         ).classes("text-caption text-grey")
 
+        with ui.row().classes("items-center gap-2"):
+            ssl_verify_toggle = ui.switch(
+                "Verify SSL",
+                value=bool(extra.get("ssl_verify", True)),
+            )
+            ui.label(
+                "Turn off only for self-signed / internal-CA certificates."
+            ).classes("text-caption text-grey")
+
         ui.separator()
 
         # -- Enabled toggle -----------------------------------------------------
@@ -324,6 +333,7 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
             _ws=webhook_secret_input,
             _watchers=watcher_select,
             _stid=subtask_tracker_input,
+            _ssl=ssl_verify_toggle,
         ) -> None:
             additional: dict = {
                 "project_id":               (_pid.value or "").strip(),
@@ -334,6 +344,7 @@ def _build_redmine_panel(data: dict, assignable_users: list[dict] | None = None,
                 "poll_interval_minutes":    int(_poll.value or 0),
                 "webhook_secret":           (_ws.value or "").strip(),
                 "subtask_tracker_id":       (_stid.value or "").strip(),
+                "ssl_verify":               _ssl.value,
             }
             payload: dict = {
                 "enabled":                _tog.value,
@@ -897,6 +908,15 @@ def _build_outline_panel(data: dict) -> None:
                 "Automatically publish estimation to Outline when status changes to APPROVED"
             ).classes("text-caption text-grey")
 
+        with ui.row().classes("items-center gap-2"):
+            ssl_verify_toggle = ui.switch(
+                "Verify SSL",
+                value=bool(extra.get("ssl_verify", True)),
+            )
+            ui.label(
+                "Turn off only for self-signed / internal-CA certificates."
+            ).classes("text-caption text-grey")
+
         ui.separator()
 
         # -- Enabled toggle -----------------------------------------------------
@@ -919,10 +939,12 @@ def _build_outline_panel(data: dict) -> None:
             _key=api_key_input,
             _cid=collection_id_input,
             _ap=auto_publish_toggle,
+            _ssl=ssl_verify_toggle,
         ) -> None:
             additional: dict = {
                 "collection_id": (_cid.value or "").strip(),
                 "auto_publish":  _ap.value,
+                "ssl_verify":    _ssl.value,
             }
             payload: dict = {
                 "enabled":                _tog.value,
@@ -1043,6 +1065,15 @@ def _build_snipe_it_panel(data: dict) -> None:
             format="%.0f",
         ).classes("w-full")
 
+        with ui.row().classes("items-center gap-2"):
+            ssl_verify_toggle = ui.switch(
+                "Verify SSL",
+                value=bool(extra.get("ssl_verify", True)),
+            )
+            ui.label(
+                "Turn off only for self-signed / internal-CA certificates."
+            ).classes("text-caption text-grey")
+
         ui.separator()
 
         enabled_toggle = ui.switch(
@@ -1062,6 +1093,7 @@ def _build_snipe_it_panel(data: dict) -> None:
             _key=api_key_input,
             _cats=categories_select,
             _timeout=timeout_input,
+            _ssl=ssl_verify_toggle,
         ) -> None:
             # categories_select.value is a list of selected names
             cats_val = _cats.value or []
@@ -1069,6 +1101,7 @@ def _build_snipe_it_panel(data: dict) -> None:
             additional: dict = {
                 "categories": cats_str,
                 "timeout": int(_timeout.value or 30),
+                "ssl_verify": _ssl.value,
             }
             payload: dict = {
                 "enabled": _tog.value,
