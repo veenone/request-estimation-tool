@@ -201,21 +201,28 @@ pipeline {
                                         set +x
                                         echo "Building presto:test on $SSH_USER@$SSH_HOST"
                                         export SSHPASS="$SSH_PASS"
+                                        # DOCKER_BUILDKIT=0 forces the legacy builder, which uses the
+                                        # docker daemon's registry trust (/etc/docker/certs.d + system
+                                        # CAs). BuildKit has its own cert pool and fails to verify the
+                                        # corp Harbor CA when pulling the base image.
                                         REMOTE_CMD="set -e
 cd $REMOTE_PATH
 mkdir -p extracted
 tar -xzf $TAR_NAME -C extracted
-docker build -t presto:test -f extracted/Dockerfile extracted"
+DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
                                     powershell '''
                                         Write-Host "Building presto:test on $env:SSH_USER@$env:SSH_HOST"
+                                        # DOCKER_BUILDKIT=0 forces the legacy builder, which uses the
+                                        # docker daemon's registry trust; BuildKit fails to verify the
+                                        # corp Harbor CA when pulling the base image.
                                         $remoteCmd = "set -e; " +
                                         "cd $env:REMOTE_PATH; " +
                                         "mkdir -p extracted; " +
                                         "tar -xzf $env:TAR_NAME -C extracted; " +
-                                        "docker build -t presto:test -f extracted/Dockerfile extracted"
+                                        "DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"
