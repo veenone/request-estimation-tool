@@ -3850,7 +3850,24 @@ def get_jira_pr_items(
                     "fields": "summary,priority,status,issuetype,created",
                 },
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # Jira returns the real reason (bad field/value/filter, JQL error,
+            # permission) in the response body — surface it instead of a bare
+            # "400 Client Error" so the user can fix the JQL.
+            detail = (resp.text or "").strip()[:500]
+            try:
+                payload = resp.json()
+                msgs = payload.get("errorMessages") or []
+                field_errs = [f"{k}: {v}" for k, v in (payload.get("errors") or {}).items()]
+                combined = "; ".join(msgs + field_errs)
+                if combined:
+                    detail = combined
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=400,
+                detail=f"Jira returned HTTP {resp.status_code}: {detail or 'no error body'}",
+            )
         data = resp.json()
         issues = data.get("issues", [])
 
