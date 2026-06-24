@@ -279,15 +279,30 @@ class LDAPProvider:
                 auto_bind=True,
             )
 
-            search_base = self.config.get("ldap_search_base", "")
-            # When used for sync the filter should enumerate all users.
-            user_filter = self.config.get("ldap_user_filter", "(objectClass=person)")
-            # Strip the {username} placeholder if it was left in the template.
-            user_filter = user_filter.replace("{username}", "*")
+            search_base = (self.config.get("ldap_search_base") or "").strip()
+            if not search_base:
+                # Without a base DN, ldap3 would search from the server's
+                # default naming context (a path *other* than the intended OU),
+                # so fail loudly instead of returning unrelated entries.
+                result["errors"] = [
+                    "ldap_search_base is not configured. Set it in "
+                    "Settings -> LDAP (e.g. OU=Users,DC=corp,DC=example,DC=com) "
+                    "and save before syncing."
+                ]
+                return result
+
+            # Enumerate users with the configured filter. Only fall back to a
+            # generic person filter when nothing is configured (an empty saved
+            # value must NOT silently override the default). Neutralize the
+            # {username} placeholder used by the interactive-login filter.
+            user_filter = (self.config.get("ldap_user_filter") or "").strip() or "(objectClass=person)"
+            if "{username}" in user_filter:
+                user_filter = user_filter.replace("{username}", "*")
 
             conn.search(
                 search_base,
                 user_filter,
+                search_scope=ldap3.SUBTREE,
                 attributes=[
                     "sAMAccountName",
                     "cn",

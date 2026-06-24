@@ -377,12 +377,18 @@ async def settings_page():
             save_btn.set_enabled(dirty)
             save_btn.set_text("Save Changes" if dirty else "No changes")
 
-        # Wire every input to the dirty recompute
+        # Wire every input to the dirty recompute. Use on_value_change (fires
+        # AFTER NiceGUI syncs .value) rather than the raw "update:model-value"
+        # event — the latter can run before .value is updated, so a paste with
+        # no prior keystroke was missed and the Save button stayed disabled.
+        # Also recompute on blur as a belt-and-suspenders for paste/autofill.
         for _inp in inputs.values():
-            _inp.on("update:model-value", _recompute_dirty)
+            _inp.on_value_change(_recompute_dirty)
+            _inp.on("blur", _recompute_dirty)
         for _role_inputs in mapping_inputs.values():
             for _inp in _role_inputs.values():
-                _inp.on("update:model-value", _recompute_dirty)
+                _inp.on_value_change(_recompute_dirty)
+                _inp.on("blur", _recompute_dirty)
 
         # Initial state: nothing changed yet
         _recompute_dirty()
