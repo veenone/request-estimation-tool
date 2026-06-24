@@ -536,14 +536,44 @@ async def settings_page():
 
         async def sync_ldap_users():
             result = await api_post("/auth/ldap/sync")
-            synced = result.get("synced", 0)
             created = result.get("created", 0)
-            updated = result.get("updated", 0)
+            skipped = result.get("skipped", 0)
+            errs = result.get("errors") or []
+            msg = f"LDAP sync: {created} created, {skipped} skipped (already exist)"
+            if errs:
+                ui.notify(msg + f" — {len(errs)} error(s): " + "; ".join(str(e) for e in errs[:3]),
+                          type="warning", timeout=9000)
+            else:
+                ui.notify(msg, type="positive", timeout=5000)
+
+        async def reset_ldap_users():
+            result = await api_post("/auth/ldap/reset-synced-users")
+            deleted = result.get("deleted", 0)
             ui.notify(
-                f"LDAP sync complete: {synced} synced, "
-                f"{created} created, {updated} updated",
-                type="positive", timeout=5000,
+                f"Removed {deleted} LDAP-synced user(s). Run 'Sync LDAP Users' to repopulate.",
+                type="positive", timeout=6000,
             )
+
+        def _on_reset_ldap_click(*_):
+            with ui.dialog() as _dlg, ui.card().classes("gap-2"):
+                ui.label("Reinitialize LDAP users?").classes("text-subtitle1 text-weight-medium")
+                ui.label(
+                    "Deletes ALL LDAP-synced users (auth provider = ldap). Local "
+                    "accounts and your own account are kept. Re-run 'Sync LDAP "
+                    "Users' afterwards to repopulate them correctly."
+                ).classes("text-caption text-grey").style("max-width: 420px;")
+                with ui.row().classes("justify-end w-full q-gutter-sm"):
+                    ui.button("Cancel", on_click=_dlg.close).props("flat")
+                    confirm_btn = ui.button("Delete & reset", color="negative")
+
+                    async def _confirm():
+                        _dlg.close()
+                        await reset_ldap_users()
+
+                    confirm_btn.on("click", run_async(
+                        confirm_btn, _confirm, error_prefix="LDAP reset error",
+                    ))
+            _dlg.open()
 
         # ---- Connection test card ──────────────────────────────────────────
         with ui.element("div").classes("ed-card").style("margin-top: 22px;"):
@@ -581,3 +611,8 @@ async def settings_page():
                 ldap_sync_btn.on("click", run_async(
                     ldap_sync_btn, sync_ldap_users, error_prefix="LDAP sync error",
                 ))
+
+                reset_ldap_btn = ui.button(
+                    "Reinitialize LDAP Users", icon="restart_alt",
+                ).props("flat color=negative")
+                reset_ldap_btn.on("click", _on_reset_ldap_click)

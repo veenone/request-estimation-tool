@@ -261,6 +261,7 @@ class LDAPProvider:
             "synced": 0,
             "created": 0,
             "updated": 0,
+            "skipped": 0,
             "deactivated": 0,
             "errors": [],
         }
@@ -359,51 +360,38 @@ class LDAPProvider:
                         uac = 0
                     is_active = not bool(uac & 0x0002)
 
-                    local_user = (
+                    existing = (
                         self.session.query(User)
                         .filter(User.username == sam)
                         .first()
                     )
-                    if local_user:
-                        local_user.display_name = display_name
-                        local_user.email = email
-                        local_user.external_id = dn
-                        if role is not None:
-                            local_user.role = role
-                        local_user.is_active = is_active
-                        result["updated"] = int(str(result["updated"])) + 1  # type: ignore[arg-type]
-                    else:
-                        local_user = User(
-                            username=sam,
-                            display_name=display_name,
-                            email=email,
-                            auth_provider="ldap",
-                            external_id=dn,
-                            role=role or "VIEWER",
-                            is_active=is_active,
-                        )
-                        self.session.add(local_user)
-                        result["created"] = int(str(result["created"])) + 1  # type: ignore[arg-type]
+                    if existing:
+                        # Skip users that already exist — a sync never
+                        # overwrites local state (role / email / active flag).
+                        # Use the reset-synced-users admin action to clear a
+                        # bad sync and re-create from scratch.
+                        result["skipped"] = int(str(result["skipped"])) + 1  # type: ignore[arg-type]
+                        continue
 
+                    local_user = User(
+                        username=sam,
+                        display_name=display_name,
+                        email=email,
+                        auth_provider="ldap",
+                        external_id=dn,
+                        role=role or "VIEWER",
+                        is_active=is_active,
+                    )
+                    self.session.add(local_user)
+                    result["created"] = int(str(result["created"])) + 1  # type: ignore[arg-type]
                     result["synced"] = int(str(result["synced"])) + 1  # type: ignore[arg-type]
 
                 except Exception as exc:
                     errors.append(str(exc))
 
-            # Deactivate local LDAP users no longer present in the directory.
-            ldap_users_in_db = (
-                self.session.query(User)
-                .filter(
-                    User.auth_provider == "ldap",
-                    User.is_active == True,  # noqa: E712
-                )
-                .all()
-            )
-            for db_user in ldap_users_in_db:
-                if db_user.username not in ldap_usernames:
-                    db_user.is_active = False
-                    result["deactivated"] = int(str(result["deactivated"])) + 1  # type: ignore[arg-type]
-
+            # Existing users are skipped (never modified), so there is no
+            # deactivation pass. A wrong sync is cleaned up via the
+            # reset-synced-users admin action instead.
             self.session.commit()
             result["errors"] = errors
 

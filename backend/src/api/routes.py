@@ -522,6 +522,35 @@ def ldap_test(user: User = Depends(RequireRole("ADMIN")), db: Session = Depends(
     return {"success": ok, "message": message}
 
 
+@router.post("/auth/ldap/reset-synced-users")
+def ldap_reset_synced_users(
+    request: HTTPRequest,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete all LDAP-synced users so a fresh sync can repopulate them.
+
+    Use this to recover from a wrong sync (e.g. bad search base/filter). Only
+    users with auth_provider='ldap' are removed; local accounts (including the
+    built-in admin) and the current user are preserved. Related sessions cascade
+    and audit/estimation references are set NULL.
+    """
+    victims = (
+        db.query(User)
+        .filter(User.auth_provider == "ldap", User.id != user.id)
+        .all()
+    )
+    deleted = len(victims)
+    for u in victims:
+        db.delete(u)
+    db.commit()
+    AuthService(db).log_action(
+        user.id, "LDAP_RESET_USERS", details={"deleted": deleted},
+        ip_address=getattr(request.state, "client_ip", None),
+    )
+    return {"deleted": deleted}
+
+
 # ── Audit Log (APPROVER+) ──────────────────────────────
 
 @router.get("/audit-log")
