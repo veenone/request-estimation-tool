@@ -17,7 +17,7 @@ pipeline {
         string(name: 'IMAGE_TAG', defaultValue: '', description: 'Optional tag; defaults to git short SHA')
         string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build')
         booleanParam(name: 'IS_STAGING', defaultValue: true, description: 'Tag and push the image as :staging instead of :latest (the :<IMAGE_TAG> tag is always pushed)')
-        string(name: 'AGENT_LABEL', defaultValue: 'docekr', description: 'Jenkins agent label. Windows agent needs PuTTY (plink/pscp); Linux agent needs openssh-client + sshpass.')
+        string(name: 'AGENT_LABEL', defaultValue: 'docker', description: 'Jenkins agent label. Windows agent needs PuTTY (plink/pscp); Linux agent needs openssh-client + sshpass.')
         string(name: 'SSH_HOST_STAGING', defaultValue: '10.8.8.82', description: 'Staging server IP')
         string(name: 'SSH_HOSTKEY', defaultValue: '', description: 'Windows agents only: PuTTY host key fingerprint. Linux agents use StrictHostKeyChecking=accept-new.')
         string(name: 'REGISTRY', defaultValue: 'i2j6hub1vt001.corp.idemia.com', description: 'Harbor registry')
