@@ -19,6 +19,21 @@ __pycache__
 dist
 build
 
+# Local dev artefacts (keep them out of the agent build context)
+.venv
+.venv2
+venv
+node_modules
+htmlcov
+.coverage
+.coverage.*
+.gstack
+.remember
+.nicegui
+.claude
+.mcp.json
+sample
+
 # Runtime database (created inside the container at runtime)
 data/estimation.db
 
