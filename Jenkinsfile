@@ -242,11 +242,11 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                         withCredentials([usernamePassword(credentialsId: '10.8.8.82_SSH_Cred', usernameVariable: 'SSH_USER', passwordVariable: 'SSH_PASS')]) {
                             script {
                                 if (isUnix()) {
-                                    // Run the pytest suite inside the BUILT image. The production
-                                    // image installs only runtime deps (pip install ./backend), so
-                                    // the test runners are added here with `pip install -e .[dev]`
-                                    // before pytest runs. --entrypoint sh bypasses the multi-process
-                                    // prod entrypoint (uvicorn + Streamlit + NiceGUI).
+                                    // Run the pytest suite inside the BUILT image. Test deps (the
+                                    // [dev] extra) are baked in at build time, so this runs OFFLINE —
+                                    // the staging host has no PyPI access at `docker run` time.
+                                    // --entrypoint sh bypasses the multi-process prod entrypoint
+                                    // (uvicorn + Streamlit + NiceGUI).
                                     //
                                     // No env file needed: each test builds its own isolated, throwaway
                                     // SQLite database via fixtures, so no external DB/secrets are required.
@@ -255,14 +255,14 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         echo "Running pytest in presto:test on $SSH_USER@$SSH_HOST"
                                         export SSHPASS="$SSH_PASS"
                                         REMOTE_CMD="set -e
-docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && pip install -e .[dev] && python -m pytest -q'"
+docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && python -m pytest -q'"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
                                     powershell '''
                                         Write-Host "Running pytest in presto:test on $env:SSH_USER@$env:SSH_HOST"
                                         $remoteCmd = "set -e; " +
-                                        "docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && pip install -e .[dev] && python -m pytest -q'"
+                                        "docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && python -m pytest -q'"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"

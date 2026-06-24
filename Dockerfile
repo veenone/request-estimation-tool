@@ -24,8 +24,11 @@ WORKDIR /app
 # layer when only application code changes.
 COPY backend/pyproject.toml backend/
 COPY frontend_nicegui/requirements.txt frontend_nicegui/
+# Install the [dev] extra (pytest, etc.) at BUILD time so the CI test stage can
+# run the suite offline. The staging host has no PyPI access at `docker run`
+# time, so installing test deps there fails on name resolution.
 RUN mkdir -p backend/src && touch backend/src/__init__.py \
-    && pip install --no-cache-dir ./backend streamlit \
+    && pip install --no-cache-dir "./backend[dev]" streamlit \
     && pip install --no-cache-dir -r frontend_nicegui/requirements.txt
 
 # ── Stage 2: app — source code + runtime config ──────────────────
