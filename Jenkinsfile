@@ -205,11 +205,14 @@ pipeline {
                                         # docker daemon's registry trust (/etc/docker/certs.d + system
                                         # CAs). BuildKit has its own cert pool and fails to verify the
                                         # corp Harbor CA when pulling the base image.
+                                        # --network=host gives the build the host's DNS/resolver so pip
+                                        # can reach the corp package index; the default bridge network
+                                        # has no working resolver ("Temporary failure in name resolution").
                                         REMOTE_CMD="set -e
 cd $REMOTE_PATH
 mkdir -p extracted
 tar -xzf $TAR_NAME -C extracted
-DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
+DOCKER_BUILDKIT=0 docker build --network=host -t presto:test -f extracted/Dockerfile extracted"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
@@ -222,7 +225,7 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         "cd $env:REMOTE_PATH; " +
                                         "mkdir -p extracted; " +
                                         "tar -xzf $env:TAR_NAME -C extracted; " +
-                                        "DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
+                                        "DOCKER_BUILDKIT=0 docker build --network=host -t presto:test -f extracted/Dockerfile extracted"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"
