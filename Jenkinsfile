@@ -20,13 +20,17 @@ pipeline {
         booleanParam(name: 'IS_STAGING', defaultValue: true, description: 'Tag and push the image as :staging instead of :latest (the :<IMAGE_TAG> tag is always pushed)')
         string(name: 'REGISTRY', defaultValue: 'i2j6hub1vt001.corp.idemia.com', description: 'Harbor registry')
         string(name: 'REPOSITORY', defaultValue: 'ops', description: 'Harbor project')
+        string(name: 'PIP_INDEX_URL', defaultValue: 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple', description: 'PyPI index used during the image build (corp Nexus mirror)')
+        string(name: 'PIP_TRUSTED_HOST', defaultValue: 'i2j6nexus2v0001.corp.idemia.com', description: 'Host marked trusted for pip (skips TLS verify against the internal CA)')
     }
 
     environment {
-        REGISTRY   = "${params.REGISTRY}"
-        REPOSITORY = "${params.REPOSITORY}"
-        IMAGE_NAME = "presto"
-        IS_STAGING = "${params.IS_STAGING}"
+        REGISTRY         = "${params.REGISTRY}"
+        REPOSITORY       = "${params.REPOSITORY}"
+        IMAGE_NAME       = "presto"
+        IS_STAGING       = "${params.IS_STAGING}"
+        PIP_INDEX_URL    = "${params.PIP_INDEX_URL}"
+        PIP_TRUSTED_HOST = "${params.PIP_TRUSTED_HOST}"
     }
 
     stages {
@@ -59,7 +63,11 @@ pipeline {
                     sh '''
                         set -e
                         echo "Building presto:test on agent $(hostname) (tag $EFFECTIVE_TAG)"
-                        DOCKER_BUILDKIT=0 docker build --network=host -t presto:test .
+                        echo "pip index: $PIP_INDEX_URL"
+                        DOCKER_BUILDKIT=0 docker build --network=host \
+                            --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+                            --build-arg PIP_TRUSTED_HOST="$PIP_TRUSTED_HOST" \
+                            -t presto:test .
                     '''
                 }
             }
