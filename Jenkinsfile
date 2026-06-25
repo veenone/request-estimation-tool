@@ -183,6 +183,41 @@ pipeline {
             }
         }
 
+        stage('Diagnostics (staging host)') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: '10.8.8.82_SSH_Cred', usernameVariable: 'SSH_USER', passwordVariable: 'SSH_PASS')]) {
+                    script {
+                        if (isUnix()) {
+                            // Print the build env's Python/arch and probe Nexus reachability,
+                            // running the base image with --network=host exactly as the build does.
+                            // Heredoc with a quoted delimiter avoids SSH quoting issues.
+                            sh '''
+                                set +x
+                                echo "Diagnostics on $SSH_USER@$SSH_HOST"
+                                export SSHPASS="$SSH_PASS"
+                                sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" 'sh -s' <<'REMOTE'
+set +e
+BASE=i2j6hub1vt001.corp.idemia.com/library/python:3.12-slim
+echo "=== docker server os/arch ==="
+docker version --format "{{.Server.Os}}/{{.Server.Arch}}"
+echo "=== python (base image, --network=host) ==="
+docker run --rm --network=host $BASE python --version
+echo -n "bits (32/64): "; docker run --rm --network=host $BASE getconf LONG_BIT
+echo -n "uname: "; docker run --rm --network=host $BASE uname -s -m
+echo "=== DNS: resolve Nexus hostname ==="
+docker run --rm --network=host $BASE getent hosts i2j6nexus2v0001.corp.idemia.com && echo "hostname RESOLVED" || echo "hostname NOT resolvable"
+echo "=== TCP: reach Nexus IP 10.8.8.86:443 ==="
+docker run --rm --network=host $BASE python -c "import socket; socket.create_connection(('10.8.8.86',443),5); print('TCP 10.8.8.86:443 OK')" || echo "TCP 10.8.8.86:443 NOT reachable"
+REMOTE
+                            '''
+                        } else {
+                            echo 'Diagnostics stage runs on a Linux agent only; skipping.'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Build image on staging host') {
             steps {
                 script {
