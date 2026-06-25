@@ -19,14 +19,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Corp PyPI mirror (Nexus). The CI build runs on a Jenkins agent with corp
-# network access; pypi.org is not reachable from the build environment.
-# PIP_TRUSTED_HOST avoids TLS-verification failures against the internal CA.
-# Override at build time with --build-arg if the mirror ever moves.
+# Corp PyPI mirror (Nexus). The CI build runs with corp network access; pypi.org
+# is not reachable from the build environment. PIP_TRUSTED_HOST avoids TLS-verify
+# failures against the internal CA (and the cert won't match a bare IP).
+# PIP_EXTRA_INDEX_URL is a fallback by IP for when the Nexus hostname can't be
+# resolved — pip skips the unreachable hostname index and uses the IP one.
+# Override any of these at build time with --build-arg.
 ARG PIP_INDEX_URL=https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple
+ARG PIP_EXTRA_INDEX_URL=https://10.8.8.86/repository/pypi-group/simple
 ARG PIP_TRUSTED_HOST=i2j6nexus2v0001.corp.idemia.com
+ARG PIP_TRUSTED_HOST_FALLBACK=10.8.8.86
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
-    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}
+    PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST} ${PIP_TRUSTED_HOST_FALLBACK}"
 
 # Install Python dependencies from the backend project, Streamlit, and NiceGUI.
 # Copying only pyproject.toml / requirements.txt first lets Docker cache this
