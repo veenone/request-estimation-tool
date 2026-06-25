@@ -6,7 +6,7 @@
 // the Nexus PyPI mirror and the Harbor registry, so no staging-host SSH hop is
 // needed for the build.
 pipeline {
-    agent { label 'docker1' }
+    agent { label 'docker' }
     options {
         timestamps()
         disableConcurrentBuilds()
