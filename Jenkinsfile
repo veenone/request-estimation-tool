@@ -22,9 +22,6 @@ pipeline {
         string(name: 'SSH_HOSTKEY', defaultValue: '', description: 'Windows agents only: PuTTY host key fingerprint. Linux agents use StrictHostKeyChecking=accept-new.')
         string(name: 'REGISTRY', defaultValue: 'i2j6hub1vt001.corp.idemia.com', description: 'Harbor registry')
         string(name: 'REPOSITORY', defaultValue: 'ops', description: 'Harbor project')
-        string(name: 'PIP_INDEX_URL', defaultValue: 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple', description: 'PyPI index (Nexus mirror, by hostname so the reverse proxy routes to the right vhost)')
-        string(name: 'PIP_TRUSTED_HOST', defaultValue: 'i2j6nexus2v0001.corp.idemia.com', description: 'Host marked trusted for pip (skips TLS verify against the internal CA)')
-        string(name: 'NEXUS_IP', defaultValue: '10.8.8.86', description: 'Nexus IP; mapped to the hostname via docker build --add-host since the build env has no DNS for it')
         string(name: 'PLINK_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\plink.exe', description: 'Windows agents only: path to plink.exe')
         string(name: 'PSCP_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\pscp.exe', description: 'Windows agents only: path to pscp.exe')
     }
@@ -40,9 +37,12 @@ pipeline {
         PSCP        = "${params.PSCP_PATH}"
         REMOTE_PATH = "/home/administrator/presto-build"
         IS_STAGING  = "${params.IS_STAGING}"
-        PIP_INDEX_URL    = "${params.PIP_INDEX_URL}"
-        PIP_TRUSTED_HOST = "${params.PIP_TRUSTED_HOST}"
-        NEXUS_IP         = "${params.NEXUS_IP}"
+        // Hardcoded (NOT job parameters): a stale, sticky parameter value from a
+        // previous run previously pinned the build to the bare-IP URL and broke
+        // --add-host. Keeping them here makes the Jenkinsfile the single source.
+        PIP_INDEX_URL    = 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple'
+        PIP_TRUSTED_HOST = 'i2j6nexus2v0001.corp.idemia.com'
+        NEXUS_IP         = '10.8.8.86'
     }
 
     stages {
