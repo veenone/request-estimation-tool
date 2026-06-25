@@ -22,8 +22,9 @@ pipeline {
         string(name: 'SSH_HOSTKEY', defaultValue: '', description: 'Windows agents only: PuTTY host key fingerprint. Linux agents use StrictHostKeyChecking=accept-new.')
         string(name: 'REGISTRY', defaultValue: 'i2j6hub1vt001.corp.idemia.com', description: 'Harbor registry')
         string(name: 'REPOSITORY', defaultValue: 'ops', description: 'Harbor project')
-        string(name: 'PIP_INDEX_URL', defaultValue: 'https://10.8.8.86/repository/pypi-group/simple', description: 'PyPI index used during the image build (Nexus mirror by IP — the hostname is not resolvable from the build env)')
-        string(name: 'PIP_TRUSTED_HOST', defaultValue: '10.8.8.86', description: 'Host marked trusted for pip (skips TLS verify; the cert is issued for the hostname, not the IP)')
+        string(name: 'PIP_INDEX_URL', defaultValue: 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple', description: 'PyPI index (Nexus mirror, by hostname so the reverse proxy routes to the right vhost)')
+        string(name: 'PIP_TRUSTED_HOST', defaultValue: 'i2j6nexus2v0001.corp.idemia.com', description: 'Host marked trusted for pip (skips TLS verify against the internal CA)')
+        string(name: 'NEXUS_IP', defaultValue: '10.8.8.86', description: 'Nexus IP; mapped to the hostname via docker build --add-host since the build env has no DNS for it')
         string(name: 'PLINK_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\plink.exe', description: 'Windows agents only: path to plink.exe')
         string(name: 'PSCP_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\pscp.exe', description: 'Windows agents only: path to pscp.exe')
     }
@@ -41,6 +42,7 @@ pipeline {
         IS_STAGING  = "${params.IS_STAGING}"
         PIP_INDEX_URL    = "${params.PIP_INDEX_URL}"
         PIP_TRUSTED_HOST = "${params.PIP_TRUSTED_HOST}"
+        NEXUS_IP         = "${params.NEXUS_IP}"
     }
 
     stages {
@@ -208,6 +210,8 @@ echo "=== DNS: resolve Nexus hostname ==="
 docker run --rm --network=host $BASE getent hosts i2j6nexus2v0001.corp.idemia.com && echo "hostname RESOLVED" || echo "hostname NOT resolvable"
 echo "=== TCP: reach Nexus IP 10.8.8.86:443 ==="
 docker run --rm --network=host $BASE python -c "import socket; socket.create_connection(('10.8.8.86',443),5); print('TCP 10.8.8.86:443 OK')" || echo "TCP 10.8.8.86:443 NOT reachable"
+echo "=== HTTP: fetch hatchling index via hostname (--add-host -> IP) ==="
+docker run --rm --network=host --add-host i2j6nexus2v0001.corp.idemia.com:10.8.8.86 $BASE python -c "import urllib.request,ssl; ctx=ssl._create_unverified_context(); r=urllib.request.urlopen('https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple/hatchling/', context=ctx, timeout=10); print('hatchling index HTTP', r.status)" || echo "hatchling index fetch FAILED (vhost/path/port?)"
 REMOTE
                             '''
                         } else {
@@ -248,7 +252,7 @@ REMOTE
 cd $REMOTE_PATH
 mkdir -p extracted
 tar -xzf $TAR_NAME -C extracted
-DOCKER_BUILDKIT=0 docker build --network=host --build-arg PIP_INDEX_URL=$PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
+DOCKER_BUILDKIT=0 docker build --network=host --add-host $PIP_TRUSTED_HOST:$NEXUS_IP --build-arg PIP_INDEX_URL=$PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
@@ -261,7 +265,7 @@ DOCKER_BUILDKIT=0 docker build --network=host --build-arg PIP_INDEX_URL=$PIP_IND
                                         "cd $env:REMOTE_PATH; " +
                                         "mkdir -p extracted; " +
                                         "tar -xzf $env:TAR_NAME -C extracted; " +
-                                        "DOCKER_BUILDKIT=0 docker build --network=host --build-arg PIP_INDEX_URL=$env:PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$env:PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
+                                        "DOCKER_BUILDKIT=0 docker build --network=host --add-host ${env:PIP_TRUSTED_HOST}:${env:NEXUS_IP} --build-arg PIP_INDEX_URL=$env:PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$env:PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"

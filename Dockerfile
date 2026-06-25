@@ -19,13 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Corp PyPI mirror (Nexus), addressed by IP. The build environment cannot
-# resolve the Nexus hostname (DNS "Temporary failure in name resolution"), so we
-# hit it by IP directly — 10.8.8.86 is on the same subnet as the staging host
-# and needs no DNS. PIP_TRUSTED_HOST skips TLS verification (the cert is issued
-# for the hostname, not a bare IP). Override at build time with --build-arg.
-ARG PIP_INDEX_URL=https://10.8.8.86/repository/pypi-group/simple
-ARG PIP_TRUSTED_HOST=10.8.8.86
+# Corp PyPI mirror (Nexus). Use the HOSTNAME in the URL so the reverse proxy
+# routes to the Nexus vhost (a bare-IP request hits the wrong vhost and returns
+# an empty index -> "No matching distribution"). The build env can't resolve the
+# hostname via DNS, so the Jenkins build maps it to the IP with `--add-host`.
+# PIP_TRUSTED_HOST skips TLS verification against the internal CA.
+ARG PIP_INDEX_URL=https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple
+ARG PIP_TRUSTED_HOST=i2j6nexus2v0001.corp.idemia.com
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}
 
