@@ -22,6 +22,8 @@ pipeline {
         string(name: 'SSH_HOSTKEY', defaultValue: '', description: 'Windows agents only: PuTTY host key fingerprint. Linux agents use StrictHostKeyChecking=accept-new.')
         string(name: 'REGISTRY', defaultValue: 'i2j6hub1vt001.corp.idemia.com', description: 'Harbor registry')
         string(name: 'REPOSITORY', defaultValue: 'ops', description: 'Harbor project')
+        string(name: 'PIP_INDEX_URL', defaultValue: 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple', description: 'PyPI index used during the image build (corp Nexus mirror)')
+        string(name: 'PIP_TRUSTED_HOST', defaultValue: 'i2j6nexus2v0001.corp.idemia.com', description: 'Host marked trusted for pip (skips TLS verify against the internal CA)')
         string(name: 'PLINK_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\plink.exe', description: 'Windows agents only: path to plink.exe')
         string(name: 'PSCP_PATH', defaultValue: 'C:\\Program Files\\PuTTY\\pscp.exe', description: 'Windows agents only: path to pscp.exe')
     }
@@ -37,6 +39,8 @@ pipeline {
         PSCP        = "${params.PSCP_PATH}"
         REMOTE_PATH = "/home/administrator/presto-build"
         IS_STAGING  = "${params.IS_STAGING}"
+        PIP_INDEX_URL    = "${params.PIP_INDEX_URL}"
+        PIP_TRUSTED_HOST = "${params.PIP_TRUSTED_HOST}"
     }
 
     stages {
@@ -209,7 +213,7 @@ pipeline {
 cd $REMOTE_PATH
 mkdir -p extracted
 tar -xzf $TAR_NAME -C extracted
-DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
+DOCKER_BUILDKIT=0 docker build --network=host --build-arg PIP_INDEX_URL=$PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
@@ -222,7 +226,7 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         "cd $env:REMOTE_PATH; " +
                                         "mkdir -p extracted; " +
                                         "tar -xzf $env:TAR_NAME -C extracted; " +
-                                        "DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
+                                        "DOCKER_BUILDKIT=0 docker build --network=host --build-arg PIP_INDEX_URL=$env:PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$env:PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"
@@ -242,10 +246,9 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                         withCredentials([usernamePassword(credentialsId: '10.8.8.82_SSH_Cred', usernameVariable: 'SSH_USER', passwordVariable: 'SSH_PASS')]) {
                             script {
                                 if (isUnix()) {
-                                    // Run the pytest suite inside the BUILT image. The production
-                                    // image installs only runtime deps (pip install ./backend), so
-                                    // the test runners are added here with `pip install -e .[dev]`
-                                    // before pytest runs. --entrypoint sh bypasses the multi-process
+                                    // Run the pytest suite inside the BUILT image. Test deps (the
+                                    // [dev] extra) are baked in at build time, so this runs OFFLINE —
+                                    // no runtime pip install. --entrypoint sh bypasses the multi-process
                                     // prod entrypoint (uvicorn + Streamlit + NiceGUI).
                                     //
                                     // No env file needed: each test builds its own isolated, throwaway
@@ -255,14 +258,14 @@ DOCKER_BUILDKIT=0 docker build -t presto:test -f extracted/Dockerfile extracted"
                                         echo "Running pytest in presto:test on $SSH_USER@$SSH_HOST"
                                         export SSHPASS="$SSH_PASS"
                                         REMOTE_CMD="set -e
-docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && pip install -e .[dev] && python -m pytest -q'"
+docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && python -m pytest -q'"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
                                     powershell '''
                                         Write-Host "Running pytest in presto:test on $env:SSH_USER@$env:SSH_HOST"
                                         $remoteCmd = "set -e; " +
-                                        "docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && pip install -e .[dev] && python -m pytest -q'"
+                                        "docker run --rm --entrypoint sh presto:test -lc 'cd /app/backend && python -m pytest -q'"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"
