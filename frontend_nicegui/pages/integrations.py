@@ -571,6 +571,15 @@ def _build_jira_panel(data: dict) -> None:
             "Optional separate API key for PR queries. Leave empty to use the connection API key."
         ).classes("text-caption text-grey")
 
+        with ui.row().classes("items-center gap-2"):
+            pr_bypass_proxy_toggle = ui.switch(
+                "PR bypass proxy",
+                value=bool(extra.get("pr_bypass_proxy", False)),
+            )
+            ui.label(
+                "Bypass the corporate proxy for PR queries (internal hosts / 502 errors)."
+            ).classes("text-caption text-grey")
+
         pr_jql_input = ui.textarea(
             label="PR JQL Filter",
             value=extra.get("pr_jql_filter", ""),
@@ -618,6 +627,29 @@ def _build_jira_panel(data: dict) -> None:
 
         pr_fetch_btn.on("click", _on_pr_fetch_click)
 
+        async def _test_pr_conn() -> None:
+            result = await api_post("/integrations/JIRA/pr-test-connection")
+            if result.get("success"):
+                ui.notify(
+                    f"PR connection OK: {result.get('message', '')}",
+                    type="positive", timeout=7000,
+                )
+            else:
+                ui.notify(
+                    f"PR connection failed: {result.get('message', '')}",
+                    type="warning", timeout=9000,
+                )
+
+        pr_test_btn = ui.button(
+            "Test PR Connection", icon="link",
+        ).props("flat color=secondary")
+        pr_test_btn.on("click", run_async(
+            pr_test_btn, _test_pr_conn, error_prefix="PR test failed",
+        ))
+        ui.label(
+            "Tests the saved PR token (or main token if none) — save changes first."
+        ).classes("text-caption text-grey")
+
         ui.separator()
 
         # -- Enabled toggle -----------------------------------------------------
@@ -654,6 +686,7 @@ def _build_jira_panel(data: dict) -> None:
             _pr_jql=pr_jql_input,
             _pr_fields=pr_fields_input,
             _pr_key=pr_api_key_input,
+            _pr_bp=pr_bypass_proxy_toggle,
             _st=subtask_type_input,
             _tet=task_export_type_input,
         ) -> None:
@@ -672,6 +705,7 @@ def _build_jira_panel(data: dict) -> None:
                 "xray_project_key":       (_xk.value or "").strip(),
                 "pr_jql_filter":          (_pr_jql.value or "").strip(),
                 "pr_fields":              (_pr_fields.value or "").strip(),
+                "pr_bypass_proxy":        _pr_bp.value,
                 "subtask_type":           (_st.value or "Sub-task").strip(),
                 "task_export_type":       (_tet.value or "").strip(),
             }

@@ -245,6 +245,10 @@ class RequestUpdate(BaseModel):
     notes: Optional[str] = None
     product_type: Optional[str] = None
 
+class RequestInboxReinit(BaseModel):
+    """Confirmation payload for the destructive request-inbox reinitialize."""
+    confirm: str
+
 class RequestOut(RequestBase):
     id: int
     status: str

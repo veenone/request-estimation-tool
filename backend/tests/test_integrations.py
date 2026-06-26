@@ -1,5 +1,6 @@
 """Tests for integration adapters, service, and API endpoints."""
 
+import base64
 import json
 from unittest.mock import MagicMock, patch
 
@@ -459,6 +460,75 @@ class TestJiraAdapter:
         adapter.test_connection()
         _, kwargs = mock_request.call_args
         assert "proxies" not in kwargs
+
+    # -- PR-items connection -------------------------------------------------
+
+    def test_pr_headers_use_pr_token_when_set(self):
+        config = _jira_config()
+        config["additional_config"]["pr_api_key"] = "pr-secret"
+        adapter = JiraAdapter(config)
+        expected = "Basic " + base64.b64encode(
+            b"user@example.com:pr-secret"
+        ).decode()
+        assert adapter._pr_headers()["Authorization"] == expected
+
+    def test_pr_headers_fall_back_to_main_key(self):
+        adapter = JiraAdapter(_jira_config())  # no pr_api_key
+        assert adapter._pr_headers() == adapter._headers()
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_pr_request_bypasses_proxy_when_pr_toggle_on(self, mock_request):
+        mock_request.return_value = MagicMock(status_code=200)
+        config = _jira_config()
+        config["additional_config"]["pr_bypass_proxy"] = True
+        adapter = JiraAdapter(config)
+        adapter._pr_request("GET", adapter._url("myself"))
+        _, kwargs = mock_request.call_args
+        assert kwargs["proxies"] == {"http": None, "https": None}
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_pr_request_bypasses_proxy_when_main_toggle_on(self, mock_request):
+        """Main bypass implies PR bypass (same host)."""
+        mock_request.return_value = MagicMock(status_code=200)
+        config = _jira_config()
+        config["additional_config"]["bypass_proxy"] = True
+        adapter = JiraAdapter(config)
+        assert adapter.pr_bypass_proxy is False
+        adapter._pr_request("GET", adapter._url("myself"))
+        _, kwargs = mock_request.call_args
+        assert kwargs["proxies"] == {"http": None, "https": None}
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_pr_connection_success(self, mock_request):
+        mock_request.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"displayName": "PR Bot"}),
+        )
+        config = _jira_config()
+        config["additional_config"]["pr_api_key"] = "pr-secret"
+        adapter = JiraAdapter(config)
+        result = adapter.test_pr_connection()
+        assert result.success is True
+        assert "PR Bot" in result.message
+        assert "PR token" in result.message
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_pr_connection_proxy_hint(self, mock_request):
+        import requests as _req
+        mock_request.side_effect = _req.exceptions.ProxyError(
+            "Tunnel connection failed: 502 Bad Gateway"
+        )
+        adapter = JiraAdapter(_jira_config())
+        result = adapter.test_pr_connection()
+        assert not result.success
+        assert "bypass proxy" in result.message.lower()
+
+    def test_test_pr_connection_no_key(self):
+        config = _jira_config(api_key="")
+        adapter = JiraAdapter(config)
+        result = adapter.test_pr_connection()
+        assert not result.success
+        assert "api key" in result.message.lower()
 
 
 # ── EmailAdapter tests ──────────────────────────────────

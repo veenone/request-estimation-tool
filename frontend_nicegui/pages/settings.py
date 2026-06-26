@@ -575,6 +575,50 @@ async def settings_page():
                     ))
             _dlg.open()
 
+        async def reinit_request_inbox(token: str):
+            result = await api_post("/requests/reinit", json={"confirm": token})
+            deleted = result.get("deleted", 0)
+            ui.notify(
+                f"Request inbox reinitialized: {deleted} request(s) removed, "
+                "ID counter reset to 1.",
+                type="positive", timeout=6000,
+            )
+
+        def _on_reinit_inbox_click(*_):
+            with ui.dialog() as _dlg, ui.card().classes("gap-2"):
+                ui.label("Reinitialize request inbox?").classes(
+                    "text-subtitle1 text-weight-medium"
+                )
+                ui.label(
+                    "Deletes ALL requests and resets the request-number counter "
+                    "to 1. Estimations are kept but lose their link to the deleted "
+                    "request. This cannot be undone."
+                ).classes("text-caption text-grey").style("max-width: 440px;")
+                token_input = ui.input(
+                    label="Type REINITIALIZE to confirm",
+                    placeholder="REINITIALIZE",
+                ).classes("w-full").props("autocomplete=off")
+                with ui.row().classes("justify-end w-full q-gutter-sm"):
+                    ui.button("Cancel", on_click=_dlg.close).props("flat")
+                    confirm_btn = ui.button("Delete & reinitialize", color="negative")
+
+                    async def _confirm(_inp=token_input):
+                        token = (_inp.value or "").strip()
+                        if token.upper() != "REINITIALIZE":
+                            ui.notify(
+                                "Type REINITIALIZE exactly to confirm.",
+                                type="warning",
+                            )
+                            return
+                        _dlg.close()
+                        await reinit_request_inbox(token)
+
+                    confirm_btn.on("click", run_async(
+                        confirm_btn, _confirm,
+                        error_prefix="Request inbox reinit error",
+                    ))
+            _dlg.open()
+
         # ---- Connection test card ──────────────────────────────────────────
         with ui.element("div").classes("ed-card").style("margin-top: 22px;"):
             with ui.element("div").classes("ed-card-head"):
@@ -616,3 +660,8 @@ async def settings_page():
                     "Reinitialize LDAP Users", icon="restart_alt",
                 ).props("flat color=negative")
                 reset_ldap_btn.on("click", _on_reset_ldap_click)
+
+                reinit_inbox_btn = ui.button(
+                    "Reinitialize Request Inbox", icon="inbox",
+                ).props("flat color=negative")
+                reinit_inbox_btn.on("click", _on_reinit_inbox_click)

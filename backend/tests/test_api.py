@@ -346,3 +346,58 @@ class TestEstimationVersioning:
         assert resp.status_code == 200
         keys = {item["key"] for item in resp.json()}
         assert "outline_auto_export_states" in keys
+
+
+class TestRequestInboxReinit:
+    """Admin reinitialize of the request inbox (POST /api/requests/reinit)."""
+
+    def _make_request(self, client, auth_headers, n):
+        resp = client.post("/api/requests", headers=auth_headers, json={
+            "request_number": f"REQ-{n}",
+            "title": f"Test request {n}",
+            "requester_name": "Tester",
+            "received_date": "2026-01-01",
+        })
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_reinit_rejects_wrong_token(self, client, auth_headers):
+        self._make_request(client, auth_headers, 1)
+        resp = client.post(
+            "/api/requests/reinit", headers=auth_headers, json={"confirm": "nope"}
+        )
+        assert resp.status_code == 400
+        # The request must still be present after a rejected reinit.
+        assert len(client.get("/api/requests", headers=auth_headers).json()) == 1
+
+    def test_reinit_rejects_empty_token(self, client, auth_headers):
+        resp = client.post(
+            "/api/requests/reinit", headers=auth_headers, json={"confirm": ""}
+        )
+        assert resp.status_code == 400
+
+    def test_reinit_deletes_all_with_correct_token(self, client, auth_headers):
+        self._make_request(client, auth_headers, 1)
+        self._make_request(client, auth_headers, 2)
+        resp = client.post(
+            "/api/requests/reinit",
+            headers=auth_headers,
+            json={"confirm": "REINITIALIZE"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["deleted"] == 2
+        assert client.get("/api/requests", headers=auth_headers).json() == []
+
+    def test_reinit_token_is_case_and_space_insensitive(self, client, auth_headers):
+        self._make_request(client, auth_headers, 1)
+        resp = client.post(
+            "/api/requests/reinit",
+            headers=auth_headers,
+            json={"confirm": "  reinitialize  "},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+
+    def test_reinit_requires_auth(self, client):
+        resp = client.post("/api/requests/reinit", json={"confirm": "REINITIALIZE"})
+        assert resp.status_code == 401

@@ -53,6 +53,7 @@ from .schemas import (
     DashboardStatsOut,
     RecentEstimationOut,
     RecentRequestOut,
+    RequestInboxReinit,
     DocumentTypeCreate,
     DocumentTypeOut,
     DocumentTypeUpdate,
@@ -1144,6 +1145,54 @@ def create_request(data: RequestCreate, user: User = Depends(RequireRole("ESTIMA
     db.commit()
     db.refresh(req)
     return req
+
+
+_REQUEST_REINIT_TOKEN = "REINITIALIZE"
+
+
+@router.post("/requests/reinit")
+def reinit_request_inbox(
+    request: HTTPRequest,
+    data: RequestInboxReinit,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete every request in the inbox and reset the ID counter.
+
+    Destructive admin action. The caller must echo the confirmation token
+    ('REINITIALIZE') in the body; the same token is also enforced in the UI.
+    Estimations are preserved — their request_id foreign key is SET NULL by the
+    database — so estimation history survives but loses its request link.
+    """
+    if (data.confirm or "").strip().upper() != _REQUEST_REINIT_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Confirmation token mismatch. Type '{_REQUEST_REINIT_TOKEN}' to proceed.",
+        )
+
+    deleted = db.query(Request).delete()
+    db.commit()
+
+    # Reset the auto-increment counter so numbering restarts (SQLite + MySQL).
+    from sqlalchemy import text
+    try:
+        db.execute(text("DELETE FROM sqlite_sequence WHERE name='requests'"))
+        db.commit()
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE requests AUTO_INCREMENT = 1"))
+            db.commit()
+        except Exception:
+            pass
+
+    AuthService(db).log_action(
+        user.id,
+        "REQUEST_INBOX_REINIT",
+        resource_type="request",
+        details={"deleted": deleted},
+        ip_address=getattr(request.state, "client_ip", None),
+    )
+    return {"deleted": deleted, "message": f"Request inbox cleared ({deleted} removed), ID counter reset to 1."}
 
 
 @router.get("/requests/{request_id}", response_model=RequestOut)
@@ -3818,7 +3867,10 @@ def get_jira_pr_items(
     if not config or not config.enabled:
         raise HTTPException(status_code=400, detail="JIRA integration not configured or not enabled.")
 
+    from ..integrations.jira_adapter import JiraAdapter
     adapter = get_adapter("JIRA", db)
+    if not isinstance(adapter, JiraAdapter):
+        raise HTTPException(status_code=400, detail="JIRA integration not available.")
 
     # Parse extra config for PR-specific settings
     import json as _json
@@ -3833,52 +3885,18 @@ def get_jira_pr_items(
     if not jql:
         raise HTTPException(status_code=400, detail="No PR JQL filter provided.")
 
-    # Use separate PR API key if configured, otherwise fall back to main adapter key
-    pr_api_key = extra.get("pr_api_key", "")
-
     try:
-        import requests as http_requests
-
-        # Build headers: use PR-specific API key if available
-        if pr_api_key:
-            import base64
-            headers = {"Content-Type": "application/json", "Accept": "application/json"}
-            if adapter.is_cloud and adapter.username:
-                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
-                headers["Authorization"] = f"Basic {creds}"
-            elif adapter.auth_mode == "basic" and adapter.username:
-                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
-                headers["Authorization"] = f"Basic {creds}"
-            elif adapter.auth_mode == "pat":
-                headers["Authorization"] = f"Bearer {pr_api_key}"
-            elif adapter.username:
-                creds = base64.b64encode(f"{adapter.username}:{pr_api_key}".encode()).decode()
-                headers["Authorization"] = f"Basic {creds}"
-            else:
-                headers["Authorization"] = f"Bearer {pr_api_key}"
-
-            resp = http_requests.request(
-                "GET",
-                adapter._url("search"),
-                headers=headers,
-                params={
-                    "jql": jql,
-                    "maxResults": 200,
-                    "fields": "summary,priority,status,issuetype,created",
-                },
-                timeout=adapter.timeout,
-                verify=adapter.ssl_verify,
-            )
-        else:
-            resp = adapter._request(
-                "GET",
-                adapter._url("search"),
-                params={
-                    "jql": jql,
-                    "maxResults": 200,
-                    "fields": "summary,priority,status,issuetype,created",
-                },
-            )
+        # PR request: uses the dedicated PR token (falling back to the main key)
+        # and the PR proxy-bypass setting, all handled inside the adapter.
+        resp = adapter._pr_request(
+            "GET",
+            adapter._url("search"),
+            params={
+                "jql": jql,
+                "maxResults": 200,
+                "fields": "summary,priority,status,issuetype,created",
+            },
+        )
         if resp.status_code >= 400:
             # Jira returns the real reason (bad field/value/filter, JQL error,
             # permission) in the response body — surface it instead of a bare
@@ -3919,6 +3937,33 @@ def get_jira_pr_items(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch PR items: {exc}")
+
+
+@router.post("/integrations/JIRA/pr-test-connection")
+def test_jira_pr_connection(
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Test the Jira PR-items connection using its dedicated PR token/proxy."""
+    from ..integrations.jira_adapter import JiraAdapter
+    from ..integrations.service import get_adapter
+
+    config = db.query(IntegrationConfig).filter_by(system_name="JIRA").first()
+    if not config or not config.enabled:
+        raise HTTPException(
+            status_code=400, detail="JIRA integration not configured or not enabled."
+        )
+
+    adapter = get_adapter("JIRA", db)
+    if not isinstance(adapter, JiraAdapter):
+        raise HTTPException(status_code=400, detail="JIRA integration not available.")
+
+    result = adapter.test_pr_connection()
+    return ConnectionTestOut(
+        success=result.success,
+        message=result.message,
+        details=result.details,
+    ).model_dump()
 
 
 # ── Estimation Version History & Diff ──────────────────────────────

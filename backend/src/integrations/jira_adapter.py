@@ -9,7 +9,7 @@ Authentication modes:
 """
 
 import base64
-from typing import Any
+from typing import Any, Optional
 
 import requests as http_requests
 
@@ -53,13 +53,17 @@ class JiraAdapter(BaseAdapter):
         # proxy fail with a 502 because the proxy won't tunnel (CONNECT) to an
         # internal host. When enabled, force a direct connection for this
         # integration regardless of the server's HTTP(S)_PROXY env vars.
-        bypass_val = self.additional_config.get("bypass_proxy", False)
-        if isinstance(bypass_val, str):
-            self.bypass_proxy: bool = bypass_val.strip().lower() in (
-                "true", "1", "yes", "on"
-            )
-        else:
-            self.bypass_proxy = bool(bypass_val)
+        self.bypass_proxy: bool = self._as_bool(
+            self.additional_config.get("bypass_proxy", False)
+        )
+
+        # PR / Problem-Report items can use a dedicated token and proxy setting
+        # (the PR query may run with a different Jira account than the main
+        # integration). Both fall back to the main credentials/proxy when unset.
+        self.pr_api_key = self.additional_config.get("pr_api_key", "")
+        self.pr_bypass_proxy: bool = self._as_bool(
+            self.additional_config.get("pr_bypass_proxy", False)
+        )
 
         # Auth mode: "pat" (Personal Access Token), "basic", or auto-detect
         self.auth_mode = self.additional_config.get("auth_mode", "").lower()
@@ -82,26 +86,53 @@ class JiraAdapter(BaseAdapter):
                         field_mappings[fm_key] = val_str
         self.field_mappings = field_mappings
 
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        """Coerce a stored config value (bool or string) into a bool."""
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+
+    def _auth_header_value(self, api_key: str) -> Optional[str]:
+        """Build the ``Authorization`` header value for *api_key* using the
+        configured auth mode. Shared by the main and PR-items requests so a
+        dedicated PR token is authenticated exactly like the main token.
+        """
+        if not api_key:
+            return None
         if self.is_cloud:
             # Cloud: email + API token as Basic Auth
-            creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
-            headers["Authorization"] = f"Basic {creds}"
-        elif self.auth_mode == "basic":
+            creds = base64.b64encode(f"{self.username}:{api_key}".encode()).decode()
+            return f"Basic {creds}"
+        if self.auth_mode == "basic":
             # DC/Server: explicit Basic Auth (username + password)
-            creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
-            headers["Authorization"] = f"Basic {creds}"
-        elif self.auth_mode == "pat":
+            creds = base64.b64encode(f"{self.username}:{api_key}".encode()).decode()
+            return f"Basic {creds}"
+        if self.auth_mode == "pat":
             # DC/Server: explicit Personal Access Token (Bearer)
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        elif self.username and self.api_key:
+            return f"Bearer {api_key}"
+        if self.username:
             # Auto-detect: username present → Basic Auth
-            creds = base64.b64encode(f"{self.username}:{self.api_key}".encode()).decode()
-            headers["Authorization"] = f"Basic {creds}"
-        elif self.api_key:
-            # Auto-detect: no username → assume PAT (Bearer)
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            creds = base64.b64encode(f"{self.username}:{api_key}".encode()).decode()
+            return f"Basic {creds}"
+        # Auto-detect: no username → assume PAT (Bearer)
+        return f"Bearer {api_key}"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        auth = self._auth_header_value(self.api_key)
+        if auth:
+            headers["Authorization"] = auth
+        return headers
+
+    def _pr_headers(self) -> dict[str, str]:
+        """Headers for PR-item requests. Uses the dedicated PR token when set,
+        otherwise falls back to the main API key.
+        """
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        auth = self._auth_header_value(self.pr_api_key or self.api_key)
+        if auth:
+            headers["Authorization"] = auth
         return headers
 
     def _url(self, path: str) -> str:
@@ -117,6 +148,19 @@ class JiraAdapter(BaseAdapter):
             # Override any HTTP(S)_PROXY env vars so the request goes direct.
             # trust_env stays on (default), so REQUESTS_CA_BUNDLE / the corp CA
             # chain is still honoured for TLS verification.
+            kwargs.setdefault("proxies", {"http": None, "https": None})
+        return http_requests.request(method, url, **kwargs)
+
+    def _pr_request(self, method: str, url: str, **kwargs) -> http_requests.Response:
+        """HTTP call for PR-item queries — PR token + PR proxy setting.
+
+        Bypasses the proxy when the PR toggle is on, or when the main toggle is
+        on (same host, so the main bypass implies PR needs it too).
+        """
+        kwargs.setdefault("headers", self._pr_headers())
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("verify", self.ssl_verify)
+        if self.pr_bypass_proxy or self.bypass_proxy:
             kwargs.setdefault("proxies", {"http": None, "https": None})
         return http_requests.request(method, url, **kwargs)
 
@@ -211,6 +255,82 @@ class JiraAdapter(BaseAdapter):
         return ConnectionTestResult(
             True,
             f"Connected as: {display} ({deploy_type}) [auth: {auth_desc}]",
+            details={"account_id": user.get("accountId", user.get("key"))},
+        )
+
+    def test_pr_connection(self) -> ConnectionTestResult:
+        """Verify the PR-items connection using the dedicated PR token.
+
+        Mirrors ``test_connection`` but authenticates with the PR token (or the
+        main token when none is set) and honours the PR proxy bypass, so admins
+        can validate the Problem-Report credentials independently.
+        """
+        if not self.base_url:
+            return ConnectionTestResult(False, "Jira URL is not configured.")
+        if not (self.pr_api_key or self.api_key):
+            return ConnectionTestResult(
+                False,
+                "No PR API key (and no main API key) is configured.",
+            )
+
+        using = "PR token" if self.pr_api_key else "main token (no separate PR token set)"
+        auth_desc = (
+            "Bearer/PAT"
+            if "Bearer" in self._pr_headers().get("Authorization", "")
+            else "Basic"
+        )
+
+        try:
+            resp = self._pr_request("GET", self._url("myself"))
+        except http_requests.exceptions.SSLError as e:
+            return ConnectionTestResult(
+                False,
+                "SSL certificate verification failed for the PR connection. "
+                "If this Jira uses a self-signed certificate, disable 'Verify "
+                f"SSL'.\n\nDetail: {e}",
+            )
+        except http_requests.exceptions.ProxyError as e:
+            return ConnectionTestResult(
+                False,
+                "The HTTP proxy could not reach Jira for the PR connection. "
+                "Enable 'PR bypass proxy' for internal hosts, or fix the "
+                f"server's NO_PROXY.\n\nDetail: {e}",
+            )
+        except http_requests.exceptions.ConnectTimeout:
+            return ConnectionTestResult(
+                False,
+                f"PR connection timed out after {self.timeout}s reaching {self.base_url}.",
+            )
+        except http_requests.exceptions.ConnectionError as e:
+            return ConnectionTestResult(
+                False,
+                f"Cannot connect to {self.base_url} for the PR connection.\n\nDetail: {e}",
+            )
+        except Exception as e:
+            return ConnectionTestResult(False, f"PR connection failed: {e}")
+
+        if resp.status_code == 401:
+            return ConnectionTestResult(
+                False,
+                f"PR authentication failed (HTTP 401) using {auth_desc} auth with the {using}. "
+                "Check the PR API key / token and auth mode.",
+            )
+        if resp.status_code == 403:
+            return ConnectionTestResult(
+                False,
+                f"PR access forbidden (HTTP 403) using the {using}. "
+                "The token may lack permission for the PR query.",
+            )
+        if resp.status_code != 200:
+            return ConnectionTestResult(
+                False, f"PR connection HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+
+        user = resp.json()
+        display = user.get("displayName", user.get("name", "Unknown"))
+        return ConnectionTestResult(
+            True,
+            f"PR connection OK as: {display} [auth: {auth_desc}, using {using}]",
             details={"account_id": user.get("accountId", user.get("key"))},
         )
 
