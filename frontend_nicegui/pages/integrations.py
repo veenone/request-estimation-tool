@@ -475,6 +475,15 @@ def _build_jira_panel(data: dict) -> None:
                 )
                 ui.label("Uncheck for self-signed certs").classes("text-caption text-grey")
 
+            with ui.column().classes("gap-1"):
+                bypass_proxy_toggle = ui.switch(
+                    "Bypass proxy",
+                    value=bool(extra.get("bypass_proxy", False)),
+                )
+                ui.label(
+                    "Enable for internal Jira behind a corporate proxy (502 errors)."
+                ).classes("text-caption text-grey")
+
         ui.separator()
 
         # -- Field Mappings -----------------------------------------------------
@@ -636,6 +645,7 @@ def _build_jira_panel(data: dict) -> None:
             _auth=auth_mode_select,
             _it=issue_type_input,
             _ssl=ssl_verify_toggle,
+            _bp=bypass_proxy_toggle,
             _eff=effort_field_input,
             _fea=feasibility_field_input,
             _est=estimation_field_input,
@@ -654,6 +664,7 @@ def _build_jira_panel(data: dict) -> None:
                 "auth_mode":              _auth.value or "auto",
                 "issue_type":             (_it.value or "").strip(),
                 "ssl_verify":             _ssl.value,
+                "bypass_proxy":           _bp.value,
                 "effort_hours_field":     (_eff.value or "").strip(),
                 "feasibility_field":      (_fea.value or "").strip(),
                 "estimation_number_field": (_est.value or "").strip(),

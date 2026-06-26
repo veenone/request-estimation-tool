@@ -49,6 +49,18 @@ class JiraAdapter(BaseAdapter):
 
         self.timeout = int(self.additional_config.get("timeout", 30))
 
+        # Proxy bypass — internal Jira hosts sitting behind a corporate HTTP
+        # proxy fail with a 502 because the proxy won't tunnel (CONNECT) to an
+        # internal host. When enabled, force a direct connection for this
+        # integration regardless of the server's HTTP(S)_PROXY env vars.
+        bypass_val = self.additional_config.get("bypass_proxy", False)
+        if isinstance(bypass_val, str):
+            self.bypass_proxy: bool = bypass_val.strip().lower() in (
+                "true", "1", "yes", "on"
+            )
+        else:
+            self.bypass_proxy = bool(bypass_val)
+
         # Auth mode: "pat" (Personal Access Token), "basic", or auto-detect
         self.auth_mode = self.additional_config.get("auth_mode", "").lower()
 
@@ -101,6 +113,11 @@ class JiraAdapter(BaseAdapter):
         kwargs.setdefault("headers", self._headers())
         kwargs.setdefault("timeout", self.timeout)
         kwargs.setdefault("verify", self.ssl_verify)
+        if self.bypass_proxy:
+            # Override any HTTP(S)_PROXY env vars so the request goes direct.
+            # trust_env stays on (default), so REQUESTS_CA_BUNDLE / the corp CA
+            # chain is still honoured for TLS verification.
+            kwargs.setdefault("proxies", {"http": None, "https": None})
         return http_requests.request(method, url, **kwargs)
 
     def test_connection(self) -> ConnectionTestResult:
@@ -126,6 +143,16 @@ class JiraAdapter(BaseAdapter):
                 False,
                 f"Connection timed out after {self.timeout}s reaching {self.base_url}. "
                 "Check that the URL is reachable from this server.",
+            )
+        except http_requests.exceptions.ProxyError as e:
+            return ConnectionTestResult(
+                False,
+                f"The HTTP proxy could not reach {self.base_url} "
+                "(it failed to tunnel to this host). Internal Jira servers "
+                "usually must bypass the corporate proxy: enable 'Bypass proxy' "
+                "in this integration's settings, or add the host to the "
+                "server's NO_PROXY.\n\n"
+                f"Detail: {e}",
             )
         except http_requests.exceptions.ConnectionError as e:
             return ConnectionTestResult(
@@ -475,7 +502,7 @@ class JiraAdapter(BaseAdapter):
                 if has_parent and external_id:
                     # Create as sub-task under parent
                     issue_data["fields"]["parent"] = {"key": external_id}
-                    issue_data["fields"]["issuetype"] = {"name": sub_task_type}
+                    issue_data["fields"]["issuetype"] = {"name": self.subtask_type}
                 else:
                     # Create as standalone task in project
                     issue_data["fields"]["issuetype"] = {"name": task_type_name}

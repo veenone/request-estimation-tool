@@ -368,6 +368,12 @@ def render_jira_tab():
             key="jira_ssl_verify",
             help="Uncheck for DC instances with self-signed certificates",
         )
+        bypass_proxy = st.checkbox(
+            "Bypass proxy",
+            value=additional_config.get("bypass_proxy", False),
+            key="jira_bypass_proxy",
+            help="Enable for internal Jira behind a corporate proxy (fixes 502 proxy errors)",
+        )
 
     st.divider()
 
@@ -479,6 +485,7 @@ def render_jira_tab():
             "is_cloud": is_cloud,
             "auth_mode": auth_mode,
             "ssl_verify": ssl_verify,
+            "bypass_proxy": bypass_proxy,
             "effort_hours_field": effort_field,
             "feasibility_field": feasibility_field,
             "estimation_number_field": estimation_field,

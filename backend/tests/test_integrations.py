@@ -418,6 +418,48 @@ class TestJiraAdapter:
         assert not result.success
         assert "ssl" in result.message.lower()
 
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_test_connection_proxy_error(self, mock_request):
+        """A proxy tunnel failure hints at the 'Bypass proxy' option."""
+        import requests as _req
+        mock_request.side_effect = _req.exceptions.ProxyError(
+            "Tunnel connection failed: 502 Bad Gateway"
+        )
+        adapter = JiraAdapter(_jira_config())
+        result = adapter.test_connection()
+        assert not result.success
+        assert "bypass proxy" in result.message.lower()
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_bypass_proxy_forces_direct_connection(self, mock_request):
+        """bypass_proxy makes _request override env proxies with a direct route."""
+        mock_request.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"displayName": "John"}),
+        )
+        config = _jira_config()
+        config["additional_config"]["bypass_proxy"] = True
+        adapter = JiraAdapter(config)
+        assert adapter.bypass_proxy is True
+
+        adapter.test_connection()
+        _, kwargs = mock_request.call_args
+        assert kwargs["proxies"] == {"http": None, "https": None}
+
+    @patch("src.integrations.jira_adapter.http_requests.request")
+    def test_no_bypass_proxy_by_default(self, mock_request):
+        """Without bypass_proxy, _request does not touch proxy settings."""
+        mock_request.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"displayName": "John"}),
+        )
+        adapter = JiraAdapter(_jira_config())
+        assert adapter.bypass_proxy is False
+
+        adapter.test_connection()
+        _, kwargs = mock_request.call_args
+        assert "proxies" not in kwargs
+
 
 # ── EmailAdapter tests ──────────────────────────────────
 
