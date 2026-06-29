@@ -10,6 +10,7 @@ from nicegui import ui
 from frontend_nicegui.app import (
     api_get,
     is_authenticated,
+    render_jira_markup,
     run_async,
     sidebar,
 )
@@ -257,10 +258,12 @@ async def pr_registry_page() -> None:
                     ui.label("Description").classes("text-caption text-grey q-mt-md")
                     desc = (row.get("description") or "").strip()
                     with ui.element("div").classes("w-full q-pa-sm") \
-                            .style("max-height:240px; overflow:auto; white-space:pre-wrap; "
+                            .style("max-height:240px; overflow:auto; "
                                    "border:1px solid var(--ed-line); border-radius:4px;"):
-                        ui.label(desc or "No description provided.") \
-                            .classes("text-body2" + ("" if desc else " text-grey"))
+                        if desc:
+                            ui.html(render_jira_markup(desc)).classes("text-body2")
+                        else:
+                            ui.label("No description provided.").classes("text-body2 text-grey")
 
                     with ui.row().classes("w-full justify-end q-mt-md"):
                         ui.button("Close", on_click=dlg.close).props("flat")

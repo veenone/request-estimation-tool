@@ -1455,12 +1455,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                                                 ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
 
-                                            with ui.row().classes("items-center q-gutter-sm w-full"):
-                                                _desc = ui.input(
+                                            with ui.row().classes("items-start q-gutter-sm w-full"):
+                                                _desc = ui.textarea(
                                                     "Description",
                                                     value=pr.get("description", ""),
-                                                    placeholder="Brief issue description",
-                                                ).classes("flex-1")
+                                                    placeholder="Supports Markdown and Jira macros, e.g. {color:#de350b}text{color}, 9{^}th{^}",
+                                                ).classes("flex-1").props("autogrow")
                                                 _ta = ui.switch(
                                                     "Test Available",
                                                     value=pr.get("test_available", True),
@@ -4139,7 +4139,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
 
                                     with ui.row().classes("items-center q-gutter-sm w-full"):
-                                        _desc = ui.input("Description", value=pr.get("description", ""), placeholder="Brief issue description").classes("flex-1")
+                                        _desc = ui.textarea("Description", value=pr.get("description", ""), placeholder="Markdown + Jira macros supported").classes("flex-1").props("autogrow")
                                         _ta = ui.switch("Test Available", value=pr.get("test_available", True)).classes("q-ml-md")
 
                                     def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):

@@ -631,6 +631,34 @@ def has_permission(perm: str) -> bool:
     return perm in _DEFAULT_RBAC_MATRIX.get(role, [])
 
 
+def render_jira_markup(text: str) -> str:
+    """Render a PR description (Markdown + Jira-style macros) to safe HTML.
+
+    Supports standard Markdown plus the Jira wiki macros commonly pasted from
+    tickets: ``{color:#hex|name}...{color}`` and ``{^}...{^}`` (superscript).
+    Raw HTML in the source is escaped first, so only the controlled spans we
+    insert are rendered.
+    """
+    if not text:
+        return ""
+    try:
+        import markdown2
+        body = markdown2.markdown(text, safe_mode="escape")
+    except Exception:
+        import html as _html
+        body = "<p>" + _html.escape(text).replace("\n", "<br>") + "</p>"
+    import re
+    body = re.sub(
+        r"\{color:([#\w]+)\}(.*?)\{color\}",
+        r'<span style="color:\1">\2</span>',
+        body, flags=re.S,
+    )
+    body = re.sub(r"\{\^\}(.*?)\{\^\}", r"<sup>\1</sup>", body, flags=re.S)
+    # Drop any stray, unmatched color tokens so they don't show as literals.
+    body = re.sub(r"\{color(:[#\w]+)?\}", "", body)
+    return body
+
+
 def extract_error_detail(exc: Exception) -> str:
     """Pull a human-readable detail string out of an httpx error or ApiError.
 
