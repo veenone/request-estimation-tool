@@ -1629,34 +1629,34 @@ async def dashboard_page():
     <style>
       /* KPI hero grid */
       .ed-kpi-hero-grid { display: grid !important; gap: 1px;
-                          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                           border: 1px solid var(--ed-line); border-radius: 4px;
-                          overflow: hidden; margin-bottom: 18px;
+                          overflow: hidden; margin-bottom: 12px;
                           background: var(--ed-line); }
-      .ed-kpi-hero-cell { padding: 14px 18px; background: var(--q-page, transparent);
-                          display: flex; flex-direction: column; gap: 6px;
-                          min-height: 84px; }
+      .ed-kpi-hero-cell { padding: 9px 14px; background: var(--q-page, transparent);
+                          display: flex; flex-direction: column; gap: 2px;
+                          min-height: 58px; }
       .ed-kpi-hero-num  { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
-                          font-size: 26px; font-weight: 500; line-height: 1;
-                          letter-spacing: -0.01em; opacity: 0.92; }
-      .ed-kpi-hero-unit { font-family: inherit; font-size: 11px; opacity: 0.6;
+                          font-size: 20px; font-weight: 500; line-height: 1.1;
+                          letter-spacing: -0.01em; opacity: 0.85; }
+      .ed-kpi-hero-unit { font-family: inherit; font-size: 10px; opacity: 0.5;
                           display: flex; align-items: center; gap: 6px; }
 
       /* Pipeline flow */
       .ed-pipeline      { display: flex !important; align-items: stretch;
-                          gap: 0; margin-top: 14px; flex-wrap: wrap; }
-      .ed-pipeline-stage{ flex: 1 1 0; min-width: 104px;
-                          padding: 13px 12px;
+                          gap: 0; margin-top: 10px; flex-wrap: wrap; }
+      .ed-pipeline-stage{ flex: 1 1 0; min-width: 100px;
+                          padding: 9px 11px;
                           border: 1px solid var(--ed-line); border-radius: 4px;
                           background: transparent; cursor: pointer;
                           transition: border-color 160ms ease, background 160ms ease;
-                          display: flex; flex-direction: column; gap: 6px; }
+                          display: flex; flex-direction: column; gap: 3px; }
       .ed-pipeline-stage:hover { border-color: var(--q-primary);
                                  background: color-mix(in srgb, var(--q-primary) 6%, transparent); }
-      .ed-pipeline-stage.empty { opacity: 0.45; }
+      .ed-pipeline-stage.empty { opacity: 0.4; }
       .ed-pipeline-stage-num { font-family: var(--ed-mono);
                                font-variant-numeric: tabular-nums;
-                               font-size: 23px; font-weight: 500; line-height: 1; opacity: 0.92; }
+                               font-size: 19px; font-weight: 500; line-height: 1; opacity: 0.85; }
       .ed-pipeline-arrow { display: flex !important; align-items: center;
                            justify-content: center;
                            padding: 0 6px; opacity: 0.4;
@@ -1697,8 +1697,8 @@ async def dashboard_page():
                           grid-template-columns: repeat(2, 1fr); gap: 12px;
                           margin-bottom: 12px; }
       @media (max-width: 720px) { .ed-chart-grid { grid-template-columns: 1fr; } }
-      .ed-chart-card    { padding: 14px 16px !important; margin-bottom: 0 !important; }
-      .ed-chart-card .echarts { height: 212px !important; }
+      .ed-chart-card    { padding: 12px 14px !important; margin-bottom: 0 !important; }
+      .ed-chart-card .echarts { height: 180px !important; }
     </style>
     """)
 

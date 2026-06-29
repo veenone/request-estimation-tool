@@ -174,6 +174,93 @@ def _hours_card(label: str, value: float, icon: str = "schedule") -> None:
         ui.label(label).classes("text-caption text-grey")
 
 
+def _render_preset_bar(state: dict, feature_checkbox_refs: dict, config_map: dict):
+    """Render the estimator self-service feature-preset bar (Apply + Save).
+
+    Shared by both the new and edit estimation wizards so presets work in each.
+    Returns an async ``refresh()`` that (re)loads presets for the wizard's
+    current product type — call it once after the feature list is built.
+    """
+    presets_holder: dict = {"items": []}
+    with ui.row().classes("items-center gap-2 q-mb-sm flex-wrap"):
+        preset_select = ui.select({}, label="Apply preset", with_input=True) \
+            .props("dense outlined clearable").style("min-width: 240px;")
+
+        async def _refresh_presets() -> None:
+            pt = state.get("product_type_filter") or ""
+            params = {"product_type": pt} if pt and pt != "All" else None
+            try:
+                items = await api_get("/feature-presets", params=params)
+            except Exception:
+                items = []
+            items = items if isinstance(items, list) else []
+            presets_holder["items"] = items
+            preset_select.set_options({p["id"]: p["name"] for p in items})
+
+        def _apply_preset(*_) -> None:
+            preset = next(
+                (p for p in presets_holder["items"] if p["id"] == preset_select.value), None
+            )
+            if not preset:
+                ui.notify("Pick a preset to apply.", type="warning")
+                return
+            applied = 0
+            for fid in preset.get("feature_ids", []):  # additive: never deselects
+                if fid in feature_checkbox_refs:
+                    feature_checkbox_refs[fid].value = True
+                if fid not in state["feature_ids"]:
+                    state["feature_ids"].append(fid)
+                applied += 1
+            ui.notify(f"Applied preset '{preset['name']}' (+{applied} feature(s)).",
+                      type="positive")
+
+        ui.button("Apply", icon="playlist_add_check",
+                  on_click=_apply_preset).props("dense color=primary")
+
+        async def _save_preset() -> None:
+            selected = set(state["feature_ids"])
+            for fid, cb in feature_checkbox_refs.items():
+                if cb.value:
+                    selected.add(fid)
+                else:
+                    selected.discard(fid)
+            if not selected:
+                ui.notify("Select at least one feature first.", type="warning")
+                return
+            _pt = state.get("product_type_filter") or "All"
+            with ui.dialog() as _pdlg, ui.card().classes("w-[min(420px,92vw)]"):
+                ui.label("Save selection as preset").classes("text-h6")
+                ui.label(f"{len(selected)} feature(s) · product type: {_pt}") \
+                    .classes("text-caption text-grey")
+                _pname = ui.input("Preset name *").classes("w-full").props("autofocus")
+
+                async def _do_save() -> None:
+                    if not (_pname.value or "").strip():
+                        ui.notify("Preset name is required.", type="warning")
+                        return
+                    await api_post("/feature-presets", json={
+                        "name": _pname.value.strip(),
+                        "product_type": (None if _pt == "All" else _pt),
+                        "feature_ids": sorted(selected),
+                    })
+                    _pdlg.close()
+                    await _refresh_presets()
+                    ui.notify("Preset saved.", type="positive")
+
+                with ui.row().classes("w-full justify-end q-mt-sm"):
+                    ui.button("Cancel", on_click=_pdlg.close).props("flat")
+                    _sb = ui.button("Save", icon="save").props("color=primary")
+                    _sb.on("click", run_async(_sb, _do_save,
+                                              error_prefix="Could not save preset"))
+            _pdlg.open()
+
+        _save_btn = ui.button("Save selection as preset", icon="bookmark_add") \
+            .props("dense flat color=secondary")
+        _save_btn.on("click", run_async(_save_btn, _save_preset,
+                                        error_prefix="Could not save preset"))
+    return _refresh_presets
+
+
 # ---------------------------------------------------------------------------
 # Route 0: /estimations  — Estimation list page
 # ---------------------------------------------------------------------------
@@ -1455,16 +1542,19 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                                                 ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
 
-                                            with ui.row().classes("items-start q-gutter-sm w-full"):
-                                                _desc = ui.textarea(
-                                                    "Description",
-                                                    value=pr.get("description", ""),
-                                                    placeholder="Supports Markdown and Jira macros, e.g. {color:#de350b}text{color}, 9{^}th{^}",
-                                                ).classes("flex-1").props("autogrow")
+                                            with ui.row().classes("items-center q-gutter-sm w-full"):
                                                 _ta = ui.switch(
                                                     "Test Available",
                                                     value=pr.get("test_available", True),
-                                                ).classes("q-ml-md")
+                                                )
+                                            # Description is collapsible (collapsed by default) — it can
+                                            # hold many lines of Markdown / Jira-macro text.
+                                            with ui.expansion("Description", icon="notes") \
+                                                    .classes("w-full").props("dense"):
+                                                _desc = ui.textarea(
+                                                    value=pr.get("description", ""),
+                                                    placeholder="Supports Markdown and Jira macros, e.g. {color:#de350b}text{color}, 9{^}th{^}",
+                                                ).classes("w-full").props("autogrow")
 
                                             # Bind updates back to data
                                             def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
@@ -3789,6 +3879,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 feature_checkbox_refs: dict[int, ui.checkbox] = {}
                 new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
 
+                # Feature presets (estimator self-service) — same bar as the new wizard.
+                _refresh_presets = _render_preset_bar(state, feature_checkbox_refs, _config_map)
+
                 features_container = ui.column().classes("w-full")
                 _programmatic_select_all = [False]
 
@@ -3858,8 +3951,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         for cat_name, cat_features in vis_by_cat.items():
                             ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                            with ui.grid(columns="1fr 90px 80px 140px").classes("w-full q-pl-md items-center"):
+                            with ui.grid(columns="1.3fr 1.7fr 90px 70px 140px").classes("w-full q-pl-md items-center"):
                                 ui.label("Feature").classes("text-caption text-grey")
+                                ui.label("Description").classes("text-caption text-grey")
                                 ui.label("Complexity").classes("text-caption text-grey text-center")
                                 ui.label("New?").classes("text-caption text-grey text-center")
                                 ui.label("Scope").classes("text-caption text-grey text-center")
@@ -3875,6 +3969,11 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         value=(fid in state["feature_ids"]),
                                     )
                                     feature_checkbox_refs[fid] = cb
+
+                                    _fdesc = (feat.get("description") or "").strip()
+                                    ui.label(_fdesc or "—").classes(
+                                        "text-caption text-grey"
+                                    ).style("white-space: normal; line-height: 1.25;")
 
                                     ui.label(f"x{fweight:.1f}").classes("text-center")
 
@@ -3912,6 +4011,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                     cb.on("update:model-value", _make_sync(fid, new_cb))
 
                 _rebuild_feature_list()
+                await _refresh_presets()
 
                 def _collect_features():
                     state["feature_ids"] = [fid for fid, cb in feature_checkbox_refs.items() if cb.value]
@@ -4167,8 +4267,10 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                         ui.button(icon="close", on_click=_make_remove(idx)).props("flat dense round color=negative size=sm")
 
                                     with ui.row().classes("items-center q-gutter-sm w-full"):
-                                        _desc = ui.textarea("Description", value=pr.get("description", ""), placeholder="Markdown + Jira macros supported").classes("flex-1").props("autogrow")
-                                        _ta = ui.switch("Test Available", value=pr.get("test_available", True)).classes("q-ml-md")
+                                        _ta = ui.switch("Test Available", value=pr.get("test_available", True))
+                                    # Collapsible, collapsed by default (can be many lines).
+                                    with ui.expansion("Description", icon="notes").classes("w-full").props("dense"):
+                                        _desc = ui.textarea(value=pr.get("description", ""), placeholder="Markdown + Jira macros supported").classes("w-full").props("autogrow")
 
                                     def _make_updater(i: int, n=_num, l=_link, p=_pri, c=_cx, s=_st, d=_desc, ta=_ta):
                                         def _upd(_=None):
@@ -4371,6 +4473,12 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             ui.icon("edit_calendar").on("click", delivery_menu.open).classes("cursor-pointer")
 
                 working_days_input = ui.number("Working Days Available", value=state["working_days"], min=1, step=1, precision=0).classes("w-full q-mt-sm")
+
+                ui.label(
+                    "Used only for the feasibility / capacity check — it does NOT change "
+                    "the calculated effort. The proposed delivery duration is the Proposed "
+                    "Duration (elapsed) shown at the Review step."
+                ).classes("text-caption text-grey q-mt-xs")
 
                 auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
 
@@ -4625,11 +4733,13 @@ async def edit_estimation_page(estimation_id: int) -> None:
 
                         _el_days = res.get("elapsed_days", 0)
                         _el_weeks = res.get("elapsed_weeks", 0)
-                        if _el_days > 0 and _el_days != _gt_days:
+                        if _el_days > 0:
                             ui.separator().classes("q-mt-sm")
-                            ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
+                            ui.label("Proposed Duration (elapsed, wall-clock)").classes("text-subtitle2 q-mt-xs q-mb-xs")
                             ui.label(
-                                "Parallelizable tasks are divided by team size; sequential tasks are not."
+                                "The actual time to deliver given the team — use this as the "
+                                "estimation proposal. Parallelizable tasks are divided by team "
+                                "size; sequential tasks are not."
                             ).classes("text-caption text-grey q-mb-xs")
                             with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
                                 _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
