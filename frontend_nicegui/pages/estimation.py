@@ -31,6 +31,104 @@ from frontend_nicegui.app import (
 )
 
 # ---------------------------------------------------------------------------
+# Wizard component CSS — injected once at import (module level) so it is part
+# of the global stylesheet. Injecting inside the @ui.page function is
+# unreliable on SPA client-side navigation in some browsers, which left the
+# floating progress strip and summary rail unstyled (only text rendered).
+# ---------------------------------------------------------------------------
+
+ui.add_head_html("""
+<style>
+  /* Wizard 2-column grid */
+  .ed-wizard-grid   { display: grid !important;
+                      grid-template-columns: 1fr 320px; gap: 22px;
+                      align-items: start; }
+  @media (max-width: 960px) {
+    .ed-wizard-grid { grid-template-columns: 1fr; }
+    .ed-summary-rail { position: static !important; max-height: none !important; }
+  }
+
+  /* Hide Quasar default stepper header */
+  .ed-wizard-grid .q-stepper__header { display: none !important; }
+  .ed-wizard-grid .q-stepper { box-shadow: none !important;
+                               background: transparent !important;
+                               border: 1px solid var(--ed-line);
+                               border-radius: 4px; }
+  .ed-wizard-grid .q-stepper__step-inner { padding: 24px 26px !important; }
+  /* Sticky per-step nav */
+  .ed-wizard-grid .q-stepper__nav { padding: 16px 26px !important;
+                                    position: sticky; bottom: 0;
+                                    background: var(--ed-bg-soft);
+                                    backdrop-filter: blur(10px);
+                                    border-top: 1px solid var(--ed-line); }
+
+  /* Custom progress strip */
+  .ed-progress      { display: grid !important;
+                      grid-auto-flow: column;
+                      grid-auto-columns: 1fr;
+                      align-items: start; gap: 0;
+                      padding: 18px 24px;
+                      border: 1px solid var(--ed-line); border-radius: 4px;
+                      margin-bottom: 24px; }
+  .ed-progress-step { display: flex !important; flex-direction: column;
+                      align-items: center; gap: 8px;
+                      cursor: pointer; position: relative;
+                      text-align: center; }
+  .ed-progress-step:not(:last-child)::after {
+                      content: ""; position: absolute;
+                      top: 14px; left: calc(50% + 18px); right: calc(-50% + 18px);
+                      height: 1px; background: var(--ed-line); z-index: 0; }
+  .ed-progress-step.done:not(:last-child)::after { background: var(--q-primary); }
+  .ed-progress-num  { width: 28px; height: 28px; border-radius: 50%;
+                      border: 1px solid var(--ed-line);
+                      display: flex !important; align-items: center; justify-content: center;
+                      font-family: var(--ed-mono); font-size: 12px; font-weight: 500;
+                      background: var(--q-page, transparent); z-index: 1;
+                      transition: all 200ms ease; }
+  .ed-progress-step.active .ed-progress-num {
+                      border: 2px solid var(--q-primary); color: var(--q-primary);
+                      transform: scale(1.05); }
+  .ed-progress-step.done .ed-progress-num {
+                      background: var(--q-primary); border-color: var(--q-primary);
+                      color: white; }
+  .ed-progress-label{ font-family: inherit; font-size: 11px;
+                      text-transform: uppercase; letter-spacing: 0.10em;
+                      font-weight: 500; opacity: 0.6;
+                      line-height: 1.2; max-width: 100px; }
+  .ed-progress-step.active .ed-progress-label { opacity: 1; color: var(--q-primary); }
+  .ed-progress-step.done .ed-progress-label   { opacity: 0.85; }
+
+  /* Summary rail */
+  .ed-summary-rail  { position: sticky; top: 88px;
+                      border: 1px solid var(--ed-line); border-radius: 4px;
+                      padding: 22px;
+                      display: flex !important; flex-direction: column; gap: 0;
+                      max-height: calc(100vh - 110px); overflow-y: auto; }
+  .ed-summary-title { font-family: inherit; font-size: 16px; font-weight: 600;
+                      line-height: 1.25; margin: 4px 0 16px 0;
+                      word-break: break-word; }
+  .ed-summary-section { margin-top: 14px; padding-top: 14px;
+                        border-top: 1px dashed var(--ed-line-soft); }
+  .ed-summary-row   { display: grid !important; grid-template-columns: 1fr auto;
+                      align-items: baseline; gap: 8px; padding: 5px 0; }
+  .ed-summary-label { font-family: inherit; text-transform: uppercase;
+                      letter-spacing: 0.10em; font-size: 10px;
+                      font-weight: 600; opacity: 0.6; }
+  .ed-summary-value { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
+                      font-size: 13px; }
+  .ed-summary-value.empty { opacity: 0.35; font-style: italic;
+                            font-family: inherit; font-size: 12px; }
+  .ed-summary-total { margin-top: 18px; padding-top: 16px;
+                      border-top: 1px solid var(--ed-line);
+                      text-align: right; }
+  .ed-summary-total-num { font-family: var(--ed-mono);
+                          font-variant-numeric: tabular-nums;
+                          font-size: 28px; font-weight: 500;
+                          line-height: 1; margin-top: 6px; }
+</style>
+""")
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
@@ -225,6 +323,32 @@ async def new_estimation_page(request_id: str | None = None) -> None:
     # Read optional query param (?request_id=123)
     linked_request_id: int | None = int(request_id) if request_id else None
 
+    # When opened from the request inbox, prefill the description with a
+    # reference to the originating request (plus title / requester / original
+    # text) so the estimator has context without retyping it.
+    _prefill_description = ""
+    if linked_request_id is not None:
+        try:
+            _linked_request = await api_get(f"/requests/{linked_request_id}")
+        except Exception:
+            _linked_request = None
+        if _linked_request:
+            _req_no = _linked_request.get("request_number") or f"#{linked_request_id}"
+            _req_title = (_linked_request.get("title") or "").strip()
+            _req_requester = (_linked_request.get("requester_name") or "").strip()
+            _head = f"Estimation request based on {_req_no}"
+            if _req_title:
+                _head += f": {_req_title}"
+            _parts = [_head]
+            if _req_requester:
+                _parts.append(f"Requested by {_req_requester}.")
+            _orig = (_linked_request.get("description") or "").strip()
+            if _orig:
+                _parts.append("")
+                _parts.append("Original request:")
+                _parts.append(_orig)
+            _prefill_description = "\n".join(_parts)
+
     # ------------------------------------------------------------------ #
     # Wizard state — single dict keeps all inter-step data together       #
     # ------------------------------------------------------------------ #
@@ -233,7 +357,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "project_name": "",
         "project_type": "EVOLUTION",
         "product_type_filter": "All",
-        "description": "",
+        "description": _prefill_description,
         "project_goals": "",
         "target_customer": "",
         "project_reference": "",
@@ -457,97 +581,8 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         # notification poller) so a draft is created promptly once input exists.
         ui.timer(5.0, autosave, once=True)
 
-        # ── Inject wizard component CSS ─────────────────────────
-        ui.add_head_html("""
-        <style>
-          /* Wizard 2-column grid */
-          .ed-wizard-grid   { display: grid !important;
-                              grid-template-columns: 1fr 320px; gap: 22px;
-                              align-items: start; }
-          @media (max-width: 960px) {
-            .ed-wizard-grid { grid-template-columns: 1fr; }
-            .ed-summary-rail { position: static !important; max-height: none !important; }
-          }
-
-          /* Hide Quasar default stepper header */
-          .ed-wizard-grid .q-stepper__header { display: none !important; }
-          .ed-wizard-grid .q-stepper { box-shadow: none !important;
-                                       background: transparent !important;
-                                       border: 1px solid var(--ed-line);
-                                       border-radius: 4px; }
-          .ed-wizard-grid .q-stepper__step-inner { padding: 24px 26px !important; }
-          /* Sticky per-step nav */
-          .ed-wizard-grid .q-stepper__nav { padding: 16px 26px !important;
-                                            position: sticky; bottom: 0;
-                                            background: var(--ed-bg-soft);
-                                            backdrop-filter: blur(10px);
-                                            border-top: 1px solid var(--ed-line); }
-
-          /* Custom progress strip */
-          .ed-progress      { display: grid !important;
-                              grid-auto-flow: column;
-                              grid-auto-columns: 1fr;
-                              align-items: start; gap: 0;
-                              padding: 18px 24px;
-                              border: 1px solid var(--ed-line); border-radius: 4px;
-                              margin-bottom: 24px; }
-          .ed-progress-step { display: flex !important; flex-direction: column;
-                              align-items: center; gap: 8px;
-                              cursor: pointer; position: relative;
-                              text-align: center; }
-          .ed-progress-step:not(:last-child)::after {
-                              content: ""; position: absolute;
-                              top: 14px; left: calc(50% + 18px); right: calc(-50% + 18px);
-                              height: 1px; background: var(--ed-line); z-index: 0; }
-          .ed-progress-step.done:not(:last-child)::after { background: var(--q-primary); }
-          .ed-progress-num  { width: 28px; height: 28px; border-radius: 50%;
-                              border: 1px solid var(--ed-line);
-                              display: flex !important; align-items: center; justify-content: center;
-                              font-family: var(--ed-mono); font-size: 12px; font-weight: 500;
-                              background: var(--q-page, transparent); z-index: 1;
-                              transition: all 200ms ease; }
-          .ed-progress-step.active .ed-progress-num {
-                              border: 2px solid var(--q-primary); color: var(--q-primary);
-                              transform: scale(1.05); }
-          .ed-progress-step.done .ed-progress-num {
-                              background: var(--q-primary); border-color: var(--q-primary);
-                              color: white; }
-          .ed-progress-label{ font-family: inherit; font-size: 11px;
-                              text-transform: uppercase; letter-spacing: 0.10em;
-                              font-weight: 500; opacity: 0.6;
-                              line-height: 1.2; max-width: 100px; }
-          .ed-progress-step.active .ed-progress-label { opacity: 1; color: var(--q-primary); }
-          .ed-progress-step.done .ed-progress-label   { opacity: 0.85; }
-
-          /* Summary rail */
-          .ed-summary-rail  { position: sticky; top: 88px;
-                              border: 1px solid var(--ed-line); border-radius: 4px;
-                              padding: 22px;
-                              display: flex !important; flex-direction: column; gap: 0;
-                              max-height: calc(100vh - 110px); overflow-y: auto; }
-          .ed-summary-title { font-family: inherit; font-size: 16px; font-weight: 600;
-                              line-height: 1.25; margin: 4px 0 16px 0;
-                              word-break: break-word; }
-          .ed-summary-section { margin-top: 14px; padding-top: 14px;
-                                border-top: 1px dashed var(--ed-line-soft); }
-          .ed-summary-row   { display: grid !important; grid-template-columns: 1fr auto;
-                              align-items: baseline; gap: 8px; padding: 5px 0; }
-          .ed-summary-label { font-family: inherit; text-transform: uppercase;
-                              letter-spacing: 0.10em; font-size: 10px;
-                              font-weight: 600; opacity: 0.6; }
-          .ed-summary-value { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
-                              font-size: 13px; }
-          .ed-summary-value.empty { opacity: 0.35; font-style: italic;
-                                    font-family: inherit; font-size: 12px; }
-          .ed-summary-total { margin-top: 18px; padding-top: 16px;
-                              border-top: 1px solid var(--ed-line);
-                              text-align: right; }
-          .ed-summary-total-num { font-family: var(--ed-mono);
-                                  font-variant-numeric: tabular-nums;
-                                  font-size: 28px; font-weight: 500;
-                                  line-height: 1; margin-top: 6px; }
-        </style>
-        """)
+        # Wizard component CSS is injected once at module import (see top of
+        # this file) so it survives SPA navigation in all browsers.
 
         # ── Sticky toolbar ──────────────────────────────────────
         with ui.element("div").classes("ed-toolbar"):
@@ -1035,9 +1070,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         dut_cb_refs: dict[int, ui.checkbox] = {}
                         prof_cb_refs: dict[int, ui.checkbox] = {}
                         matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
-                        matrix_container = ui.column().classes("w-full q-mt-md")
+                        # Order: DUTs, then Profiles, then the combination matrix
+                        # below them (matrix last so long DUT lists don't push it
+                        # far down / force excessive scrolling to reach profiles).
                         dut_container = ui.column().classes("w-full")
                         prof_container = ui.column().classes("w-full")
+                        matrix_container = ui.column().classes("w-full q-mt-md")
 
                         def _rebuild_matrix() -> None:
                             """Repaint the DUT×Profile combination grid."""
@@ -1381,44 +1419,51 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                         ui.notify("Jira integration not configured.", type="warning")
                                         return
 
-                                    with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
-                                        ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
+                                    with ui.dialog().props("maximized=false") as dlg, \
+                                            ui.card().classes("w-[1100px] max-w-[95vw] max-h-[85vh]") \
+                                            .style("display:flex; flex-direction:column;"):
+                                        # Header (fixed)
+                                        with ui.row().classes("items-center w-full q-mb-sm").style("flex:0 0 auto;"):
+                                            ui.label("Import PR Items from Registry").classes("text-h6")
+                                            ui.element("div").classes("ed-toolbar-grow")
+                                            _fetch_btn = ui.button("Reload", icon="refresh").props("color=secondary flat dense")
+                                        ui.label(
+                                            "PR items from the registry (configured PR JQL filter)."
+                                        ).classes("text-caption text-grey q-mb-sm").style("flex:0 0 auto;")
 
-                                        jira_items_table = ui.table(
-                                            columns=[
-                                                {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
-                                                {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
-                                                {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
-                                                {"name": "status", "label": "Status", "field": "status", "align": "left"},
-                                            ],
-                                            rows=[],
-                                            row_key="key",
-                                            selection="multiple",
-                                            pagination={"rowsPerPage": 15},
-                                        ).classes("w-full")
+                                        # Scrollable list area
+                                        with ui.element("div").classes("w-full").style(
+                                            "flex:1 1 auto; overflow:auto; min-height:0;"
+                                        ):
+                                            jira_items_table = ui.table(
+                                                columns=[
+                                                    {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
+                                                    {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
+                                                    {"name": "description", "label": "Description", "field": "description", "align": "left"},
+                                                    {"name": "priority", "label": "Priority", "field": "priority", "align": "left", "sortable": True},
+                                                    {"name": "status", "label": "Status", "field": "status", "align": "left", "sortable": True},
+                                                ],
+                                                rows=[],
+                                                row_key="key",
+                                                selection="multiple",
+                                                pagination={"rowsPerPage": 10},
+                                            ).classes("w-full")
 
                                         async def _fetch_jira_prs() -> None:
+                                            # Load from the PR registry (configured PR JQL + PR token).
                                             items = await api_get("/integrations/JIRA/pr-items")
                                             jira_items_table.rows = items if isinstance(items, list) else []
                                             jira_items_table.update()
-                                            ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
+                                            ui.notify(f"Loaded {len(jira_items_table.rows)} PR item(s).", type="positive")
 
-                                        _fetch_btn = ui.button("Fetch PR Items", icon="refresh").props("color=secondary flat dense")
                                         _fetch_btn.on("click", run_async(
-                                            _fetch_btn, _fetch_jira_prs, error_prefix="Failed to fetch"))
+                                            _fetch_btn, _fetch_jira_prs, error_prefix="Failed to load"))
 
                                         async def _import_selected() -> None:
                                             selected = jira_items_table.selected
                                             if not selected:
                                                 ui.notify("No items selected.", type="warning")
                                                 return
-                                            # Fetch Jira base URL once for building links
-                                            _jira_base = ""
-                                            try:
-                                                jira_cfg = await api_get("/integrations/JIRA")
-                                                _jira_base = (jira_cfg.get("base_url") or "").rstrip("/")
-                                            except Exception:
-                                                pass
                                             imported = 0
                                             for item in selected:
                                                 key = item.get("key", "")
@@ -1430,11 +1475,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                                         complexity = "complex"
                                                     elif priority in ("medium",):
                                                         complexity = "medium"
-                                                    jira_link = f"{_jira_base}/browse/{key}" if _jira_base else ""
+                                                    # Prefer the registry-provided link; the description
+                                                    # falls back to the summary when empty.
+                                                    jira_link = item.get("link") or ""
+                                                    desc = item.get("description") or item.get("summary", "")
                                                     _pr_rows.append({
                                                         "pr_number": key,
                                                         "link": jira_link,
-                                                        "description": item.get("summary", ""),
+                                                        "description": desc,
                                                         "priority": item.get("priority", "Medium"),
                                                         "complexity": complexity,
                                                         "status": item.get("status", "Open"),
@@ -1445,16 +1493,19 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                             ui.notify(f"Imported {imported} PR item(s).", type="positive")
                                             dlg.close()
 
-                                        with ui.row().classes("q-mt-md gap-2"):
+                                        # Pinned footer (fixed, never scrolls)
+                                        with ui.row().classes("q-mt-md gap-2 w-full justify-end").style(
+                                            "flex:0 0 auto; border-top:1px solid var(--ed-line); padding-top:12px;"
+                                        ):
+                                            ui.button("Cancel", on_click=dlg.close).props("flat")
                                             _import_btn = ui.button("Import Selected", icon="download").props("color=primary")
                                             _import_btn.on("click", run_async(
                                                 _import_btn, _import_selected, error_prefix="Import failed"))
-                                            ui.button("Cancel", on_click=dlg.close).props("flat")
 
                                     try:
                                         await _fetch_jira_prs()
                                     except Exception as exc:
-                                        notify_error(exc, "Failed to fetch")
+                                        notify_error(exc, "Failed to load")
                                     dlg.open()
 
                                 ui.button("Import from Jira", icon="bug_report", on_click=_import_from_jira).props("flat dense color=secondary")
@@ -2185,9 +2236,10 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         elif i == current_idx:
                             cls += " active"
                         step_el = ui.element("div").classes(cls)
-                        if i <= current_idx:
-                            step_el.on("click",
-                                       lambda _, n=step_name: stepper.set_value(n))
+                        # Allow jumping to any step directly (non-sequential nav),
+                        # not only completed/current steps.
+                        step_el.on("click",
+                                   lambda _, n=step_name: stepper.set_value(n))
                         with step_el:
                             with ui.element("div").classes("ed-progress-num"):
                                 if i < current_idx:
@@ -2682,20 +2734,37 @@ async def estimation_detail_page(estimation_id: int) -> None:
             except Exception as exc:
                 ui.notify(f"Archive failed: {exc}", type="negative")
 
-        def _download_js(fmt: str, filename: str) -> str:
+        def _download_js(fmt: str, fallback: str) -> str:
+            # Use the server filename (<request id>-<title>-YYYYMMDDHHmm) from
+            # Content-Disposition. Offer a real Save-As dialog where supported
+            # (showSaveFilePicker, secure context), else fall back to a normal
+            # download to the browser's default folder.
             url = f"/api/estimations/{estimation_id}/report/{fmt}"
             return (
-                f'fetch("{url}", {{'
-                f'  headers: {{"Authorization": "Bearer {token}"}}'
-                f'}})'
-                f'.then(r => {{ if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); }})'
-                f'.then(b => {{'
-                f'  const a = document.createElement("a");'
-                f'  a.href = URL.createObjectURL(b);'
-                f'  a.download = "{filename}";'
-                f'  a.click();'
-                f'}})'
-                f'.catch(err => console.error("Download failed:", err));'
+                f'(async () => {{'
+                f'  try {{'
+                f'    const r = await fetch("{url}", {{headers: {{"Authorization": "Bearer {token}"}}}});'
+                f'    if (!r.ok) throw new Error("HTTP " + r.status);'
+                f'    const cd = r.headers.get("Content-Disposition") || "";'
+                f'    let name = "{fallback}";'
+                f'    const m = /filename\\*?=(?:UTF-8\'\')?"?([^";]+)"?/i.exec(cd);'
+                f'    if (m) name = decodeURIComponent(m[1]);'
+                f'    const blob = await r.blob();'
+                f'    if (window.showSaveFilePicker) {{'
+                f'      try {{'
+                f'        const h = await window.showSaveFilePicker({{suggestedName: name}});'
+                f'        const w = await h.createWritable();'
+                f'        await w.write(blob); await w.close();'
+                f'        return;'
+                f'      }} catch (e) {{ if (e && e.name === "AbortError") return; }}'
+                f'    }}'
+                f'    const a = document.createElement("a");'
+                f'    a.href = URL.createObjectURL(blob);'
+                f'    a.download = name;'
+                f'    a.click();'
+                f'    URL.revokeObjectURL(a.href);'
+                f'  }} catch (err) {{ console.error("Download failed:", err); }}'
+                f'}})();'
             )
 
         _STATUS_BTN_PROPS: dict[str, str] = {
@@ -3784,9 +3853,10 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 dut_cb_refs: dict[int, ui.checkbox] = {}
                 prof_cb_refs: dict[int, ui.checkbox] = {}
                 matrix_cb_refs: dict[tuple[int, int], ui.checkbox] = {}
-                matrix_container = ui.column().classes("w-full q-mt-md")
+                # DUTs, then Profiles, then the combination matrix below them.
                 dut_container = ui.column().classes("w-full")
                 prof_container = ui.column().classes("w-full")
+                matrix_container = ui.column().classes("w-full q-mt-md")
 
                 def _rebuild_matrix():
                     matrix_container.clear()
@@ -4013,30 +4083,38 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                 ui.notify("Jira integration not configured.", type="warning")
                                 return
 
-                            with ui.dialog().props("maximized=false") as dlg, ui.card().classes("w-[800px] max-h-[80vh]"):
-                                ui.label("Import PR Items from Jira").classes("text-h6 q-mb-sm")
-                                jira_items_table = ui.table(
-                                    columns=[
-                                        {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
-                                        {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
-                                        {"name": "priority", "label": "Priority", "field": "priority", "align": "left"},
-                                        {"name": "status", "label": "Status", "field": "status", "align": "left"},
-                                    ],
-                                    rows=[],
-                                    row_key="key",
-                                    selection="multiple",
-                                    pagination={"rowsPerPage": 15},
-                                ).classes("w-full")
+                            with ui.dialog().props("maximized=false") as dlg, \
+                                    ui.card().classes("w-[1100px] max-w-[95vw] max-h-[85vh]") \
+                                    .style("display:flex; flex-direction:column;"):
+                                with ui.row().classes("items-center w-full q-mb-sm").style("flex:0 0 auto;"):
+                                    ui.label("Import PR Items from Registry").classes("text-h6")
+                                    ui.element("div").classes("ed-toolbar-grow")
+                                    _fetch_btn = ui.button("Reload", icon="refresh").props("color=secondary flat dense")
+                                with ui.element("div").classes("w-full").style(
+                                    "flex:1 1 auto; overflow:auto; min-height:0;"
+                                ):
+                                    jira_items_table = ui.table(
+                                        columns=[
+                                            {"name": "key", "label": "Key", "field": "key", "align": "left", "sortable": True},
+                                            {"name": "summary", "label": "Summary", "field": "summary", "align": "left"},
+                                            {"name": "description", "label": "Description", "field": "description", "align": "left"},
+                                            {"name": "priority", "label": "Priority", "field": "priority", "align": "left", "sortable": True},
+                                            {"name": "status", "label": "Status", "field": "status", "align": "left", "sortable": True},
+                                        ],
+                                        rows=[],
+                                        row_key="key",
+                                        selection="multiple",
+                                        pagination={"rowsPerPage": 10},
+                                    ).classes("w-full")
 
                                 async def _fetch() -> None:
                                     items = await api_get("/integrations/JIRA/pr-items")
                                     jira_items_table.rows = items if isinstance(items, list) else []
                                     jira_items_table.update()
-                                    ui.notify(f"Found {len(jira_items_table.rows)} PR item(s).", type="positive")
+                                    ui.notify(f"Loaded {len(jira_items_table.rows)} PR item(s).", type="positive")
 
-                                _fetch_btn = ui.button("Fetch PR Items", icon="refresh").props("color=secondary flat dense")
                                 _fetch_btn.on("click", run_async(
-                                    _fetch_btn, _fetch, error_prefix="Failed to fetch"))
+                                    _fetch_btn, _fetch, error_prefix="Failed to load"))
 
                                 def _do_import() -> None:
                                     selected = jira_items_table.selected
@@ -4056,8 +4134,8 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                                 complexity = "medium"
                                             _pr_rows.append({
                                                 "pr_number": key,
-                                                "link": "",
-                                                "description": item.get("summary", ""),
+                                                "link": item.get("link") or "",
+                                                "description": item.get("description") or item.get("summary", ""),
                                                 "priority": item.get("priority", "Medium"),
                                                 "complexity": complexity,
                                                 "status": item.get("status", "Open"),
@@ -4068,9 +4146,11 @@ async def edit_estimation_page(estimation_id: int) -> None:
                                     ui.notify(f"Imported {imported} PR item(s).", type="positive")
                                     dlg.close()
 
-                                with ui.row().classes("q-mt-md gap-2"):
-                                    ui.button("Import Selected", icon="download", on_click=_do_import).props("color=primary")
+                                with ui.row().classes("q-mt-md gap-2 w-full justify-end").style(
+                                    "flex:0 0 auto; border-top:1px solid var(--ed-line); padding-top:12px;"
+                                ):
                                     ui.button("Cancel", on_click=dlg.close).props("flat")
+                                    ui.button("Import Selected", icon="download", on_click=_do_import).props("color=primary")
 
                             await _fetch()
                             dlg.open()

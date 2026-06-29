@@ -80,6 +80,10 @@ def _make_styles() -> dict:
         "RiskItem", parent=styles["Normal"],
         fontSize=10, spaceAfter=4, leftIndent=20, bulletIndent=10,
     )
+    custom["Cell"] = ParagraphStyle(
+        "Cell", parent=styles["Normal"],
+        fontSize=8, leading=10,
+    )
     return custom
 
 
@@ -337,21 +341,27 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
     # ── 6d. Document Deliverables ────────────────────────
     if data.document_deliverables:
         story.append(Paragraph("Document Deliverables", styles["SectionTitle"]))
+        cell = styles["Cell"]
         doc_rows = []
         for dd in data.document_deliverables:
             doc_rows.append([
-                dd.get("name", ""),
-                dd.get("category", ""),
-                dd.get("linked_task") or "—",
+                Paragraph(str(dd.get("name", "")), cell),
+                Paragraph(str(dd.get("category", "")), cell),
+                Paragraph(str(dd.get("linked_task") or "—"), cell),
                 str(dd.get("count", 1)),
                 f"{dd.get('base_effort_hours', 0):.1f}",
                 f"{dd.get('total_hours', 0):.1f}",
                 f"{dd.get('effective_hours', dd.get('total_hours', 0)):.1f}",
-                dd.get("overlap_note") or "",
+                Paragraph(str(dd.get("overlap_note") or ""), cell),
             ])
         story.append(_make_table(
             ["Document Type", "Category", "Linked Task", "Count", "Base Hrs", "Total Hrs", "Effective Hrs", "Note"],
             doc_rows,
+            col_widths=[
+                page_width * 0.18, page_width * 0.12, page_width * 0.14,
+                page_width * 0.07, page_width * 0.08, page_width * 0.09,
+                page_width * 0.12, page_width * 0.20,
+            ],
         ))
         story.append(Spacer(1, 12))
 

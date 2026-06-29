@@ -1730,6 +1730,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         status="DRAFT",
         created_by=data.created_by,
         created_by_id=user.id,
+        assigned_to_id=user.id,
         version=1,
         wizard_inputs_json=json.dumps(wizard_inputs),
         expected_releases=data.expected_releases,
@@ -2098,6 +2099,31 @@ def _build_risk_messages(estimation: Estimation, db: Session) -> list[str]:
     return messages
 
 
+def _report_filename(estimation: Estimation, ext: str) -> str:
+    """Build report filename: <request id>-<title>-YYYYMMDDHHmm.<ext>.
+
+    Request id is the linked request's number when present, else the estimation
+    number (or EST-<id>). Title is the project name. Both are sanitised for use
+    in a filename.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+
+    req_id = (
+        estimation.request.request_number
+        if estimation.request and estimation.request.request_number
+        else (estimation.estimation_number or f"EST-{estimation.id}")
+    )
+    title = estimation.project_name or "estimation"
+
+    def _clean(value: str) -> str:
+        cleaned = _re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+        return cleaned.strip("_") or "x"
+
+    stamp = _dt.now().strftime("%Y%m%d%H%M")
+    return f"{_clean(req_id)}-{_clean(title)}-{stamp}.{ext}"
+
+
 @router.get("/estimations/{estimation_id}/report/xlsx")
 def download_excel_report(estimation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     estimation = db.get(Estimation, estimation_id)
@@ -2112,11 +2138,14 @@ def download_excel_report(estimation_id: int, user: User = Depends(get_current_u
         logger.exception("Excel report generation failed for estimation %s", estimation_id)
         raise HTTPException(500, f"Excel report generation failed: {exc}")
 
-    filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.xlsx"
+    filename = _report_filename(estimation, "xlsx")
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
     )
 
 
@@ -2134,11 +2163,14 @@ def download_word_report(estimation_id: int, user: User = Depends(get_current_us
         logger.exception("Word report generation failed for estimation %s", estimation_id)
         raise HTTPException(500, f"Word report generation failed: {exc}")
 
-    filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.docx"
+    filename = _report_filename(estimation, "docx")
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
     )
 
 
@@ -2156,11 +2188,14 @@ def download_pdf_report(estimation_id: int, user: User = Depends(get_current_use
         logger.exception("PDF report generation failed for estimation %s", estimation_id)
         raise HTTPException(500, f"PDF report generation failed: {exc}")
 
-    filename = f"{estimation.estimation_number or f'EST-{estimation_id}'}.pdf"
+    filename = _report_filename(estimation, "pdf")
     return Response(
         content=content,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
     )
 
 
@@ -3894,7 +3929,7 @@ def get_jira_pr_items(
             params={
                 "jql": jql,
                 "maxResults": 200,
-                "fields": "summary,priority,status,issuetype,created",
+                "fields": "summary,priority,status,issuetype,created,description",
             },
         )
         if resp.status_code >= 400:
@@ -3918,19 +3953,29 @@ def get_jira_pr_items(
         data = resp.json()
         issues = data.get("issues", [])
 
+        base = (adapter.base_url or "").rstrip("/")
         result = []
         for issue in issues:
             fields = issue.get("fields", {})
             priority = (fields.get("priority") or {}).get("name", "Medium")
             status = (fields.get("status") or {}).get("name", "")
             issue_type = (fields.get("issuetype") or {}).get("name", "")
+            key = issue.get("key", "")
+            # Jira DC `description` may be a plain string or an ADF dict (Cloud).
+            raw_desc = fields.get("description")
+            if isinstance(raw_desc, dict):
+                description = ""  # ADF rich text — skip structured payload
+            else:
+                description = raw_desc or ""
             result.append({
-                "key": issue.get("key", ""),
+                "key": key,
                 "summary": fields.get("summary", ""),
                 "priority": priority,
                 "status": status,
                 "issue_type": issue_type,
                 "created": fields.get("created", ""),
+                "description": description,
+                "link": f"{base}/browse/{key}" if base and key else "",
             })
         return result
     except HTTPException:

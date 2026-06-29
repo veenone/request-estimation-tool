@@ -173,7 +173,12 @@ async def public_holidays_page():
             return result
 
         # ---- calendar renderer ---------------------------------------------------
-        calendar_container = ui.element("div").classes("ed-card")
+        # Calendar and the holiday list sit side by side (wraps to stacked on
+        # narrow screens). The list card is created later into _list_holder.
+        with ui.row().classes("w-full items-start").style("gap: 18px;"):
+            calendar_container = ui.element("div").classes("ed-card") \
+                .style("flex: 1 1 480px; min-width: 0;")
+            _list_holder = ui.element("div").style("flex: 1 1 360px; min-width: 0;")
 
         def _render_calendar():
             calendar_container.clear()
@@ -453,12 +458,13 @@ async def public_holidays_page():
         # ---- Calendar view -------------------------------------------------------
         _render_calendar()
 
-        # ---- Table view (below calendar, in its own ed-card) ---------------------
-        with ui.element("div").classes("ed-card"):
-            with ui.element("div").classes("ed-card-head"):
-                ui.label("All Holidays").classes("ed-cap")
-                _list_count_label = ui.label("").classes("ed-card-head-meta")
-            table_container = ui.element("div").classes("w-full")
+        # ---- Table view (beside the calendar, in its own ed-card) ----------------
+        with _list_holder:
+            with ui.element("div").classes("ed-card"):
+                with ui.element("div").classes("ed-card-head"):
+                    ui.label("All Holidays").classes("ed-cap")
+                    _list_count_label = ui.label("").classes("ed-card-head-meta")
+                table_container = ui.element("div").classes("w-full")
 
         _TABLE_COLUMNS = [
             {"name": "date", "label": "Date", "field": "date", "align": "left", "sortable": True},

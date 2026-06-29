@@ -217,17 +217,53 @@ async def pr_registry_page() -> None:
                 row = e.args[1] if isinstance(e.args, list) and len(e.args) > 1 else {}
                 if not row:
                     return
-                with ui.dialog() as dlg, ui.card().classes("w-[600px]"):
-                    ui.label(f"PR Detail: {row.get('key', '')}").classes("text-h6 q-mb-sm")
-                    with ui.column().classes("gap-1"):
-                        ui.label(f"Summary: {row.get('summary', '')}").classes("text-body1")
-                        ui.label(f"Priority: {row.get('priority', '')}").classes("text-body2")
-                        ui.label(f"Status: {row.get('status', '')}").classes("text-body2")
-                        ui.label(f"Type: {row.get('issue_type', '')}").classes("text-body2")
-                        ui.label(f"Created: {row.get('created', '')}").classes(
-                            "text-body2 text-grey"
-                        )
-                    ui.button("Close", on_click=dlg.close).props("flat q-mt-md")
+                pri = (row.get("priority") or "").upper()
+                pri_color = (
+                    "negative" if pri in ("CRITICAL", "HIGH")
+                    else "warning" if pri == "MEDIUM"
+                    else "positive"
+                )
+                with ui.dialog() as dlg, ui.card().classes("w-[680px] max-w-[95vw]"):
+                    # Header: key + priority/status badges
+                    with ui.row().classes("items-center w-full q-mb-xs"):
+                        ui.icon("bug_report", color="primary").classes("text-h5")
+                        ui.label(row.get("key", "")).classes("text-h6 ed-mono")
+                        if row.get("priority"):
+                            ui.badge(row.get("priority")).props(f"color={pri_color} outline").classes("q-ml-sm")
+                        ui.element("div").classes("ed-toolbar-grow")
+                        if row.get("status"):
+                            ui.badge(row.get("status")).props("color=grey-7 outline")
+                    ui.label(row.get("summary", "")).classes("text-subtitle1 q-mb-sm") \
+                        .style("font-weight:600; line-height:1.3;")
+                    ui.separator()
+
+                    # Meta rows
+                    with ui.column().classes("w-full q-mt-sm gap-1"):
+                        def _meta(label: str, value: str) -> None:
+                            with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
+                                ui.label(label).classes("text-caption text-grey").style("width:84px; flex:0 0 84px;")
+                                ui.label(value or "—").classes("text-body2")
+                        _meta("Type", row.get("issue_type", ""))
+                        _meta("Status", row.get("status", ""))
+                        _meta("Priority", row.get("priority", ""))
+                        _meta("Created", (row.get("created") or "")[:10])
+                        link = row.get("link") or ""
+                        if link:
+                            with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
+                                ui.label("Link").classes("text-caption text-grey").style("width:84px; flex:0 0 84px;")
+                                ui.link(link, link, new_tab=True).classes("text-body2").style("word-break:break-all;")
+
+                    # Description
+                    ui.label("Description").classes("text-caption text-grey q-mt-md")
+                    desc = (row.get("description") or "").strip()
+                    with ui.element("div").classes("w-full q-pa-sm") \
+                            .style("max-height:240px; overflow:auto; white-space:pre-wrap; "
+                                   "border:1px solid var(--ed-line); border-radius:4px;"):
+                        ui.label(desc or "No description provided.") \
+                            .classes("text-body2" + ("" if desc else " text-grey"))
+
+                    with ui.row().classes("w-full justify-end q-mt-md"):
+                        ui.button("Close", on_click=dlg.close).props("flat")
                 dlg.open()
 
             table.on("rowClick", _show_detail)

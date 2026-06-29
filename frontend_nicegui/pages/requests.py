@@ -325,6 +325,19 @@ async def requests_list_page() -> None:
                     </q-td>
                 """)
 
+                # Constrain long titles so the table never overflows its
+                # container horizontally (which previously pushed the action
+                # buttons out of view). Full title shown on hover.
+                table_ref.add_slot("body-cell-title", r"""
+                    <q-td :props="props">
+                        <div style="max-width: 360px; overflow: hidden;
+                                    text-overflow: ellipsis; white-space: nowrap;">
+                            {{ props.value }}
+                            <q-tooltip>{{ props.value }}</q-tooltip>
+                        </div>
+                    </q-td>
+                """)
+
                 table_ref.add_slot("body-cell-priority", r"""
                     <q-td :props="props">
                         <q-badge outline :color="

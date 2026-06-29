@@ -115,3 +115,25 @@ class TestPDFReport:
         generate_pdf_report(sample_report_data, output_path=output)
         assert output.exists()
         assert output.stat().st_size > 0
+
+    def test_generates_with_document_deliverables(self, sample_report_data: ExcelReportData):
+        """Deliverables section (with long notes) wraps and renders without error."""
+        sample_report_data.document_deliverables = [
+            {
+                "name": "Comprehensive Test Plan Document for the SIM Toolkit",
+                "category": "Planning",
+                "linked_task": "Test plan review",
+                "count": 1,
+                "base_effort_hours": 8.0,
+                "total_hours": 8.0,
+                "effective_hours": 6.0,
+                "overlap_note": (
+                    "Overlaps with the regression test plan; 2h deducted to "
+                    "avoid double-counting effort across documentation "
+                    "deliverables that share common sections."
+                ),
+            },
+        ]
+        result = generate_pdf_report(sample_report_data)
+        assert result[:4] == b"%PDF"
+        assert len(result) > 0
