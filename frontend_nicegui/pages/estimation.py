@@ -126,7 +126,7 @@ ui.add_head_html("""
                           font-size: 28px; font-weight: 500;
                           line-height: 1; margin-top: 6px; }
 </style>
-""")
+""", shared=True)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
