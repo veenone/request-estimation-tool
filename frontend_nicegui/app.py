@@ -588,6 +588,24 @@ def auth_headers() -> dict[str, str]:
     return headers
 
 
+# Default role→permission map, used as a fallback when no rbac_matrix has been
+# saved yet (otherwise non-admins would see no permission-gated nav at all).
+# Mirrors pages/rbac.py::_DEFAULT_MATRIX (kept in sync; ADMIN gets everything).
+_DEFAULT_RBAC_MATRIX: dict[str, list[str]] = {
+    "VIEWER": ["view_estimations", "view_reports"],
+    "ESTIMATOR": [
+        "view_estimations", "create_estimations", "view_reports",
+        "download_reports", "manage_features", "manage_duts",
+        "manage_profiles", "view_requests",
+    ],
+    "APPROVER": [
+        "view_estimations", "create_estimations", "approve_estimations",
+        "view_reports", "download_reports", "manage_features", "manage_duts",
+        "manage_profiles", "view_audit_log", "view_requests", "manage_requests",
+    ],
+}
+
+
 def has_permission(perm: str) -> bool:
     """Check if the current user has a specific RBAC permission."""
     user = current_user()
@@ -603,10 +621,14 @@ def has_permission(perm: str) -> bool:
             if item.get("key") == "rbac_matrix":
                 try:
                     parsed = _json.loads(item.get("value", "{}"))
-                    return perm in parsed.get(role, [])
+                    role_perms = parsed.get(role)
+                    if role_perms is None:
+                        role_perms = _DEFAULT_RBAC_MATRIX.get(role, [])
+                    return perm in role_perms
                 except Exception:
-                    return False
-    return False
+                    return perm in _DEFAULT_RBAC_MATRIX.get(role, [])
+    # No saved matrix → fall back to role defaults.
+    return perm in _DEFAULT_RBAC_MATRIX.get(role, [])
 
 
 def extract_error_detail(exc: Exception) -> str:
@@ -1371,9 +1393,16 @@ def sidebar():
                 if _rbac_matrix_val:
                     import json as _json_mod
                     _parsed = _json_mod.loads(_rbac_matrix_val)
-                    _rbac_perms = set(_parsed.get(role, []))
+                    _role_perms = _parsed.get(role)
+                    if _role_perms is None:
+                        _role_perms = _DEFAULT_RBAC_MATRIX.get(role, [])
+                    _rbac_perms = set(_role_perms)
+                else:
+                    # No saved matrix yet → fall back to role defaults so
+                    # permission-gated nav (e.g. Request Inbox) is visible.
+                    _rbac_perms = set(_DEFAULT_RBAC_MATRIX.get(role, []))
             except Exception:
-                _rbac_perms = set()
+                _rbac_perms = set(_DEFAULT_RBAC_MATRIX.get(role, []))
 
         def _has_perm(perm: str) -> bool:
             return "__all__" in _rbac_perms or perm in _rbac_perms

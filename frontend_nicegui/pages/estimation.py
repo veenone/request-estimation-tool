@@ -927,8 +927,9 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 for cat_name, cat_features in vis_by_cat.items():
                                     ui.label(cat_name).classes("text-subtitle2 q-mt-sm text-primary")
 
-                                    with ui.grid(columns="1fr 90px 80px 90px").classes("w-full q-pl-md items-center"):
+                                    with ui.grid(columns="1.3fr 1.7fr 90px 70px 90px").classes("w-full q-pl-md items-center"):
                                         ui.label("Feature").classes("text-caption text-grey")
+                                        ui.label("Description").classes("text-caption text-grey")
                                         ui.label("Complexity").classes("text-caption text-grey text-center")
                                         ui.label("New?").classes("text-caption text-grey text-center")
                                         ui.label("Scope").classes("text-caption text-grey text-center")
@@ -944,6 +945,11 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                                 value=(fid in state["feature_ids"]),
                                             )
                                             feature_checkbox_refs[fid] = cb
+
+                                            _fdesc = (feat.get("description") or "").strip()
+                                            ui.label(_fdesc or "—").classes(
+                                                "text-caption text-grey"
+                                            ).style("white-space: normal; line-height: 1.25;")
 
                                             ui.label(f"x{fweight:.1f}").classes("text-center")
 
