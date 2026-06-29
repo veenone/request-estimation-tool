@@ -249,6 +249,10 @@ class RequestInboxReinit(BaseModel):
     """Confirmation payload for the destructive request-inbox reinitialize."""
     confirm: str
 
+class EstimationReinit(BaseModel):
+    """Confirmation payload for the destructive estimation reinitialize."""
+    confirm: str
+
 class RequestOut(RequestBase):
     id: int
     status: str

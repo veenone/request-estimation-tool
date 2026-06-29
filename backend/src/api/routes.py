@@ -51,6 +51,7 @@ from .schemas import (
     ConfigurationOut,
     ConfigurationUpdate,
     DashboardStatsOut,
+    EstimationReinit,
     RecentEstimationOut,
     RecentRequestOut,
     RequestInboxReinit,
@@ -1574,6 +1575,51 @@ def get_estimation(estimation_id: int, user: User = Depends(get_current_user), d
             notes=st["notes"],
         ))
     return result
+
+
+@router.post("/estimations/reinit")
+def reinit_estimations(
+    request: HTTPRequest,
+    data: EstimationReinit,
+    user: User = Depends(RequireRole("ADMIN")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete every estimation and reset the ID counter.
+
+    Destructive admin action. The caller must echo the confirmation token
+    ('REINITIALIZE') in the body; the same token is enforced in the UI. Child
+    rows (tasks, team allocations, risks, project-scoped features) are removed
+    via the database's ON DELETE CASCADE.
+    """
+    if (data.confirm or "").strip().upper() != _REQUEST_REINIT_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Confirmation token mismatch. Type '{_REQUEST_REINIT_TOKEN}' to proceed.",
+        )
+
+    deleted = db.query(Estimation).delete()
+    db.commit()
+
+    # Reset the auto-increment counter so numbering restarts (SQLite + MySQL).
+    from sqlalchemy import text
+    try:
+        db.execute(text("DELETE FROM sqlite_sequence WHERE name='estimations'"))
+        db.commit()
+    except Exception:
+        try:
+            db.execute(text("ALTER TABLE estimations AUTO_INCREMENT = 1"))
+            db.commit()
+        except Exception:
+            pass
+
+    AuthService(db).log_action(
+        user.id,
+        "ESTIMATION_REINIT",
+        resource_type="estimation",
+        details={"deleted": deleted},
+        ip_address=getattr(request.state, "client_ip", None),
+    )
+    return {"deleted": deleted, "message": f"All estimations cleared ({deleted} removed), ID counter reset to 1."}
 
 
 @router.post("/estimations", response_model=EstimationOut, status_code=201)

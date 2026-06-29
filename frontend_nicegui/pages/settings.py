@@ -619,6 +619,50 @@ async def settings_page():
                     ))
             _dlg.open()
 
+        async def reinit_estimations(token: str):
+            result = await api_post("/estimations/reinit", json={"confirm": token})
+            deleted = result.get("deleted", 0)
+            ui.notify(
+                f"Estimations reinitialized: {deleted} estimation(s) removed, "
+                "ID counter reset to 1.",
+                type="positive", timeout=6000,
+            )
+
+        def _on_reinit_estimations_click(*_):
+            with ui.dialog() as _dlg, ui.card().classes("gap-2"):
+                ui.label("Reinitialize estimations?").classes(
+                    "text-subtitle1 text-weight-medium"
+                )
+                ui.label(
+                    "Deletes ALL estimations (including their tasks, team "
+                    "allocations, risks and project-scoped features) and resets "
+                    "the estimation-number counter to 1. This cannot be undone."
+                ).classes("text-caption text-grey").style("max-width: 440px;")
+                token_input = ui.input(
+                    label="Type REINITIALIZE to confirm",
+                    placeholder="REINITIALIZE",
+                ).classes("w-full").props("autocomplete=off")
+                with ui.row().classes("justify-end w-full q-gutter-sm"):
+                    ui.button("Cancel", on_click=_dlg.close).props("flat")
+                    confirm_btn = ui.button("Delete & reinitialize", color="negative")
+
+                    async def _confirm(_inp=token_input):
+                        token = (_inp.value or "").strip()
+                        if token.upper() != "REINITIALIZE":
+                            ui.notify(
+                                "Type REINITIALIZE exactly to confirm.",
+                                type="warning",
+                            )
+                            return
+                        _dlg.close()
+                        await reinit_estimations(token)
+
+                    confirm_btn.on("click", run_async(
+                        confirm_btn, _confirm,
+                        error_prefix="Estimation reinit error",
+                    ))
+            _dlg.open()
+
         # ---- Connection test card ──────────────────────────────────────────
         with ui.element("div").classes("ed-card").style("margin-top: 22px;"):
             with ui.element("div").classes("ed-card-head"):
@@ -665,3 +709,8 @@ async def settings_page():
                     "Reinitialize Request Inbox", icon="inbox",
                 ).props("flat color=negative")
                 reinit_inbox_btn.on("click", _on_reinit_inbox_click)
+
+                reinit_estimations_btn = ui.button(
+                    "Reinitialize Estimations", icon="calculate",
+                ).props("flat color=negative")
+                reinit_estimations_btn.on("click", _on_reinit_estimations_click)

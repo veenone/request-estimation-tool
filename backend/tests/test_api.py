@@ -401,3 +401,55 @@ class TestRequestInboxReinit:
     def test_reinit_requires_auth(self, client):
         resp = client.post("/api/requests/reinit", json={"confirm": "REINITIALIZE"})
         assert resp.status_code == 401
+
+
+class TestEstimationReinit:
+    """Admin reinitialize of estimations (POST /api/estimations/reinit)."""
+
+    def _make_estimation(self, client, auth_headers):
+        feature_ids = [f["id"] for f in client.get("/api/features", headers=auth_headers).json()[:3]]
+        resp = client.post("/api/estimations", headers=auth_headers, json={
+            "project_name": "Reinit Test",
+            "project_type": "EVOLUTION",
+            "feature_ids": feature_ids,
+            "new_feature_ids": [],
+            "dut_ids": [1, 2],
+            "profile_ids": [1],
+            "pr_fixes": {"simple": 1, "medium": 0, "complex": 0},
+            "team_size": 1,
+            "has_leader": True,
+            "working_days": 20,
+            "expected_delivery": "2026-04-01",
+        })
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_reinit_rejects_wrong_token(self, client, auth_headers):
+        self._make_estimation(client, auth_headers)
+        resp = client.post(
+            "/api/estimations/reinit", headers=auth_headers, json={"confirm": "nope"}
+        )
+        assert resp.status_code == 400
+        assert len(client.get("/api/estimations", headers=auth_headers).json()) >= 1
+
+    def test_reinit_rejects_empty_token(self, client, auth_headers):
+        resp = client.post(
+            "/api/estimations/reinit", headers=auth_headers, json={"confirm": ""}
+        )
+        assert resp.status_code == 400
+
+    def test_reinit_deletes_all_with_correct_token(self, client, auth_headers):
+        self._make_estimation(client, auth_headers)
+        self._make_estimation(client, auth_headers)
+        resp = client.post(
+            "/api/estimations/reinit",
+            headers=auth_headers,
+            json={"confirm": "REINITIALIZE"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["deleted"] >= 2
+        assert client.get("/api/estimations", headers=auth_headers).json() == []
+
+    def test_reinit_requires_auth(self, client):
+        resp = client.post("/api/estimations/reinit", json={"confirm": "REINITIALIZE"})
+        assert resp.status_code == 401
