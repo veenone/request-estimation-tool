@@ -858,8 +858,15 @@ async def login_page():
     has_ldap = "ldap" in providers
 
     auth_method = {"value": "local"}
+    _ui_refs: dict = {"btn": None}
 
     async def try_login():
+        # Visual cue: show a spinner and disable the button while the request
+        # is in flight (LDAP binds can take a moment), restored in `finally`.
+        btn = _ui_refs["btn"]
+        if btn is not None:
+            btn.props("loading")
+            btn.disable()
         try:
             payload = {
                 "username": username.value,
@@ -901,6 +908,10 @@ async def login_page():
             ui.notify("Login timed out — server may be unreachable", type="negative")
         except Exception as e:
             ui.notify(f"Login error: {e}", type="negative")
+        finally:
+            if btn is not None:
+                btn.props(remove="loading")
+                btn.enable()
 
     # Fetch logo config from public branding endpoint (no auth required)
     _login_logo_url = ""
@@ -1113,7 +1124,7 @@ async def login_page():
                     .props("outlined dense").classes("w-full")
                 password.on("keydown.enter", try_login)
 
-                ui.button("Sign In", on_click=try_login) \
+                _ui_refs["btn"] = ui.button("Sign In", on_click=try_login) \
                     .props("color=primary unelevated") \
                     .classes("w-full ed-login-submit")
 

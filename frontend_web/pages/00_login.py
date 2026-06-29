@@ -58,7 +58,7 @@ def _do_login(username: str, password: str) -> tuple[bool, str]:
         resp = http.post(
             f"{API_BASE}/auth/login",
             json={"username": username, "password": password},
-            timeout=10,
+            timeout=30,
         )
     except http.exceptions.ConnectionError:
         return False, "Cannot reach the API server. Make sure the backend is running on localhost:8501."

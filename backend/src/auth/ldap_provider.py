@@ -141,9 +141,13 @@ class LDAPProvider:
         try:
             import ldap3  # type: ignore[import-untyped]
 
+            # get_info=NONE: authentication only needs a bind + one-entry
+            # search. Fetching the server schema/DSA info (get_info=ALL) adds
+            # several seconds of round-trips per login against AD and is never
+            # used here, so skip it for fast logins.
             server = ldap3.Server(
                 self.config["ldap_url"],
-                get_info=ldap3.ALL,
+                get_info=ldap3.NONE,
                 connect_timeout=10,
             )
 
@@ -272,7 +276,9 @@ class LDAPProvider:
         try:
             import ldap3  # type: ignore[import-untyped]
 
-            server = ldap3.Server(self.config["ldap_url"], get_info=ldap3.ALL)
+            # get_info=NONE: the sync reads entry attributes, not the server
+            # schema, so skip the expensive schema/DSA fetch for a faster sync.
+            server = ldap3.Server(self.config["ldap_url"], get_info=ldap3.NONE)
             conn = ldap3.Connection(
                 server,
                 user=self.config.get("ldap_bind_dn"),
