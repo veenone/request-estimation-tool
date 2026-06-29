@@ -2616,6 +2616,22 @@ async def estimation_detail_page(estimation_id: int) -> None:
             show_error_page(exc)
             return
 
+        # Configurable field labels (A5) — also applied to this read-only view.
+        try:
+            _det_configs = await api_get("/configuration")
+            _config_map: dict[str, str] = {
+                c.get("key", ""): c.get("value", "")
+                for c in _det_configs if isinstance(c, dict)
+            }
+        except Exception:
+            _config_map = {}
+
+        def _disp_label(key: str, default: str) -> str:
+            """Configured label minus any trailing '(optional)' form hint."""
+            import re as _re
+            raw = _config_map.get(key) or default
+            return _re.sub(r"\s*\(optional\)\s*$", "", raw, flags=_re.I)
+
         est_state: dict[str, Any] = {"data": est}
         version = est.get("version", 1) or 1
         feasibility = est.get("feasibility_status", "")
@@ -2993,8 +3009,10 @@ async def estimation_detail_page(estimation_id: int) -> None:
                             _spec("DUTs", str(est.get("dut_count", 0)))
                             _spec("Profiles", str(est.get("profile_count", 0)))
                             _spec("Combinations", str(est.get("dut_profile_combinations", 0)))
-                            _spec("Start Date", str(est.get("start_date") or "—"))
-                            _spec("Deadline", str(est.get("expected_delivery") or "—"))
+                            _spec(_disp_label("label_project_start_date", "Start Date"),
+                                  str(est.get("start_date") or "—"))
+                            _spec(_disp_label("label_deadline", "Deadline"),
+                                  str(est.get("expected_delivery") or "—"))
                             _spec(
                                 "Created",
                                 str(est.get("created_at", ""))[:10] if est.get("created_at") else "—",
@@ -3051,13 +3069,14 @@ async def estimation_detail_page(estimation_id: int) -> None:
                             ui.label(f"{est.get('grand_total_hours', 0):,.1f}h") \
                                 .classes("ed-bar-value")
 
-                    # Elapsed Time strip
+                    # Proposed Duration strip (A4) — the wall-clock delivery time,
+                    # shown for every estimation (not only when team > 1).
                     _el_days = est.get("elapsed_days", 0)
                     _el_weeks = est.get("elapsed_weeks", 0)
-                    if _el_days > 0 and _el_days != est.get("grand_total_days", 0):
+                    if _el_days > 0:
                         with ui.element("div").classes("ed-card"):
                             with ui.element("div").classes("ed-card-head"):
-                                ui.label("Elapsed Time · Wall Clock").classes("ed-cap")
+                                ui.label("Proposed Duration · Wall Clock").classes("ed-cap")
                                 ui.label("parallelizable ÷ team · sequential by one") \
                                     .classes("ed-eyebrow")
 

@@ -254,16 +254,20 @@ async def pr_registry_page() -> None:
                                 ui.label("Link").classes("text-caption text-grey").style("width:84px; flex:0 0 84px;")
                                 ui.link(link, link, new_tab=True).classes("text-body2").style("word-break:break-all;")
 
-                    # Description
-                    ui.label("Description").classes("text-caption text-grey q-mt-md")
+                    # Description — collapsible, collapsed by default (can be long).
                     desc = (row.get("description") or "").strip()
-                    with ui.element("div").classes("w-full q-pa-sm") \
-                            .style("max-height:240px; overflow:auto; "
-                                   "border:1px solid var(--ed-line); border-radius:4px;"):
-                        if desc:
-                            ui.html(render_jira_markup(desc)).classes("text-body2")
-                        else:
-                            ui.label("No description provided.").classes("text-body2 text-grey")
+                    _desc_caption = "Description" + (
+                        f" · {len(desc.splitlines())} lines" if desc.count("\n") else ""
+                    )
+                    with ui.expansion(_desc_caption, icon="notes") \
+                            .classes("w-full q-mt-md").props("dense") \
+                            .style("border:1px solid var(--ed-line); border-radius:4px;"):
+                        with ui.element("div").classes("w-full q-pa-sm") \
+                                .style("max-height:300px; overflow:auto;"):
+                            if desc:
+                                ui.html(render_jira_markup(desc)).classes("text-body2")
+                            else:
+                                ui.label("No description provided.").classes("text-body2 text-grey")
 
                     with ui.row().classes("w-full justify-end q-mt-md"):
                         ui.button("Close", on_click=dlg.close).props("flat")
