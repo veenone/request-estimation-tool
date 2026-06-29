@@ -1589,34 +1589,34 @@ async def dashboard_page():
     <style>
       /* KPI hero grid */
       .ed-kpi-hero-grid { display: grid !important; gap: 1px;
-                          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
                           border: 1px solid var(--ed-line); border-radius: 4px;
-                          overflow: hidden; margin-bottom: 28px;
+                          overflow: hidden; margin-bottom: 18px;
                           background: var(--ed-line); }
-      .ed-kpi-hero-cell { padding: 22px 24px; background: var(--q-page, transparent);
-                          display: flex; flex-direction: column; gap: 10px;
-                          min-height: 120px; }
+      .ed-kpi-hero-cell { padding: 14px 18px; background: var(--q-page, transparent);
+                          display: flex; flex-direction: column; gap: 6px;
+                          min-height: 84px; }
       .ed-kpi-hero-num  { font-family: var(--ed-mono); font-variant-numeric: tabular-nums;
-                          font-size: 38px; font-weight: 500; line-height: 1;
-                          letter-spacing: -0.02em; }
-      .ed-kpi-hero-unit { font-family: inherit; font-size: 12px; opacity: 0.65;
+                          font-size: 26px; font-weight: 500; line-height: 1;
+                          letter-spacing: -0.01em; opacity: 0.92; }
+      .ed-kpi-hero-unit { font-family: inherit; font-size: 11px; opacity: 0.6;
                           display: flex; align-items: center; gap: 6px; }
 
       /* Pipeline flow */
       .ed-pipeline      { display: flex !important; align-items: stretch;
                           gap: 0; margin-top: 14px; flex-wrap: wrap; }
-      .ed-pipeline-stage{ flex: 1 1 0; min-width: 110px;
-                          padding: 18px 14px;
+      .ed-pipeline-stage{ flex: 1 1 0; min-width: 104px;
+                          padding: 13px 12px;
                           border: 1px solid var(--ed-line); border-radius: 4px;
                           background: transparent; cursor: pointer;
                           transition: border-color 160ms ease, background 160ms ease;
-                          display: flex; flex-direction: column; gap: 8px; }
+                          display: flex; flex-direction: column; gap: 6px; }
       .ed-pipeline-stage:hover { border-color: var(--q-primary);
                                  background: color-mix(in srgb, var(--q-primary) 6%, transparent); }
       .ed-pipeline-stage.empty { opacity: 0.45; }
       .ed-pipeline-stage-num { font-family: var(--ed-mono);
                                font-variant-numeric: tabular-nums;
-                               font-size: 30px; font-weight: 500; line-height: 1; }
+                               font-size: 23px; font-weight: 500; line-height: 1; opacity: 0.92; }
       .ed-pipeline-arrow { display: flex !important; align-items: center;
                            justify-content: center;
                            padding: 0 6px; opacity: 0.4;
@@ -1629,7 +1629,7 @@ async def dashboard_page():
       .ed-feed-item   { display: grid !important;
                         grid-template-columns: 4px auto 1fr auto auto;
                         gap: 14px; align-items: center;
-                        padding: 14px 18px; cursor: pointer;
+                        padding: 10px 16px; cursor: pointer;
                         border-bottom: 1px dashed var(--ed-line-soft);
                         transition: background 140ms ease; }
       .ed-feed-item:last-child { border-bottom: none; }
@@ -1654,11 +1654,11 @@ async def dashboard_page():
 
       /* Compressed chart cards */
       .ed-chart-grid    { display: grid !important;
-                          grid-template-columns: repeat(2, 1fr); gap: 14px;
+                          grid-template-columns: repeat(2, 1fr); gap: 12px;
                           margin-bottom: 12px; }
       @media (max-width: 720px) { .ed-chart-grid { grid-template-columns: 1fr; } }
-      .ed-chart-card    { padding: 18px 20px !important; margin-bottom: 0 !important; }
-      .ed-chart-card .echarts { height: 280px !important; }
+      .ed-chart-card    { padding: 14px 16px !important; margin-bottom: 0 !important; }
+      .ed-chart-card .echarts { height: 212px !important; }
     </style>
     """)
 
@@ -1685,8 +1685,10 @@ async def dashboard_page():
     _label = {"show": True, "formatter": "{b}\n{c}", "fontSize": 10, "color": _chart_text}
     _emphasis = {"label": {"show": True, "fontSize": 13, "fontWeight": "bold"}}
 
-    _palette = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350", "#AB47BC",
-                "#26C6DA", "#EC407A", "#8D6E63", "#78909C", "#FFEE58"]
+    # Muted, lower-contrast palette (desaturated) for category charts; semantic
+    # status/risk colors below stay saturated because they carry meaning.
+    _palette = ["#5B8DB0", "#79A88C", "#C9A66B", "#C08497", "#9A8CB5",
+                "#6FA8AE", "#B58AA0", "#9A8F84", "#8B97A3", "#C2BC7E"]
 
     # ─── Helpers ─────────────────────────────────────────────────
     def _kpi_hero(label: str, value: str, sub: str = "", icon: str = "", help: str = "") -> None:
@@ -1928,7 +1930,7 @@ async def dashboard_page():
                 sorted_tasks = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
                 cats = [t[0] for t in sorted_tasks]
                 vals = [t[1] for t in sorted_tasks]
-                _bar(f"Task Templates · {sum(vals)}", cats, vals, "#42A5F5")
+                _bar(f"Task Templates · {sum(vals)}", cats, vals, "#5B8DB0")
 
             # ── Recent estimations feed ─────────────────────────
             with ui.element("div").classes("ed-section-head"):

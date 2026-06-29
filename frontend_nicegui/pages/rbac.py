@@ -194,23 +194,19 @@ async def rbac_page() -> None:
 
         with ui.element("div").classes("ed-shell"):
 
-            ui.label("RBAC Management").classes("text-h4 q-mb-md")
+            ui.label("RBAC Management").classes("text-h4 q-mb-xs")
             ui.label(
                 "Configure which permissions each role grants across the application."
-            ).classes("ed-eyebrow").style("margin-bottom: 14px;")
+            ).classes("ed-eyebrow").style("margin-bottom: 6px;")
 
-            # ---- prominent note (read before editing) --------------------------
-            with ui.element("div").classes("ed-card") \
-                    .style("border-color: var(--q-info); margin-bottom: 18px;"):
-                with ui.row().classes("items-start gap-2"):
-                    ui.icon("info", size="sm").classes("text-info q-mt-xs")
-                    ui.label(
-                        "ADMIN always has all permissions regardless of the "
-                        "checkboxes below. Changes saved here update the "
-                        "rbac_matrix configuration key used by the frontend for "
-                        "UI-level access hints — backend endpoints enforce role "
-                        "checks independently via the RequireRole dependency."
-                    ).classes("text-caption")
+            # Compact inline note (was a full-width bordered card that pushed the
+            # matrix down) — keep it quiet so the page leads with the data.
+            with ui.row().classes("items-center gap-1 q-mb-md"):
+                ui.icon("info", size="16px").classes("text-info")
+                ui.label(
+                    "ADMIN always has every permission. These settings drive UI "
+                    "access hints; backend endpoints enforce roles independently."
+                ).classes("text-caption text-grey")
 
             # ---- access guard --------------------------------------------------
             if role != "ADMIN":
