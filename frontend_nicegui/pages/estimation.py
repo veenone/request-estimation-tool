@@ -3460,7 +3460,9 @@ async def edit_estimation_page(estimation_id: int) -> None:
         ui.label(f"Edit Estimation — {est.get('estimation_number', '')} (v{version})").classes("text-h4 q-mb-md")
 
         # ---- Wizard (same 7 steps as new, but pre-filled) ---- #
-        with ui.stepper().props("vertical=false animated").classes("w-full") as stepper:
+        # header-nav makes the step headers clickable so users can jump between
+        # stages directly (non-sequential navigation), not only via Next/Back.
+        with ui.stepper().props("vertical=false animated header-nav").classes("w-full") as stepper:
 
             # Step 1 — Project Info
             with ui.step("Project Info"):
