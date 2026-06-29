@@ -23,6 +23,7 @@ from ..database.models import (
     EstimationTeamAllocation,
     EstimationVersionSnapshot,
     Feature,
+    FeaturePreset,
     HistoricalProject,
     PublicHoliday,
     Request,
@@ -69,6 +70,8 @@ from .schemas import (
     EstimationUpdate,
     FeatureCreate,
     FeatureOut,
+    FeaturePresetCreate,
+    FeaturePresetOut,
     FeatureUpdate,
     HistoricalProjectCreate,
     HistoricalProjectOut,
@@ -581,6 +584,81 @@ def list_audit_log(
         }
         result.append(entry)
     return result
+
+
+# ── Feature presets ──────────────────────────────────────
+
+def _preset_to_out(p: FeaturePreset, db: Session) -> FeaturePresetOut:
+    import json as _json
+    try:
+        fids = [int(x) for x in _json.loads(p.feature_ids_json or "[]")]
+    except Exception:
+        fids = []
+    owner_name = None
+    if p.owner_user_id:
+        owner = db.get(User, p.owner_user_id)
+        owner_name = (owner.display_name or owner.username) if owner else None
+    return FeaturePresetOut(
+        id=p.id, name=p.name, product_type=p.product_type,
+        feature_ids=fids, owner_user_id=p.owner_user_id, owner_name=owner_name,
+    )
+
+
+@router.get("/feature-presets", response_model=list[FeaturePresetOut])
+def list_feature_presets(
+    product_type: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List shared feature presets, optionally filtered to a product type.
+
+    Presets bound to a product type only show for that type; type-agnostic
+    presets (no product_type) always show.
+    """
+    presets = db.query(FeaturePreset).order_by(FeaturePreset.name).all()
+    out = [_preset_to_out(p, db) for p in presets]
+    if product_type:
+        out = [p for p in out if not p.product_type or p.product_type == product_type]
+    return out
+
+
+@router.post("/feature-presets", response_model=FeaturePresetOut, status_code=201)
+def create_feature_preset(
+    data: FeaturePresetCreate,
+    user: User = Depends(RequireRole("ESTIMATOR")),
+    db: Session = Depends(get_db),
+):
+    import json as _json
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Preset name is required.")
+    if not data.feature_ids:
+        raise HTTPException(400, "A preset must contain at least one feature.")
+    preset = FeaturePreset(
+        name=name,
+        product_type=(data.product_type or None),
+        feature_ids_json=_json.dumps(sorted({int(f) for f in data.feature_ids})),
+        owner_user_id=user.id,
+    )
+    db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return _preset_to_out(preset, db)
+
+
+@router.delete("/feature-presets/{preset_id}", status_code=204)
+def delete_feature_preset(
+    preset_id: int,
+    user: User = Depends(RequireRole("ESTIMATOR")),
+    db: Session = Depends(get_db),
+):
+    preset = db.get(FeaturePreset, preset_id)
+    if not preset:
+        raise HTTPException(404, "Preset not found")
+    if user.role != "ADMIN" and preset.owner_user_id is not None and preset.owner_user_id != user.id:
+        raise HTTPException(403, "Only the preset's owner or an ADMIN can delete it.")
+    db.delete(preset)
+    db.commit()
 
 
 # ── Features ─────────────────────────────────────────────

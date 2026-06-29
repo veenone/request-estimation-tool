@@ -36,6 +36,21 @@ class FeatureBase(BaseModel):
 class FeatureCreate(FeatureBase):
     pass
 
+class FeaturePresetCreate(BaseModel):
+    name: str
+    product_type: Optional[str] = None
+    feature_ids: list[int] = []
+
+class FeaturePresetOut(BaseModel):
+    id: int
+    name: str
+    product_type: Optional[str] = None
+    feature_ids: list[int] = []
+    owner_user_id: Optional[int] = None
+    owner_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
 class FeatureUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None

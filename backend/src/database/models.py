@@ -117,6 +117,27 @@ class Feature(Base):
     )
 
 
+class FeaturePreset(Base):
+    """A reusable, named bundle of features bound to a product type.
+
+    Estimators save a feature selection as a preset and re-apply it in the
+    wizard to bulk-select those features (additive). Presets are shared
+    (visible to all estimators); owner_user_id records who created it.
+    """
+    __tablename__ = "feature_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    feature_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    owner_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class TaskTemplate(Base):
     __tablename__ = "task_templates"
 

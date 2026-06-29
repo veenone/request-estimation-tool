@@ -854,6 +854,92 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                         feature_checkbox_refs: dict[int, ui.checkbox] = {}
                         new_feat_checkbox_refs: dict[int, ui.checkbox] = {}
 
+                        # -- Feature presets (estimator self-service) ----------------
+                        _presets_holder: dict = {"items": []}
+                        with ui.row().classes("items-center gap-2 q-mb-sm flex-wrap"):
+                            preset_select = ui.select(
+                                {}, label="Apply preset", with_input=True,
+                            ).props("dense outlined clearable").style("min-width: 240px;")
+
+                            async def _refresh_presets() -> None:
+                                pt = state.get("product_type_filter") or ""
+                                params = {"product_type": pt} if pt and pt != "All" else None
+                                try:
+                                    items = await api_get("/feature-presets", params=params)
+                                except Exception:
+                                    items = []
+                                items = items if isinstance(items, list) else []
+                                _presets_holder["items"] = items
+                                preset_select.set_options({p["id"]: p["name"] for p in items})
+
+                            def _apply_preset(*_) -> None:
+                                pid = preset_select.value
+                                preset = next(
+                                    (p for p in _presets_holder["items"] if p["id"] == pid), None
+                                )
+                                if not preset:
+                                    ui.notify("Pick a preset to apply.", type="warning")
+                                    return
+                                applied = 0
+                                # Additive: only ever selects, never deselects.
+                                for fid in preset.get("feature_ids", []):
+                                    if fid in feature_checkbox_refs:
+                                        feature_checkbox_refs[fid].value = True
+                                    if fid not in state["feature_ids"]:
+                                        state["feature_ids"].append(fid)
+                                    applied += 1
+                                ui.notify(
+                                    f"Applied preset '{preset['name']}' (+{applied} feature(s)).",
+                                    type="positive",
+                                )
+
+                            ui.button("Apply", icon="playlist_add_check",
+                                      on_click=_apply_preset).props("dense color=primary")
+
+                            async def _save_preset() -> None:
+                                selected = set(state["feature_ids"])
+                                for fid, cb in feature_checkbox_refs.items():
+                                    if cb.value:
+                                        selected.add(fid)
+                                    else:
+                                        selected.discard(fid)
+                                if not selected:
+                                    ui.notify("Select at least one feature first.", type="warning")
+                                    return
+                                _pt = state.get("product_type_filter") or "All"
+                                with ui.dialog() as _pdlg, ui.card().classes("w-[min(420px,92vw)]"):
+                                    ui.label("Save selection as preset").classes("text-h6")
+                                    ui.label(
+                                        f"{len(selected)} feature(s) · product type: {_pt}"
+                                    ).classes("text-caption text-grey")
+                                    _pname = ui.input("Preset name *").classes("w-full").props("autofocus")
+
+                                    async def _do_save() -> None:
+                                        if not (_pname.value or "").strip():
+                                            ui.notify("Preset name is required.", type="warning")
+                                            return
+                                        await api_post("/feature-presets", json={
+                                            "name": _pname.value.strip(),
+                                            "product_type": (None if _pt == "All" else _pt),
+                                            "feature_ids": sorted(selected),
+                                        })
+                                        _pdlg.close()
+                                        await _refresh_presets()
+                                        ui.notify("Preset saved.", type="positive")
+
+                                    with ui.row().classes("w-full justify-end q-mt-sm"):
+                                        ui.button("Cancel", on_click=_pdlg.close).props("flat")
+                                        _sb = ui.button("Save", icon="save").props("color=primary")
+                                        _sb.on("click", run_async(
+                                            _sb, _do_save, error_prefix="Could not save preset"))
+                                _pdlg.open()
+
+                            _save_preset_btn = ui.button(
+                                "Save selection as preset", icon="bookmark_add",
+                            ).props("dense flat color=secondary")
+                            _save_preset_btn.on("click", run_async(
+                                _save_preset_btn, _save_preset, error_prefix="Could not save preset"))
+
                         features_container = ui.column().classes("w-full")
 
                         # -- Select All checkbox (outside container so it persists) --
@@ -979,6 +1065,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                             cb.on("update:model-value", _make_sync(fid, new_cb))
 
                         _rebuild_feature_list()
+                        await _refresh_presets()
 
                         def _collect_features() -> None:
                             state["feature_ids"] = [

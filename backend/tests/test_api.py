@@ -453,3 +453,54 @@ class TestEstimationReinit:
     def test_reinit_requires_auth(self, client):
         resp = client.post("/api/estimations/reinit", json={"confirm": "REINITIALIZE"})
         assert resp.status_code == 401
+
+
+class TestFeaturePresets:
+    """Estimator self-service feature presets (/api/feature-presets)."""
+
+    def _feature_ids(self, client, auth_headers):
+        return [f["id"] for f in client.get("/api/features", headers=auth_headers).json()[:3]]
+
+    def test_create_and_list_preset(self, client, auth_headers):
+        fids = self._feature_ids(client, auth_headers)
+        resp = client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "Smoke set", "product_type": "SIM", "feature_ids": fids,
+        })
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert data["name"] == "Smoke set"
+        assert sorted(data["feature_ids"]) == sorted(fids)
+
+        listed = client.get("/api/feature-presets", headers=auth_headers).json()
+        assert any(p["name"] == "Smoke set" for p in listed)
+
+    def test_preset_requires_features(self, client, auth_headers):
+        resp = client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "Empty", "feature_ids": [],
+        })
+        assert resp.status_code == 400
+
+    def test_product_type_filter(self, client, auth_headers):
+        fids = self._feature_ids(client, auth_headers)
+        client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "SIM only", "product_type": "SIM", "feature_ids": fids,
+        })
+        client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "Any type", "product_type": None, "feature_ids": fids,
+        })
+        # Filtering to eSIM hides the SIM-bound preset but keeps the type-agnostic one.
+        names = {p["name"] for p in client.get(
+            "/api/feature-presets", headers=auth_headers, params={"product_type": "eSIM"}
+        ).json()}
+        assert "Any type" in names
+        assert "SIM only" not in names
+
+    def test_delete_preset(self, client, auth_headers):
+        fids = self._feature_ids(client, auth_headers)
+        pid = client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "Temp", "feature_ids": fids,
+        }).json()["id"]
+        resp = client.delete(f"/api/feature-presets/{pid}", headers=auth_headers)
+        assert resp.status_code == 204
+        assert all(p["id"] != pid for p in client.get(
+            "/api/feature-presets", headers=auth_headers).json())
