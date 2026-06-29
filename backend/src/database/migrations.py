@@ -876,6 +876,18 @@ def _ensure_config_keys(session: Session) -> None:
             "NEW,EVOLUTION,SUPPORT,CHANGE_REQUEST",
             "Comma-separated list of project types for estimation wizard",
         ),
+        "label_project_start_date": (
+            "Project Start Date - T0 (optional)",
+            "Wizard field label for the project start date",
+        ),
+        "label_testing_start_date": (
+            "Testing Start Date (optional)",
+            "Wizard field label for the testing start date",
+        ),
+        "label_deadline": (
+            "Deadline (optional)",
+            "Wizard field label for the delivery deadline date",
+        ),
         "release_effort_factor": (
             "0.5",
             "Effort multiplier per additional release (0.0 to 1.0)",

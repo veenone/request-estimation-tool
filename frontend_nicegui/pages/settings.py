@@ -82,6 +82,11 @@ SECTION_KEYS: dict[str, list[str]] = {
         "feature_categories",
         "project_types",
     ],
+    "Field Labels": [
+        "label_project_start_date",
+        "label_testing_start_date",
+        "label_deadline",
+    ],
     "Email / SMTP": [],   # dynamic: keys starting with "smtp_"
     "LDAP": [],           # dynamic: keys starting with "ldap_"
     "OIDC": [],           # dynamic: keys starting with "oidc_"

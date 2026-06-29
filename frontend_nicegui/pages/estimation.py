@@ -1687,7 +1687,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
 
                         with ui.row().classes("w-full q-gutter-md"):
                             with ui.input(
-                                "Project Start Date - T0 (optional)",
+                                _config_map.get("label_project_start_date") or "Project Start Date - T0 (optional)",
                                 value=state.get("start_date") or "",
                             ).classes("flex-1") as start_date_input:
                                 with ui.menu() as start_menu:
@@ -1697,7 +1697,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
 
                             with ui.input(
-                                "Testing Start Date (optional)",
+                                _config_map.get("label_testing_start_date") or "Testing Start Date (optional)",
                                 value=state.get("testing_start_date") or "",
                             ).classes("flex-1") as testing_start_input:
                                 with ui.menu() as testing_start_menu:
@@ -1707,7 +1707,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
 
                             with ui.input(
-                                "Deadline (optional)",
+                                _config_map.get("label_deadline") or "Deadline (optional)",
                                 value=state.get("delivery_date") or "",
                             ).classes("flex-1") as delivery_input:
                                 with ui.menu() as delivery_menu:
@@ -1723,6 +1723,12 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                             step=1,
                             precision=0,
                         ).classes("w-full q-mt-sm")
+
+                        ui.label(
+                            "Used only for the feasibility / capacity check — it does NOT "
+                            "change the calculated effort. The proposed delivery duration is "
+                            "the Proposed Duration (elapsed) shown at the Review step."
+                        ).classes("text-caption text-grey q-mt-xs")
 
                         auto_calc_label = ui.label("").classes("text-caption text-primary q-mt-xs")
 
@@ -2137,11 +2143,14 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                 # Elapsed time (wall-clock estimate)
                                 _el_days = res.get("elapsed_days", 0)
                                 _el_weeks = res.get("elapsed_weeks", 0)
-                                if _el_days > 0 and _el_days != _gt_days:
+                                if _el_days > 0:
                                     ui.separator().classes("q-mt-sm")
-                                    ui.label("Elapsed Time (wall-clock estimate)").classes("text-subtitle2 q-mt-xs q-mb-xs")
+                                    ui.label("Proposed Duration (elapsed, wall-clock)").classes("text-subtitle2 q-mt-xs q-mb-xs")
                                     ui.label(
-                                        "Parallelizable tasks are divided by team size; sequential tasks are not."
+                                        "The actual time to deliver given the team — use this as the "
+                                        "estimation proposal. Parallelizable tasks are divided by team "
+                                        "size; sequential tasks are not. (Working Days Available is only "
+                                        "a feasibility input and does not affect this.)"
                                     ).classes("text-caption text-grey q-mb-xs")
                                     with ui.row().classes("q-gutter-md flex-wrap q-mb-sm"):
                                         _hours_card("Elapsed Hours", res.get("elapsed_hours", 0), "hourglass_top")
@@ -4313,7 +4322,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                 ui.label("Specify start date, deadline, and team capacity.").classes("text-body2 text-grey q-mb-md")
                 with ui.row().classes("w-full q-gutter-md"):
                     with ui.input(
-                        "Project Start Date - T0 (optional)",
+                        _config_map.get("label_project_start_date") or "Project Start Date - T0 (optional)",
                         value=state.get("start_date") or "",
                     ).classes("flex-1") as start_date_input:
                         with ui.menu() as start_menu:
@@ -4323,7 +4332,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             ui.icon("edit_calendar").on("click", start_menu.open).classes("cursor-pointer")
 
                     with ui.input(
-                        "Testing Start Date (optional)",
+                        _config_map.get("label_testing_start_date") or "Testing Start Date (optional)",
                         value=state.get("testing_start_date") or "",
                     ).classes("flex-1") as testing_start_input:
                         with ui.menu() as testing_start_menu:
@@ -4333,7 +4342,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                             ui.icon("edit_calendar").on("click", testing_start_menu.open).classes("cursor-pointer")
 
                     with ui.input(
-                        "Deadline (optional)",
+                        _config_map.get("label_deadline") or "Deadline (optional)",
                         value=state.get("delivery_date") or "",
                     ).classes("flex-1") as delivery_input:
                         with ui.menu() as delivery_menu:
