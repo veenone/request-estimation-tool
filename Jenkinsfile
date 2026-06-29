@@ -5,7 +5,7 @@
 // (openssh-client + sshpass). Each shell-driven stage branches on isUnix();
 // the commands executed on the staging host are identical for both.
 pipeline {
-    agent { label 'docker-agent-02' }
+    agent { label 'docker' }
     options {
         timestamps()
         disableConcurrentBuilds()
