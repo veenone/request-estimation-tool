@@ -20,6 +20,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import os
 import contextlib
+import functools
 import inspect
 from datetime import datetime, timezone
 
@@ -311,14 +312,17 @@ ui.add_head_html("""
   .ed-side-item.active .q-icon { opacity: 1; color: var(--q-primary); }
 
   /* Footer zone */
-  .ed-side-footer{ display: flex !important; align-items: center;
-                   justify-content: space-between; gap: 8px;
+  .ed-side-footer{ display: flex !important; flex-direction: column;
+                   align-items: stretch; gap: 8px;
                    padding: 12px 16px;
                    border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
                    margin-top: auto; }
   .ed-side-footer .q-btn { font-family: var(--ed-sans);
                            text-transform: uppercase; letter-spacing: 0.10em;
                            font-size: 11px; font-weight: 600; }
+  .ed-side-version { font-family: var(--ed-mono); font-size: 10px;
+                     letter-spacing: 0.06em; opacity: 0.45; text-align: center;
+                     text-transform: uppercase; user-select: text; }
 
   /* Refined tables wherever they appear inside an .ed-card */
   .ed-card .q-table__container { box-shadow: none !important;
@@ -1258,6 +1262,39 @@ def _section_header(section_id: str, label: str):
     return items_container
 
 
+@functools.lru_cache(maxsize=1)
+def resolve_app_version() -> str:
+    """Resolve the build/version label shown in the sidebar footer.
+
+    Precedence (first non-empty wins):
+      1. APP_VERSION env — set from the Jenkins APP_VERSION parameter via a
+         Docker build-arg (see Dockerfile / Jenkinsfile).
+      2. A CI-provided commit SHA (GIT_COMMIT / GIT_SHA / SOURCE_COMMIT),
+         shortened to 7 chars.
+      3. The local git short SHA, for dev runs outside CI.
+      4. "dev" as a last resort.
+    """
+    explicit = (os.environ.get("APP_VERSION") or "").strip()
+    if explicit:
+        return explicit
+    for key in ("GIT_COMMIT", "GIT_SHA", "SOURCE_COMMIT"):
+        sha = (os.environ.get(key) or "").strip()
+        if sha:
+            return sha[:7]
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, text=True, timeout=2,
+        ).strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "dev"
+
+
 def sidebar():
     user = current_user()
     role = user.get("role", "VIEWER") if user else "VIEWER"
@@ -1553,10 +1590,13 @@ def sidebar():
 
         # ── Footer (theme toggle + logout) ────────────────────
         with ui.element("div").classes("ed-side-footer"):
-            ui.button(icon="brightness_6", on_click=toggle_theme) \
-                .props("flat round dense").tooltip("Toggle theme")
-            ui.button("Logout", icon="logout", on_click=logout) \
-                .props("flat dense")
+            with ui.row().classes("items-center justify-between w-full").style("gap: 8px;"):
+                ui.button(icon="brightness_6", on_click=toggle_theme) \
+                    .props("flat round dense").tooltip("Toggle theme")
+                ui.button("Logout", icon="logout", on_click=logout) \
+                    .props("flat dense")
+            ui.label(resolve_app_version()).classes("ed-side-version") \
+                .tooltip("Build version")
 
     # Floating menu toggle — lives OUTSIDE the drawer so it stays clickable even
     # when the drawer is collapsed off-canvas. Lets the user show/hide the menu.

@@ -15,6 +15,7 @@ pipeline {
 
     parameters {
         string(name: 'IMAGE_TAG', defaultValue: '', description: 'Optional tag; defaults to git short SHA')
+        string(name: 'APP_VERSION', defaultValue: '', description: 'Version label shown in the app sidebar; defaults to git short SHA')
         string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build')
         booleanParam(name: 'IS_STAGING', defaultValue: true, description: 'Tag and push the image as :staging instead of :latest (the :<IMAGE_TAG> tag is always pushed)')
         string(name: 'AGENT_LABEL', defaultValue: 'docker', description: 'Jenkins agent label. Windows agent needs PuTTY (plink/pscp); Linux agent needs openssh-client + sshpass.')
@@ -225,13 +226,14 @@ REMOTE
         stage('Build image on staging host') {
             steps {
                 script {
-                    if (params.IMAGE_TAG?.trim()) {
-                        env.EFFECTIVE_TAG = params.IMAGE_TAG.trim()
-                    } else if (isUnix()) {
-                        env.EFFECTIVE_TAG = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    } else {
-                        env.EFFECTIVE_TAG = powershell(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    }
+                    // Compute the git short SHA once; both the image tag and the
+                    // app version label fall back to it when their param is blank.
+                    def shortSha = isUnix() ?
+                        sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim() :
+                        powershell(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.EFFECTIVE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : shortSha
+                    env.APP_VERSION_EFFECTIVE = params.APP_VERSION?.trim() ? params.APP_VERSION.trim() : shortSha
+                    echo "EFFECTIVE_TAG=${env.EFFECTIVE_TAG}  APP_VERSION=${env.APP_VERSION_EFFECTIVE}"
                 }
                 retry(2) {
                     timeout(time: 20, unit: 'MINUTES') {
@@ -252,7 +254,7 @@ REMOTE
 cd $REMOTE_PATH
 mkdir -p extracted
 tar -xzf $TAR_NAME -C extracted
-DOCKER_BUILDKIT=0 docker build --network=host --add-host $PIP_TRUSTED_HOST:$NEXUS_IP --build-arg PIP_INDEX_URL=$PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
+DOCKER_BUILDKIT=0 docker build --network=host --add-host $PIP_TRUSTED_HOST:$NEXUS_IP --build-arg PIP_INDEX_URL=$PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST --build-arg APP_VERSION=$APP_VERSION_EFFECTIVE -t presto:test -f extracted/Dockerfile extracted"
                                         sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$REMOTE_CMD"
                                     '''
                                 } else {
@@ -265,7 +267,7 @@ DOCKER_BUILDKIT=0 docker build --network=host --add-host $PIP_TRUSTED_HOST:$NEXU
                                         "cd $env:REMOTE_PATH; " +
                                         "mkdir -p extracted; " +
                                         "tar -xzf $env:TAR_NAME -C extracted; " +
-                                        "DOCKER_BUILDKIT=0 docker build --network=host --add-host ${env:PIP_TRUSTED_HOST}:${env:NEXUS_IP} --build-arg PIP_INDEX_URL=$env:PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$env:PIP_TRUSTED_HOST -t presto:test -f extracted/Dockerfile extracted"
+                                        "DOCKER_BUILDKIT=0 docker build --network=host --add-host ${env:PIP_TRUSTED_HOST}:${env:NEXUS_IP} --build-arg PIP_INDEX_URL=$env:PIP_INDEX_URL --build-arg PIP_TRUSTED_HOST=$env:PIP_TRUSTED_HOST --build-arg APP_VERSION=$env:APP_VERSION_EFFECTIVE -t presto:test -f extracted/Dockerfile extracted"
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
                                         & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "$remoteCmd"

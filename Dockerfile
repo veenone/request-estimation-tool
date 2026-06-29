@@ -61,6 +61,11 @@ COPY .streamlit/ ./.streamlit/
 # Default API_URL for frontends to reach the backend inside the container.
 ENV API_URL=http://localhost:8000/api
 
+# Build-time version label. CI passes the Jenkins APP_VERSION parameter here
+# (falling back to the git short SHA); the app surfaces it in the sidebar.
+ARG APP_VERSION=""
+ENV APP_VERSION=${APP_VERSION}
+
 # Entrypoint: starts FastAPI backend, Streamlit frontend, and NiceGUI frontend
 # concurrently. The script uses "wait -n" to exit as soon as any process dies,
 # which allows Docker to detect failures and restart the container when
