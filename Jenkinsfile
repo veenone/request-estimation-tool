@@ -44,7 +44,7 @@ pipeline {
         PIP_INDEX_URL    = 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple'
         PIP_TRUSTED_HOST = 'i2j6nexus2v0001.corp.idemia.com'
         NEXUS_IP         = '10.8.8.86'
-        BASE  =  i2j6hub1vt001.corp.idemia.com/library/python:3.12-slim
+        BASE  =  "i2j6hub1vt001.corp.idemia.com/library/python:3.12-slim"
     }
 
     stages {
