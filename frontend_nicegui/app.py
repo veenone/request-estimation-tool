@@ -1488,6 +1488,7 @@ def sidebar():
             # -- Data Management --
             with _section_header("data_management", "Data Management"):
                 _nav_item("Feature Catalog",     "category",    "/features",         current_path)
+                _nav_item("Feature Presets",     "bookmarks",   "/feature-presets",  current_path)
                 _nav_item("Task Templates",      "assignment",  "/tasks",            current_path)
                 _nav_item("DUT Registry",        "devices",     "/duts",             current_path)
                 _nav_item("DUT Assets",          "inventory",   "/assets",           current_path)
@@ -1964,72 +1965,87 @@ async def dashboard_page():
                                   on_click=lambda: ui.navigate.to("/risks")) \
                             .props("flat dense color=primary").classes("q-mt-sm")
 
-            # Tasks bar (full width since it's horizontal)
+            # ── Task Templates charts (by type + by product type) ─
             tasks_type = stats.get("tasks_by_type", {})
-            if tasks_type:
-                sorted_tasks = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
-                cats = [t[0] for t in sorted_tasks]
-                vals = [t[1] for t in sorted_tasks]
-                _bar(f"Task Templates · {sum(vals)}", cats, vals, "#5B8DB0")
+            tasks_pt = stats.get("tasks_by_product_type", {})
+            if tasks_type or tasks_pt:
+                with ui.element("div").classes("ed-chart-grid"):
+                    if tasks_type:
+                        _st = sorted(tasks_type.items(), key=lambda x: x[1], reverse=True)
+                        _bar("Task Templates · by Type",
+                             [t[0] for t in _st], [t[1] for t in _st], "#5B8DB0")
+                    if tasks_pt:
+                        _spt = sorted(tasks_pt.items(), key=lambda x: x[1], reverse=True)
+                        _pt_data = [
+                            {"value": v, "name": k,
+                             "itemStyle": {"color": _palette[i % len(_palette)]}}
+                            for i, (k, v) in enumerate(_spt)
+                        ]
+                        _donut("Task Templates · by Product Type", "Product Type", _pt_data)
 
-            # ── Recent estimations feed ─────────────────────────
-            with ui.element("div").classes("ed-section-head"):
-                ui.label("Recent Estimations").classes("ed-cap")
-                _link = ui.element("span").classes("ed-section-link")
-                _link.on("click", lambda: ui.navigate.to("/estimations"))
-                with _link:
-                    ui.label("see all →")
+            # ── Recent estimations & requests (side-by-side) ────
+            def _recent_estimations_feed() -> None:
+                with ui.element("div").classes("ed-section-head"):
+                    ui.label("Recent Estimations").classes("ed-cap")
+                    _link = ui.element("span").classes("ed-section-link")
+                    _link.on("click", lambda: ui.navigate.to("/estimations"))
+                    with _link:
+                        ui.label("see all →")
+                recent = stats.get("recent_estimations", [])
+                if recent:
+                    with ui.element("div").classes("ed-feed"):
+                        for est in recent[:6]:
+                            _stripe_map = {
+                                "FEASIBLE": "positive",
+                                "AT_RISK": "warning",
+                                "NOT_FEASIBLE": "negative",
+                            }
+                            stripe = _stripe_map.get(est.get("feasibility_status", ""), "")
+                            _feed_item(
+                                stripe=stripe,
+                                id_text=est.get("estimation_number") or f"#{est.get('id', '?')}",
+                                title=est.get("project_name", ""),
+                                num=f"{est.get('grand_total_hours', 0):,.0f}h",
+                                meta=_format_age(est.get("created_at")),
+                                nav=f"/estimation/{est.get('id')}",
+                            )
+                else:
+                    ui.label("No estimations yet").classes("ed-empty")
 
-            recent = stats.get("recent_estimations", [])
-            if recent:
-                with ui.element("div").classes("ed-feed"):
-                    for est in recent[:6]:
-                        _stripe_map = {
-                            "FEASIBLE": "positive",
-                            "AT_RISK": "warning",
-                            "NOT_FEASIBLE": "negative",
-                        }
-                        stripe = _stripe_map.get(est.get("feasibility_status", ""), "")
-                        _feed_item(
-                            stripe=stripe,
-                            id_text=est.get("estimation_number") or f"#{est.get('id', '?')}",
-                            title=est.get("project_name", ""),
-                            num=f"{est.get('grand_total_hours', 0):,.0f}h",
-                            meta=_format_age(est.get("created_at")),
-                            nav=f"/estimation/{est.get('id')}",
-                        )
-            else:
-                ui.label("No estimations yet").classes("ed-empty")
+            def _recent_requests_feed() -> None:
+                with ui.element("div").classes("ed-section-head"):
+                    ui.label("Recent Requests").classes("ed-cap")
+                    _link2 = ui.element("span").classes("ed-section-link")
+                    _link2.on("click", lambda: ui.navigate.to("/requests"))
+                    with _link2:
+                        ui.label("see all →")
+                recent_req = stats.get("recent_requests", [])
+                if recent_req:
+                    with ui.element("div").classes("ed-feed"):
+                        for req in recent_req[:6]:
+                            _pri = req.get("priority", "")
+                            _pri_stripe = {
+                                "CRITICAL": "negative",
+                                "HIGH": "negative",
+                                "MEDIUM": "warning",
+                                "LOW": "positive",
+                            }.get(_pri, "")
+                            _feed_item(
+                                stripe=_pri_stripe,
+                                id_text=req.get("request_number") or f"#{req.get('id', '?')}",
+                                title=req.get("title", ""),
+                                num=_pri,
+                                meta=_format_age(req.get("created_at")),
+                                nav=f"/requests/{req.get('id')}",
+                            )
+                else:
+                    ui.label("No requests yet").classes("ed-empty")
 
-            # ── Recent requests feed ────────────────────────────
-            with ui.element("div").classes("ed-section-head"):
-                ui.label("Recent Requests").classes("ed-cap")
-                _link2 = ui.element("span").classes("ed-section-link")
-                _link2.on("click", lambda: ui.navigate.to("/requests"))
-                with _link2:
-                    ui.label("see all →")
-
-            recent_req = stats.get("recent_requests", [])
-            if recent_req:
-                with ui.element("div").classes("ed-feed"):
-                    for req in recent_req[:6]:
-                        _pri = req.get("priority", "")
-                        _pri_stripe = {
-                            "CRITICAL": "negative",
-                            "HIGH": "negative",
-                            "MEDIUM": "warning",
-                            "LOW": "positive",
-                        }.get(_pri, "")
-                        _feed_item(
-                            stripe=_pri_stripe,
-                            id_text=req.get("request_number") or f"#{req.get('id', '?')}",
-                            title=req.get("title", ""),
-                            num=_pri,
-                            meta=_format_age(req.get("created_at")),
-                            nav=f"/requests/{req.get('id')}",
-                        )
-            else:
-                ui.label("No requests yet").classes("ed-empty")
+            with ui.element("div").classes("ed-chart-grid"):
+                with ui.column().classes("w-full gap-0"):
+                    _recent_estimations_feed()
+                with ui.column().classes("w-full gap-0"):
+                    _recent_requests_feed()
 
 
 # ---------------------------------------------------------------------------
@@ -2055,6 +2071,7 @@ import frontend_nicegui.pages.risks         # noqa: F401,E402
 import frontend_nicegui.pages.assets        # noqa: F401,E402
 import frontend_nicegui.pages.pr_registry   # noqa: F401,E402
 import frontend_nicegui.pages.documents    # noqa: F401,E402
+import frontend_nicegui.pages.feature_presets  # noqa: F401,E402
 import frontend_nicegui.pages.holidays    # noqa: F401,E402
 import frontend_nicegui.pages.backup     # noqa: F401,E402
 

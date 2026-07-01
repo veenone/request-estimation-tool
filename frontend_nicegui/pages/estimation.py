@@ -211,6 +211,10 @@ def _render_preset_bar(state: dict, feature_checkbox_refs: dict, config_map: dic
                 if fid not in state["feature_ids"]:
                     state["feature_ids"].append(fid)
                 applied += 1
+            # Record which presets were applied (used in reports).
+            _ap = state.setdefault("applied_presets", [])
+            if not any(x.get("id") == preset["id"] for x in _ap):
+                _ap.append({"id": preset["id"], "name": preset["name"]})
             ui.notify(f"Applied preset '{preset['name']}' (+{applied} feature(s)).",
                       type="positive")
 
@@ -233,6 +237,8 @@ def _render_preset_bar(state: dict, feature_checkbox_refs: dict, config_map: dic
                 ui.label(f"{len(selected)} feature(s) · product type: {_pt}") \
                     .classes("text-caption text-grey")
                 _pname = ui.input("Preset name *").classes("w-full").props("autofocus")
+                _pdesc = ui.textarea("Description (optional)") \
+                    .classes("w-full").props("autogrow")
 
                 async def _do_save() -> None:
                     if not (_pname.value or "").strip():
@@ -240,6 +246,7 @@ def _render_preset_bar(state: dict, feature_checkbox_refs: dict, config_map: dic
                         return
                     await api_post("/feature-presets", json={
                         "name": _pname.value.strip(),
+                        "description": (_pdesc.value or "").strip() or None,
                         "product_type": (None if _pt == "All" else _pt),
                         "feature_ids": sorted(selected),
                     })
@@ -444,6 +451,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
         "project_name": "",
         "project_type": "EVOLUTION",
         "product_type_filter": "All",
+        "applied_presets": [],
         "description": _prefill_description,
         "project_goals": "",
         "target_customer": "",
@@ -536,6 +544,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
             "document_counts": state.get("document_counts", {}),
             "task_assigned_testers": state.get("task_assigned_testers", {}),
             "product_type_filter": state.get("product_type_filter", "All"),
+            "applied_presets": state.get("applied_presets", []),
         }
 
     async def autosave() -> None:
@@ -975,6 +984,9 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                     if fid not in state["feature_ids"]:
                                         state["feature_ids"].append(fid)
                                     applied += 1
+                                _ap = state.setdefault("applied_presets", [])
+                                if not any(x.get("id") == preset["id"] for x in _ap):
+                                    _ap.append({"id": preset["id"], "name": preset["name"]})
                                 ui.notify(
                                     f"Applied preset '{preset['name']}' (+{applied} feature(s)).",
                                     type="positive",
@@ -1000,6 +1012,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                         f"{len(selected)} feature(s) · product type: {_pt}"
                                     ).classes("text-caption text-grey")
                                     _pname = ui.input("Preset name *").classes("w-full").props("autofocus")
+                                    _pdesc = ui.textarea("Description (optional)").classes("w-full").props("autogrow")
 
                                     async def _do_save() -> None:
                                         if not (_pname.value or "").strip():
@@ -1007,6 +1020,7 @@ async def new_estimation_page(request_id: str | None = None) -> None:
                                             return
                                         await api_post("/feature-presets", json={
                                             "name": _pname.value.strip(),
+                                            "description": (_pdesc.value or "").strip() or None,
                                             "product_type": (None if _pt == "All" else _pt),
                                             "feature_ids": sorted(selected),
                                         })
@@ -2948,6 +2962,8 @@ async def estimation_detail_page(estimation_id: int) -> None:
             # (showSaveFilePicker, secure context), else fall back to a normal
             # download to the browser's default folder.
             url = f"/api/estimations/{estimation_id}/report/{fmt}"
+            # Emits report_downloaded / report_cancelled / report_failed back to
+            # NiceGUI (see ui.on handlers) so the UI can show progress + result.
             return (
                 f'(async () => {{'
                 f'  try {{'
@@ -2963,17 +2979,53 @@ async def estimation_detail_page(estimation_id: int) -> None:
                 f'        const h = await window.showSaveFilePicker({{suggestedName: name}});'
                 f'        const w = await h.createWritable();'
                 f'        await w.write(blob); await w.close();'
+                f'        emitEvent("report_downloaded", {{fmt: "{fmt}"}});'
                 f'        return;'
-                f'      }} catch (e) {{ if (e && e.name === "AbortError") return; }}'
+                f'      }} catch (e) {{ if (e && e.name === "AbortError") {{ emitEvent("report_cancelled", {{fmt: "{fmt}"}}); return; }} }}'
                 f'    }}'
                 f'    const a = document.createElement("a");'
                 f'    a.href = URL.createObjectURL(blob);'
                 f'    a.download = name;'
                 f'    a.click();'
                 f'    URL.revokeObjectURL(a.href);'
-                f'  }} catch (err) {{ console.error("Download failed:", err); }}'
+                f'    emitEvent("report_downloaded", {{fmt: "{fmt}"}});'
+                f'  }} catch (err) {{ console.error("Download failed:", err); emitEvent("report_failed", {{fmt: "{fmt}"}}); }}'
                 f'}})();'
             )
+
+        # Download buttons registry + progress/result feedback (B4).
+        _dl_buttons: dict[str, Any] = {}
+
+        def _dl_click(fmt: str, fallback: str, label: str) -> None:
+            btn = _dl_buttons.get(fmt)
+            if btn is not None:
+                btn.props(add="loading")
+            ui.notify(f"Preparing {label} report…", type="ongoing", spinner=True, timeout=2500)
+            ui.run_javascript(_download_js(fmt, fallback))
+
+        def _dl_clear(fmt: str) -> None:
+            btn = _dl_buttons.get(fmt)
+            if btn is not None:
+                btn.props(remove="loading")
+
+        def _on_report_downloaded(e: Any) -> None:
+            fmt = (e.args or {}).get("fmt", "") if isinstance(e.args, dict) else ""
+            _dl_clear(fmt)
+            ui.notify("Report downloaded.", type="positive", icon="download_done")
+
+        def _on_report_cancelled(e: Any) -> None:
+            fmt = (e.args or {}).get("fmt", "") if isinstance(e.args, dict) else ""
+            _dl_clear(fmt)
+            ui.notify("Download cancelled.", type="info")
+
+        def _on_report_failed(e: Any) -> None:
+            fmt = (e.args or {}).get("fmt", "") if isinstance(e.args, dict) else ""
+            _dl_clear(fmt)
+            ui.notify("Report download failed. Please try again.", type="negative")
+
+        ui.on("report_downloaded", _on_report_downloaded)
+        ui.on("report_cancelled", _on_report_cancelled)
+        ui.on("report_failed", _on_report_failed)
 
         _STATUS_BTN_PROPS: dict[str, str] = {
             "FINAL":    "color=primary",
@@ -3514,28 +3566,22 @@ async def estimation_detail_page(estimation_id: int) -> None:
                         "A formatted summary of this estimation in your preferred format."
                     ).classes("ed-dl-meta-sub")
 
-                ui.button(
+                _dl_buttons["xlsx"] = ui.button(
                     "Excel",
                     icon="table_chart",
-                    on_click=lambda: ui.run_javascript(
-                        _download_js("xlsx", f"estimation_{estimation_id}.xlsx")
-                    ),
+                    on_click=lambda: _dl_click("xlsx", f"estimation_{estimation_id}.xlsx", "Excel"),
                 ).props("outline color=positive").classes("ed-dl-btn")
 
-                ui.button(
+                _dl_buttons["docx"] = ui.button(
                     "Word",
                     icon="description",
-                    on_click=lambda: ui.run_javascript(
-                        _download_js("docx", f"estimation_{estimation_id}.docx")
-                    ),
+                    on_click=lambda: _dl_click("docx", f"estimation_{estimation_id}.docx", "Word"),
                 ).props("outline color=primary").classes("ed-dl-btn")
 
-                ui.button(
+                _dl_buttons["pdf"] = ui.button(
                     "PDF",
                     icon="picture_as_pdf",
-                    on_click=lambda: ui.run_javascript(
-                        _download_js("pdf", f"estimation_{estimation_id}.pdf")
-                    ),
+                    on_click=lambda: _dl_click("pdf", f"estimation_{estimation_id}.pdf", "PDF"),
                 ).props("outline color=negative").classes("ed-dl-btn")
 
 
@@ -3633,6 +3679,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
             "project_name": est.get("project_name", ""),
             "project_type": est.get("project_type", "EVOLUTION"),
             "product_type_filter": saved_inputs.get("product_type_filter", "All"),
+            "applied_presets": saved_inputs.get("applied_presets", []),
             "description": "",
             "project_goals": est.get("project_goals", "") or "",
             "target_customer": est.get("target_customer", "") or "",
@@ -4888,6 +4935,7 @@ async def edit_estimation_page(estimation_id: int) -> None:
                         "document_counts": state.get("document_counts", {}),
                         "task_assigned_testers": state.get("task_assigned_testers", {}),
                         "product_type_filter": state.get("product_type_filter", "All"),
+                        "applied_presets": state.get("applied_presets", []),
                     }
                     if _is_draft_edit:
                         await api_put(f"/estimations/{estimation_id}/draft", json=payload)

@@ -597,6 +597,7 @@ class DashboardStatsOut(BaseModel):
     recent_requests: list[RecentRequestOut] = []
     features_by_category: dict[str, int] = {}
     tasks_by_type: dict[str, int] = {}
+    tasks_by_product_type: dict[str, int] = {}
     risks_by_category: dict[str, int] = {}
     risks_by_likelihood: dict[str, int] = {}
 

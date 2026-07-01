@@ -3454,6 +3454,12 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
     ).group_by(TaskTemplate.task_type).all()
     tasks_by_type = {tt: cnt for tt, cnt in task_rows}
 
+    # Task template breakdown by product type
+    task_pt_rows = db.query(
+        sqlfunc.coalesce(TaskTemplate.product_type, "Unspecified"), sqlfunc.count()
+    ).group_by(sqlfunc.coalesce(TaskTemplate.product_type, "Unspecified")).all()
+    tasks_by_product_type = {pt: cnt for pt, cnt in task_pt_rows}
+
     # Risk registry breakdown by category and likelihood
     risk_cat_rows = db.query(
         sqlfunc.coalesce(RiskItem.category, "General"), sqlfunc.count()
@@ -3479,6 +3485,7 @@ def get_dashboard_stats(user: User = Depends(get_current_user), db: Session = De
         recent_requests=recent_requests,
         features_by_category=features_by_category,
         tasks_by_type=tasks_by_type,
+        tasks_by_product_type=tasks_by_product_type,
         risks_by_category=risks_by_category,
         risks_by_likelihood=risks_by_likelihood,
     )
