@@ -44,6 +44,7 @@ pipeline {
         PIP_INDEX_URL    = 'https://i2j6nexus2v0001.corp.idemia.com/repository/pypi-group/simple'
         PIP_TRUSTED_HOST = 'i2j6nexus2v0001.corp.idemia.com'
         NEXUS_IP         = '10.8.8.86'
+        BASE  =  i2j6hub1vt001.corp.idemia.com/library/python:3.12-slim
     }
 
     stages {
@@ -161,7 +162,7 @@ pipeline {
                                         echo "Using $SSH_USER@$SSH_HOST"
                                         export SSHPASS="$SSH_PASS"
                                         SSH_OPTS="-o StrictHostKeyChecking=accept-new"
-                                        sshpass -e ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_PATH && docker run --rm -v $REMOTE_PATH:/work python:3.12-slim sh -lc 'rm -rf /work/extracted /work/$TAR_NAME'"
+                                        sshpass -e ssh $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_PATH && docker run --rm -v $REMOTE_PATH:/work $BASE sh -lc 'rm -rf /work/extracted /work/$TAR_NAME'"
                                         echo "Copying $TAR_NAME -> $SSH_USER@$SSH_HOST:$REMOTE_PATH/"
                                         sshpass -e scp $SSH_OPTS "$TAR_NAME" "$SSH_USER@$SSH_HOST:$REMOTE_PATH/"
                                     '''
@@ -171,7 +172,7 @@ pipeline {
 
                                         $plinkArgs = @('-ssh', '-batch', '-pw', $env:SSH_PASS)
                                         if ($env:SSH_HOSTKEY) { $plinkArgs = @('-hostkey', $env:SSH_HOSTKEY) + $plinkArgs }
-                                        & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "mkdir -p $env:REMOTE_PATH && docker run --rm -v ${env:REMOTE_PATH}:/work python:3.12-slim sh -lc 'rm -rf /work/extracted /work/$env:TAR_NAME'"
+                                        & "$env:PLINK" @plinkArgs "$env:SSH_USER@$env:SSH_HOST" "mkdir -p $env:REMOTE_PATH && docker run --rm -v ${env:REMOTE_PATH}:/work $BASE sh -lc 'rm -rf /work/extracted /work/$env:TAR_NAME'"
 
                                         Write-Host "Copying ${env:TAR_NAME} -> $env:SSH_USER@$env:SSH_HOST:$env:REMOTE_PATH/"
                                         $pscpArgs = @('-batch', '-pw', $env:SSH_PASS)
@@ -200,7 +201,7 @@ pipeline {
                                 export SSHPASS="$SSH_PASS"
                                 sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" 'sh -s' <<'REMOTE'
 set +e
-BASE=i2j6hub1vt001.corp.idemia.com/library/python:3.12-slim
+
 echo "=== docker server os/arch ==="
 docker version --format "{{.Server.Os}}/{{.Server.Arch}}"
 echo "=== python (base image, --network=host) ==="
