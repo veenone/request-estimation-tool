@@ -134,6 +134,8 @@ class ExcelReportData:
         # Selected features under test + presets applied
         features_breakdown: list[dict] | None = None,
         presets_used: list[str] | None = None,
+        # Structured risk rows (name/category/likelihood/impact)
+        risks_detailed: list[dict] | None = None,
     ):
         self.project_name = project_name
         self.estimation_number = estimation_number
@@ -187,6 +189,7 @@ class ExcelReportData:
         self.working_hours_per_day = working_hours_per_day
         self.features_breakdown = features_breakdown or []
         self.presets_used = presets_used or []
+        self.risks_detailed = risks_detailed or []
 
 
 # ── Sheet builders ───────────────────────────────────────
@@ -505,6 +508,36 @@ def _build_features_sheet(ws: Any, data: ExcelReportData) -> None:
     _auto_width(ws)
 
 
+def _build_risks_sheet(ws: Any, data: ExcelReportData) -> None:
+    """Risk register table (name / category / likelihood / impact) + flags."""
+    ws.title = "Risks"
+    row = 1
+    if data.risks_detailed:
+        headers = ["Risk", "Category", "Likelihood", "Impact"]
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+        _style_header_row(ws, row, len(headers))
+        for r in data.risks_detailed:
+            row += 1
+            ws.cell(row=row, column=1, value=r.get("name", ""))
+            ws.cell(row=row, column=2, value=r.get("category", ""))
+            ws.cell(row=row, column=3, value=r.get("likelihood", ""))
+            ws.cell(row=row, column=4, value=r.get("impact", ""))
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=row, column=col).border = THIN_BORDER
+        row += 2
+
+    if data.risk_messages:
+        ws.cell(row=row, column=1, value="Assessment Flags").font = LABEL_FONT
+        for msg in data.risk_messages:
+            row += 1
+            ws.cell(row=row, column=1, value=f"⚠ {msg}")
+
+    if not data.risks_detailed and not data.risk_messages:
+        ws.cell(row=1, column=1, value="No risks recorded")
+    _auto_width(ws)
+
+
 # ── Main generation function ─────────────────────────────
 
 def generate_excel_report(data: ExcelReportData, output_path: str | Path | None = None) -> bytes | None:
@@ -537,6 +570,9 @@ def generate_excel_report(data: ExcelReportData, output_path: str | Path | None 
 
     # Sheet - Features Under Test (selected features + presets applied)
     _build_features_sheet(wb.create_sheet(), data)
+
+    # Sheet - Risks (register table + assessment flags)
+    _build_risks_sheet(wb.create_sheet(), data)
 
     # Sheet 7 - Document Deliverables (if any)
     if data.document_deliverables:

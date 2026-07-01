@@ -70,7 +70,10 @@ async def feature_presets_page() -> None:
                 for p in all_rows:
                     with ui.element("div").classes("ed-card"):
                         with ui.row().classes("items-start justify-between w-full no-wrap"):
-                            with ui.column().classes("gap-0").style("min-width: 0;"):
+                            _info = ui.column().classes("gap-0 cursor-pointer") \
+                                .style("min-width: 0;")
+                            _info.on("click", lambda _=None, r=p: _view_details(r))
+                            with _info:
                                 ui.label(p["name"]).classes("text-subtitle1 text-weight-bold")
                                 _meta = f"{p['feature_count']} feature(s)"
                                 if p.get("product_type"):
@@ -84,12 +87,52 @@ async def feature_presets_page() -> None:
                                     ui.label(p["description"]).classes("text-body2 q-mt-xs") \
                                         .style("white-space: normal;")
                             with ui.row().classes("items-center gap-1 no-wrap"):
+                                ui.button(icon="visibility",
+                                          on_click=lambda _=None, r=p: _view_details(r)) \
+                                    .props("flat dense round").tooltip("View details")
                                 ui.button(icon="edit",
                                           on_click=lambda _=None, r=p: _open_dialog(r)) \
                                     .props("flat dense round color=primary").tooltip("Edit preset")
                                 ui.button(icon="delete",
                                           on_click=lambda _=None, r=p: _confirm_delete(r)) \
                                     .props("flat dense round color=negative").tooltip("Delete preset")
+
+        # ── Detail view ──────────────────────────────────────────
+        def _view_details(row: dict) -> None:
+            with ui.dialog() as dlg, ui.card().classes("w-[min(560px,94vw)]"):
+                ui.label(row["name"]).classes("text-h6")
+                _meta = f"{row['feature_count']} feature(s)"
+                if row.get("product_type"):
+                    _meta += f" · {row['product_type']}"
+                else:
+                    _meta += " · any product type"
+                if row.get("owner_name"):
+                    _meta += f" · by {row['owner_name']}"
+                ui.label(_meta).classes("text-caption text-grey")
+
+                ui.label("Description").classes("ed-eyebrow q-mt-md")
+                if (row.get("description") or "").strip():
+                    ui.label(row["description"]).classes("text-body2") \
+                        .style("white-space: normal;")
+                else:
+                    ui.label("No description.").classes("text-body2 text-grey")
+
+                ui.label("Member features").classes("ed-eyebrow q-mt-md")
+                fids = row.get("feature_ids", [])
+                if fids:
+                    with ui.column().classes("gap-1 q-mt-xs") \
+                            .style("max-height: 320px; overflow: auto;"):
+                        for fid in fids:
+                            with ui.row().classes("items-center gap-2 no-wrap"):
+                                ui.icon("check", size="16px").classes("text-positive")
+                                ui.label(feature_options.get(fid, f"Feature {fid}")) \
+                                    .classes("text-body2")
+                else:
+                    ui.label("No features in this preset.").classes("text-body2 text-grey")
+
+                with ui.row().classes("w-full justify-end q-mt-md"):
+                    ui.button("Close", on_click=dlg.close).props("flat")
+            dlg.open()
 
         async def refresh() -> None:
             nonlocal all_rows, feature_options, product_types

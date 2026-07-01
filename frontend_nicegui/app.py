@@ -599,13 +599,14 @@ _DEFAULT_RBAC_MATRIX: dict[str, list[str]] = {
     "VIEWER": ["view_estimations", "view_reports"],
     "ESTIMATOR": [
         "view_estimations", "create_estimations", "view_reports",
-        "download_reports", "manage_features", "manage_duts",
+        "download_reports", "manage_features", "manage_presets", "manage_duts",
         "manage_profiles", "view_requests",
     ],
     "APPROVER": [
         "view_estimations", "create_estimations", "approve_estimations",
-        "view_reports", "download_reports", "manage_features", "manage_duts",
-        "manage_profiles", "view_audit_log", "view_requests", "manage_requests",
+        "view_reports", "download_reports", "manage_features", "manage_presets",
+        "manage_duts", "manage_profiles", "view_audit_log", "view_requests",
+        "manage_requests",
     ],
 }
 
@@ -1488,7 +1489,8 @@ def sidebar():
             # -- Data Management --
             with _section_header("data_management", "Data Management"):
                 _nav_item("Feature Catalog",     "category",    "/features",         current_path)
-                _nav_item("Feature Presets",     "bookmarks",   "/feature-presets",  current_path)
+                if _has_perm("manage_presets"):
+                    _nav_item("Feature Presets", "bookmarks",   "/feature-presets",  current_path)
                 _nav_item("Task Templates",      "assignment",  "/tasks",            current_path)
                 _nav_item("DUT Registry",        "devices",     "/duts",             current_path)
                 _nav_item("DUT Assets",          "inventory",   "/assets",           current_path)
@@ -2042,9 +2044,9 @@ async def dashboard_page():
                     ui.label("No requests yet").classes("ed-empty")
 
             with ui.element("div").classes("ed-chart-grid"):
-                with ui.column().classes("w-full gap-0"):
+                with ui.element("div").classes("w-full"):
                     _recent_estimations_feed()
-                with ui.column().classes("w-full gap-0"):
+                with ui.element("div").classes("w-full"):
                     _recent_requests_feed()
 
 

@@ -426,9 +426,29 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
         ))
         story.append(Spacer(1, 12))
 
-    # ── 9. Risk flags ──────────────────────────────────
-    if data.risk_messages:
-        story.append(Paragraph("Risk Flags", styles["SectionTitle"]))
+    # ── 9. Risks ────────────────────────────────────────
+    if data.risks_detailed or data.risk_messages:
+        story.append(Paragraph("Risks", styles["SectionTitle"]))
+        if data.risks_detailed:
+            cell = styles["Cell"]
+            risk_rows = [
+                [
+                    Paragraph(str(r.get("name", "")), cell),
+                    Paragraph(str(r.get("category", "")), cell),
+                    r.get("likelihood", ""),
+                    r.get("impact", ""),
+                ]
+                for r in data.risks_detailed
+            ]
+            story.append(_make_table(
+                ["Risk", "Category", "Likelihood", "Impact"],
+                risk_rows,
+                col_widths=[
+                    page_width * 0.40, page_width * 0.24,
+                    page_width * 0.18, page_width * 0.18,
+                ],
+            ))
+            story.append(Spacer(1, 8))
         for msg in data.risk_messages:
             story.append(Paragraph(f"• {msg}", styles["RiskItem"]))
 

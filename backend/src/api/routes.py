@@ -2200,6 +2200,18 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         if isinstance(p, dict) and p.get("name")
     ]
 
+    # Structured risk rows (matches the web UI risk table) from linked registry items.
+    risks_detailed: list[dict] = []
+    for er in estimation.risks:
+        ri = er.risk_item
+        if ri:
+            risks_detailed.append({
+                "name": ri.name,
+                "category": ri.category or "General",
+                "likelihood": ri.likelihood or "",
+                "impact": ri.impact or "",
+            })
+
     return ExcelReportData(
         project_name=estimation.project_name,
         estimation_number=estimation.estimation_number or "",
@@ -2252,6 +2264,7 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         working_hours_per_day=hours_per_day,
         features_breakdown=features_breakdown,
         presets_used=presets_used,
+        risks_detailed=risks_detailed,
     )
 
 

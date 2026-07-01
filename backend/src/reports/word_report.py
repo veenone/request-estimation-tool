@@ -365,13 +365,26 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
         _add_styled_table(doc, ["Project", "Type", "Estimated", "Actual", "Ratio"], ref_rows)
         doc.add_paragraph()
 
-    # ── 9. Risk flags ──────────────────────────────────
-    if data.risk_messages:
-        doc.add_heading("Risk Flags and Assumptions", level=1)
-        for msg in data.risk_messages:
-            p = doc.add_paragraph(style="List Bullet")
-            run = p.add_run(msg)
-            run.font.size = Pt(10)
+    # ── 9. Risks ────────────────────────────────────────
+    if data.risks_detailed or data.risk_messages:
+        doc.add_heading("Risks", level=1)
+        if data.risks_detailed:
+            risk_rows = [
+                [r.get("name", ""), r.get("category", ""),
+                 r.get("likelihood", ""), r.get("impact", "")]
+                for r in data.risks_detailed
+            ]
+            _add_styled_table(doc, ["Risk", "Category", "Likelihood", "Impact"], risk_rows)
+            doc.add_paragraph()
+        if data.risk_messages:
+            pf = doc.add_paragraph()
+            rf = pf.add_run("Assessment flags:")
+            rf.bold = True
+            rf.font.size = Pt(10)
+            for msg in data.risk_messages:
+                p = doc.add_paragraph(style="List Bullet")
+                run = p.add_run(msg)
+                run.font.size = Pt(10)
 
     # Save or return bytes
     if output_path:
