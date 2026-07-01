@@ -302,6 +302,28 @@ def generate_word_report(data: ExcelReportData, output_path: str | Path | None =
         _add_styled_table(doc, ["Document Type", "Category", "Linked Task", "Count", "Base Hrs", "Total Hrs", "Effective Hrs", "Note"], doc_rows)
         doc.add_paragraph()
 
+    # ── 6e. Features Under Test ──────────────────────────
+    if data.features_breakdown:
+        doc.add_heading("Features Under Test", level=1)
+        if data.presets_used:
+            p_pre = doc.add_paragraph()
+            r = p_pre.add_run("Preset(s) applied: ")
+            r.bold = True
+            r.font.size = Pt(10)
+            p_pre.add_run(", ".join(data.presets_used)).font.size = Pt(10)
+        feat_rows = []
+        for f in data.features_breakdown:
+            feat_rows.append([
+                f.get("name", ""),
+                f.get("category", ""),
+                f"x{f.get('complexity_weight', 1.0):.1f}",
+                "Yes" if f.get("is_new") else "",
+                "Yes" if f.get("has_existing_tests") else "No",
+                f.get("description", "") or "",
+            ])
+        _add_styled_table(doc, ["Feature", "Category", "Complexity", "New?", "Existing Tests?", "Description"], feat_rows)
+        doc.add_paragraph()
+
     # ── 7. Feasibility analysis ────────────────────────
     doc.add_heading("Timeline Feasibility Analysis", level=1)
 

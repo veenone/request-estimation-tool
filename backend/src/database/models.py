@@ -128,6 +128,7 @@ class FeaturePreset(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     product_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     feature_ids_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]", server_default="[]"

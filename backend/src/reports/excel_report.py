@@ -131,6 +131,9 @@ class ExcelReportData:
         document_deliverables: list[dict] | None = None,
         working_weeks: float = 0,
         working_hours_per_day: float = 7.0,
+        # Selected features under test + presets applied
+        features_breakdown: list[dict] | None = None,
+        presets_used: list[str] | None = None,
     ):
         self.project_name = project_name
         self.estimation_number = estimation_number
@@ -182,6 +185,8 @@ class ExcelReportData:
         self.document_deliverables = document_deliverables or []
         self.working_weeks = working_weeks
         self.working_hours_per_day = working_hours_per_day
+        self.features_breakdown = features_breakdown or []
+        self.presets_used = presets_used or []
 
 
 # ── Sheet builders ───────────────────────────────────────
@@ -468,6 +473,38 @@ def _build_reference_data_sheet(ws: Any, data: ExcelReportData) -> None:
     _auto_width(ws)
 
 
+def _build_features_sheet(ws: Any, data: ExcelReportData) -> None:
+    """Selected features under test (+ any presets applied)."""
+    ws.title = "Features Under Test"
+    row = 1
+    if data.presets_used:
+        ws.cell(row=row, column=1, value="Preset(s) applied:").font = LABEL_FONT
+        ws.cell(row=row, column=2, value=", ".join(data.presets_used))
+        row += 2
+
+    if not data.features_breakdown:
+        ws.cell(row=row, column=1, value="No features selected")
+        _auto_width(ws)
+        return
+
+    headers = ["Feature", "Category", "Complexity", "New?", "Existing Tests?", "Description"]
+    for col, header in enumerate(headers, 1):
+        ws.cell(row=row, column=col, value=header)
+    _style_header_row(ws, row, len(headers))
+
+    for f in data.features_breakdown:
+        row += 1
+        ws.cell(row=row, column=1, value=f.get("name", ""))
+        ws.cell(row=row, column=2, value=f.get("category", ""))
+        ws.cell(row=row, column=3, value=f"x{f.get('complexity_weight', 1.0):.1f}")
+        ws.cell(row=row, column=4, value="Yes" if f.get("is_new") else "")
+        ws.cell(row=row, column=5, value="Yes" if f.get("has_existing_tests") else "No")
+        ws.cell(row=row, column=6, value=f.get("description", ""))
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=row, column=col).border = THIN_BORDER
+    _auto_width(ws)
+
+
 # ── Main generation function ─────────────────────────────
 
 def generate_excel_report(data: ExcelReportData, output_path: str | Path | None = None) -> bytes | None:
@@ -497,6 +534,9 @@ def generate_excel_report(data: ExcelReportData, output_path: str | Path | None 
 
     # Sheet 6 - Reference Data
     _build_reference_data_sheet(wb.create_sheet(), data)
+
+    # Sheet - Features Under Test (selected features + presets applied)
+    _build_features_sheet(wb.create_sheet(), data)
 
     # Sheet 7 - Document Deliverables (if any)
     if data.document_deliverables:

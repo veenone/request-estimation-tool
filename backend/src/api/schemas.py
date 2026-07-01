@@ -38,12 +38,20 @@ class FeatureCreate(FeatureBase):
 
 class FeaturePresetCreate(BaseModel):
     name: str
+    description: Optional[str] = None
     product_type: Optional[str] = None
     feature_ids: list[int] = []
+
+class FeaturePresetUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    product_type: Optional[str] = None
+    feature_ids: Optional[list[int]] = None
 
 class FeaturePresetOut(BaseModel):
     id: int
     name: str
+    description: Optional[str] = None
     product_type: Optional[str] = None
     feature_ids: list[int] = []
     owner_user_id: Optional[int] = None
@@ -407,6 +415,7 @@ class EstimationCreate(BaseModel):
     task_assigned_testers: dict[str, int] = {}  # {task_name: tester_count}
     testing_start_date: Optional[str] = None
     product_type_filter: Optional[str] = None
+    applied_presets: list[dict] = []  # [{id, name}] of presets applied in the wizard
 
 class EstimationRiskOut(BaseModel):
     id: int
@@ -540,6 +549,7 @@ class EstimationRevise(BaseModel):
     task_assigned_testers: dict[str, int] = {}  # {task_name: tester_count}
     testing_start_date: Optional[str] = None
     product_type_filter: Optional[str] = None
+    applied_presets: list[dict] = []
 
 
 class EstimationStatusUpdate(BaseModel):

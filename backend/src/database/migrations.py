@@ -28,7 +28,7 @@ from ..auth.models import AuditLog, User, UserSession  # noqa: E402
 SEED_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "seed_data.json"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
-SCHEMA_VERSION = 23  # v23 adds features.base_effort_hours (per-feature baseline effort)
+SCHEMA_VERSION = 24  # v24 adds feature_presets.description
 
 
 def get_engine(db_path: Path | str | None = None):
@@ -747,6 +747,19 @@ def _migrate_v22_to_v23(engine, session: Session) -> None:
     session.commit()
 
 
+def _migrate_v23_to_v24(engine, session: Session) -> None:
+    """Add feature_presets.description (optional preset description)."""
+    if engine.dialect.name == "sqlite":
+        cols = {r[1] for r in session.execute(text("PRAGMA table_info(feature_presets)")).fetchall()}
+        if cols and "description" not in cols:
+            session.execute(text("ALTER TABLE feature_presets ADD COLUMN description TEXT"))
+    else:
+        if not _column_exists(engine, "feature_presets", "description"):
+            session.execute(text("ALTER TABLE feature_presets ADD COLUMN description TEXT"))
+    _set_schema_version(session, 24)
+    session.commit()
+
+
 def init_database(db_path: Path | str | None = None, db_url: str | None = None) -> None:
     """Create all tables, run migrations, and load seed data if empty."""
     engine = _get_engine(db_path, db_url)
@@ -809,6 +822,8 @@ def init_database(db_path: Path | str | None = None, db_url: str | None = None) 
             _migrate_v21_to_v22(engine, session)
         if current_version < 23:
             _migrate_v22_to_v23(engine, session)
+        if current_version < 24:
+            _migrate_v23_to_v24(engine, session)
 
         # Ensure config keys added after initial schema version exist
         _ensure_config_keys(session)

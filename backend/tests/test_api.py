@@ -504,3 +504,17 @@ class TestFeaturePresets:
         assert resp.status_code == 204
         assert all(p["id"] != pid for p in client.get(
             "/api/feature-presets", headers=auth_headers).json())
+
+    def test_update_preset_and_description(self, client, auth_headers):
+        fids = self._feature_ids(client, auth_headers)
+        pid = client.post("/api/feature-presets", headers=auth_headers, json={
+            "name": "Editable", "description": "first draft", "feature_ids": fids,
+        }).json()["id"]
+        resp = client.put(f"/api/feature-presets/{pid}", headers=auth_headers, json={
+            "name": "Renamed", "description": "final", "feature_ids": fids[:1],
+        })
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"] == "Renamed"
+        assert data["description"] == "final"
+        assert data["feature_ids"] == sorted(fids[:1])

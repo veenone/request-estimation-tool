@@ -72,6 +72,7 @@ from .schemas import (
     FeatureOut,
     FeaturePresetCreate,
     FeaturePresetOut,
+    FeaturePresetUpdate,
     FeatureUpdate,
     HistoricalProjectCreate,
     HistoricalProjectOut,
@@ -599,7 +600,7 @@ def _preset_to_out(p: FeaturePreset, db: Session) -> FeaturePresetOut:
         owner = db.get(User, p.owner_user_id)
         owner_name = (owner.display_name or owner.username) if owner else None
     return FeaturePresetOut(
-        id=p.id, name=p.name, product_type=p.product_type,
+        id=p.id, name=p.name, description=p.description, product_type=p.product_type,
         feature_ids=fids, owner_user_id=p.owner_user_id, owner_name=owner_name,
     )
 
@@ -636,11 +637,43 @@ def create_feature_preset(
         raise HTTPException(400, "A preset must contain at least one feature.")
     preset = FeaturePreset(
         name=name,
+        description=(data.description or "").strip() or None,
         product_type=(data.product_type or None),
         feature_ids_json=_json.dumps(sorted({int(f) for f in data.feature_ids})),
         owner_user_id=user.id,
     )
     db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return _preset_to_out(preset, db)
+
+
+@router.put("/feature-presets/{preset_id}", response_model=FeaturePresetOut)
+def update_feature_preset(
+    preset_id: int,
+    data: FeaturePresetUpdate,
+    user: User = Depends(RequireRole("ESTIMATOR")),
+    db: Session = Depends(get_db),
+):
+    import json as _json
+    preset = db.get(FeaturePreset, preset_id)
+    if not preset:
+        raise HTTPException(404, "Preset not found")
+    if user.role != "ADMIN" and preset.owner_user_id is not None and preset.owner_user_id != user.id:
+        raise HTTPException(403, "Only the preset's owner or an ADMIN can edit it.")
+    if data.name is not None:
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(400, "Preset name cannot be empty.")
+        preset.name = name
+    if data.description is not None:
+        preset.description = data.description.strip() or None
+    if data.product_type is not None:
+        preset.product_type = data.product_type or None
+    if data.feature_ids is not None:
+        if not data.feature_ids:
+            raise HTTPException(400, "A preset must contain at least one feature.")
+        preset.feature_ids_json = _json.dumps(sorted({int(f) for f in data.feature_ids}))
     db.commit()
     db.refresh(preset)
     return _preset_to_out(preset, db)
@@ -1804,6 +1837,7 @@ def create_estimation(data: EstimationCreate, user: User = Depends(RequireRole("
         "project_reference": data.project_reference,
         "testing_start_date": data.testing_start_date,
         "product_type_filter": data.product_type_filter,
+        "applied_presets": data.applied_presets or [],
     }
 
     # Calculate documentation hours — deduct linked template hours once per group
@@ -2141,6 +2175,31 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
     grand_total_days = estimation.grand_total_days or 0
     working_weeks = round(grand_total_days / 5.0, 1)
 
+    # Selected features breakdown (name, complexity, new-flag, description) and
+    # any presets that were applied when the features were chosen.
+    feature_ids_sel = wizard.get("feature_ids", [])
+    new_feature_ids_sel = set(wizard.get("new_feature_ids", []))
+    features_breakdown: list[dict] = []
+    if feature_ids_sel:
+        feats = db.query(Feature).filter(Feature.id.in_(feature_ids_sel)).all()
+        _feat_by_id = {f.id: f for f in feats}
+        for fid in feature_ids_sel:
+            f = _feat_by_id.get(fid)
+            if not f:
+                continue
+            features_breakdown.append({
+                "name": f.name,
+                "category": f.category or "",
+                "complexity_weight": f.complexity_weight,
+                "is_new": fid in new_feature_ids_sel,
+                "has_existing_tests": bool(f.has_existing_tests),
+                "description": f.description or "",
+            })
+    presets_used = [
+        p.get("name") for p in wizard.get("applied_presets", [])
+        if isinstance(p, dict) and p.get("name")
+    ]
+
     return ExcelReportData(
         project_name=estimation.project_name,
         estimation_number=estimation.estimation_number or "",
@@ -2191,6 +2250,8 @@ def _build_report_data(estimation: Estimation, db: Session) -> "ExcelReportData"
         document_deliverables=doc_deliverables,
         working_weeks=working_weeks,
         working_hours_per_day=hours_per_day,
+        features_breakdown=features_breakdown,
+        presets_used=presets_used,
     )
 
 
@@ -2867,6 +2928,7 @@ def _apply_estimation_inputs(estimation: "Estimation", data: "EstimationRevise",
         "project_reference": data.project_reference,
         "testing_start_date": data.testing_start_date,
         "product_type_filter": data.product_type_filter,
+        "applied_presets": data.applied_presets or [],
     }
 
     included_template_ids = {tmpl.id for tmpl in templates}

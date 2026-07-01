@@ -365,6 +365,36 @@ def generate_pdf_report(data: ExcelReportData, output_path: str | Path | None = 
         ))
         story.append(Spacer(1, 12))
 
+    # ── 6e. Features Under Test ──────────────────────────
+    if data.features_breakdown:
+        story.append(Paragraph("Features Under Test", styles["SectionTitle"]))
+        cell = styles["Cell"]
+        if data.presets_used:
+            story.append(Paragraph(
+                "Preset(s) applied: <b>" + ", ".join(data.presets_used) + "</b>",
+                styles["Body"],
+            ))
+            story.append(Spacer(1, 6))
+        feat_rows = []
+        for f in data.features_breakdown:
+            feat_rows.append([
+                Paragraph(str(f.get("name", "")), cell),
+                Paragraph(str(f.get("category", "")), cell),
+                f"x{f.get('complexity_weight', 1.0):.1f}",
+                "Yes" if f.get("is_new") else "",
+                "Yes" if f.get("has_existing_tests") else "No",
+                Paragraph(str(f.get("description", "") or ""), cell),
+            ])
+        story.append(_make_table(
+            ["Feature", "Category", "Complexity", "New?", "Existing Tests?", "Description"],
+            feat_rows,
+            col_widths=[
+                page_width * 0.20, page_width * 0.13, page_width * 0.11,
+                page_width * 0.08, page_width * 0.13, page_width * 0.35,
+            ],
+        ))
+        story.append(Spacer(1, 12))
+
     # ── 7. Feasibility analysis ────────────────────────
     story.append(Paragraph("Timeline Feasibility", styles["SectionTitle"]))
     leader_text = " and 1 test leader" if data.has_leader else ""
